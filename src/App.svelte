@@ -14,6 +14,7 @@
   import FormatPicker from "./lib/FormatPicker.svelte";
   import OutputSettings from "./lib/OutputSettings.svelte";
   import AdvancedSettings from "./lib/AdvancedSettings.svelte";
+  import GifEditor from "./lib/GifEditor.svelte";
   import ResizeSettings from "./lib/ResizeSettings.svelte";
   import ProgressBar from "./lib/ProgressBar.svelte";
   import OutputPanel from "./lib/OutputPanel.svelte";
@@ -288,6 +289,11 @@
 
   $: hasVideo = types.has("video");
   $: hasDuration = files.some((f) => f.metadata?.duration > 0);
+  $: showGifEditor = settings.selectedFormat === "gif" && hasDuration;
+  $: gifMaxDuration = (() => {
+    const vf = files.find((f) => f.metadata?.duration > 0);
+    return vf?.metadata?.duration || 0;
+  })();
 
   $: overallProgress = (() => {
     const convertable = files.filter((f) => f.status !== "skipped" && f.status !== "error");
@@ -334,8 +340,31 @@
           <FormatPicker
             fileTypes={types}
             selectedFormat={settings.selectedFormat}
-            onFormatSelect={(fmt) => settingsStore.update((s) => ({ ...s, selectedFormat: fmt }))}
+            onFormatSelect={(fmt) => settingsStore.update((s) => {
+              const updated = { ...s, selectedFormat: fmt };
+              if (fmt === "gif") {
+                // Reset trim for GIF editor: clear so it defaults to full duration
+                updated.trimStart = null;
+                updated.trimEnd = null;
+              }
+              return updated;
+            })}
           />
+
+          {#if showGifEditor}
+            <GifEditor
+              duration={gifMaxDuration}
+              trimStart={settings.trimStart || 0}
+              trimEnd={settings.trimEnd || gifMaxDuration}
+              onUpdate={(start, end) => {
+                settingsStore.update((s) => ({
+                  ...s,
+                  trimStart: start > 0 ? start : null,
+                  trimEnd: end < gifMaxDuration ? end : null,
+                }));
+              }}
+            />
+          {/if}
 
           <OutputSettings
             outputDir={settings.outputDir}

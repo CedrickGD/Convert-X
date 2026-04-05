@@ -76,10 +76,14 @@ pub fn build_ffmpeg_args(
 
     args.extend(["-i".to_string(), input_path.to_string()]);
 
-    // Trim end: -to after -i
+    // Trim end: use -t (duration) since -ss before -i makes -to relative to output start
     if let Some(end) = opts.trim_end {
         if end > 0.0 {
-            args.extend(["-to".to_string(), format!("{:.3}", end)]);
+            let start = opts.trim_start.unwrap_or(0.0);
+            let duration = end - start;
+            if duration > 0.0 {
+                args.extend(["-t".to_string(), format!("{:.3}", duration)]);
+            }
         }
     }
 
@@ -107,6 +111,9 @@ pub fn build_ffmpeg_args(
 }
 
 fn build_gif_args(args: &mut Vec<String>, opts: &FfmpegOptions) {
+    // Strip audio — GIF doesn't support it
+    args.push("-an".to_string());
+
     let mut filters = Vec::new();
 
     if let Some(ref res) = opts.resolution {
@@ -357,6 +364,7 @@ pub async fn run_ffmpeg(
     let mut lines = reader.lines();
 
     let start_time = std::time::Instant::now();
+    let mut last_error_line = String::new();
 
     while let Ok(Some(line)) = lines.next_line().await {
         if let Some(progress) = parse_progress_line(&line, total_duration) {
@@ -373,6 +381,11 @@ pub async fn run_ffmpeg(
                 elapsed: elapsed_str,
             });
         }
+        // Keep the last non-empty line for error reporting
+        let trimmed = line.trim().to_string();
+        if !trimmed.is_empty() {
+            last_error_line = trimmed;
+        }
     }
 
     let status = child.wait().await.map_err(|e| format!("FFmpeg process error: {}", e))?;
@@ -382,6 +395,11 @@ pub async fn run_ffmpeg(
     if status.success() {
         Ok(())
     } else {
-        Err(format!("FFmpeg exited with code: {}", status.code().unwrap_or(-1)))
+        let detail = if last_error_line.is_empty() {
+            String::new()
+        } else {
+            format!(": {}", last_error_line)
+        };
+        Err(format!("FFmpeg failed (code {}){}", status.code().unwrap_or(-1), detail))
     }
 }

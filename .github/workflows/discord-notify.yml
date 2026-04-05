@@ -1,0 +1,66 @@
+name: Discord Notifications
+
+on:
+  push:
+    branches: [main]
+    tags: ["v*"]
+
+jobs:
+  notify:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Push Notification
+        if: github.ref == 'refs/heads/main'
+        env:
+          WEBHOOK_URL: ${{ secrets.PRIVAT_DC_NOTIFY }}
+        run: |
+          COMMIT_MSG=$(echo '${{ github.event.head_commit.message }}' | head -1)
+          COMMIT_SHA="${{ github.sha }}"
+          SHORT_SHA="${COMMIT_SHA:0:7}"
+          REPO="${{ github.repository }}"
+          ACTOR="${{ github.actor }}"
+          TIMESTAMP=$(date -u +"%d.%m.%Y %H:%M")
+          COMMIT_URL="https://github.com/${REPO}/commit/${COMMIT_SHA}"
+
+          curl -s -H "Content-Type: application/json" -X POST "$WEBHOOK_URL" -d @- <<EOF
+          {
+            "embeds": [{
+              "color": 5793266,
+              "author": {
+                "name": "${ACTOR}"
+              },
+              "title": "Push to main",
+              "description": "[\`${SHORT_SHA}\`](${COMMIT_URL})  ${COMMIT_MSG}",
+              "footer": {
+                "text": "${REPO} \u2022 ${TIMESTAMP}"
+              }
+            }]
+          }
+          EOF
+
+      - name: Release Notification
+        if: startsWith(github.ref, 'refs/tags/v')
+        env:
+          WEBHOOK_URL: ${{ secrets.PRIVAT_DC_NOTIFY }}
+        run: |
+          TAG="${GITHUB_REF#refs/tags/}"
+          REPO="${{ github.repository }}"
+          ACTOR="${{ github.actor }}"
+          TIMESTAMP=$(date -u +"%d.%m.%Y %H:%M")
+          RELEASE_URL="https://github.com/${REPO}/releases/tag/${TAG}"
+
+          curl -s -H "Content-Type: application/json" -X POST "$WEBHOOK_URL" -d @- <<EOF
+          {
+            "embeds": [{
+              "color": 5025616,
+              "author": {
+                "name": "${ACTOR}"
+              },
+              "title": "Release: ConvertX ${TAG}",
+              "description": "${TAG} is now available.\n\n[Download from GitHub](${RELEASE_URL})",
+              "footer": {
+                "text": "${REPO} \u2022 ${TIMESTAMP}"
+              }
+            }]
+          }
+          EOF
