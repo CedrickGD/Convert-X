@@ -1,0 +1,31 @@
+# Dependencies
+node_modules/
+
+# Build output
+dist/
+release/
+src-tauri/target/
+
+# Bundled binaries (too large for git)
+src-tauri/bin/*.exe
+
+# Generated schemas
+src-tauri/gen/
+
+# IDE
+.vscode/
+.idea/
+
+# Claude
+.claude/
+
+# OS
+Thumbs.db
+.DS_Store
+
+# Tools
+rcedit.exe
+clear_icon_cache.bat
+
+# Env
+.env
