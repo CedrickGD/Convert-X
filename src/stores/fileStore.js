@@ -20,11 +20,20 @@ export function createFileEntry(filePath) {
 // Array of file entries
 export const filesStore = writable([]);
 
+// Persist output directory across sessions
+const SAVED_OUTPUT_DIR_KEY = "convertx-output-dir";
+function getSavedOutputDir() {
+  try { return localStorage.getItem(SAVED_OUTPUT_DIR_KEY) || ""; } catch { return ""; }
+}
+function saveOutputDir(dir) {
+  try { localStorage.setItem(SAVED_OUTPUT_DIR_KEY, dir || ""); } catch {}
+}
+
 // Shared settings
 export const settingsStore = writable({
   selectedFormat: null,
   quality: 75,
-  outputDir: "",
+  outputDir: getSavedOutputDir(),
   // Convert options
   resolution: null,
   fps: null,
@@ -41,6 +50,9 @@ export const settingsStore = writable({
   keepAspect: true,
   resizeFormat: null,
 });
+
+// Save outputDir to localStorage whenever it changes
+settingsStore.subscribe((s) => saveOutputDir(s.outputDir));
 
 // Overall app view state
 export const appView = writable("idle"); // idle | ready | converting | done
@@ -72,7 +84,7 @@ export function resetAll() {
     ...s,
     selectedFormat: null,
     quality: 75,
-    outputDir: "",
+    outputDir: getSavedOutputDir(),
     resolution: null,
     fps: null,
     trimStart: null,
