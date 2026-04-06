@@ -1,13 +1,16 @@
 {
-  "name": "convertx",
+  "name": "convert-x",
   "private": true,
   "version": "0.1.0",
   "type": "module",
+  "workspaces": ["packages/*"],
   "scripts": {
     "dev": "vite",
     "build": "vite build",
     "preview": "vite preview",
-    "tauri": "tauri"
+    "tauri": "tauri",
+    "dev:web": "npm run dev -w packages/web",
+    "build:web": "npm run build -w packages/web"
   },
   "dependencies": {
     "@tauri-apps/api": "^2",

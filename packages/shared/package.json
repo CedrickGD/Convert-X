@@ -1,0 +1,14 @@
+{
+  "name": "@convertx/shared",
+  "private": true,
+  "version": "0.1.0",
+  "type": "module",
+  "main": "src/index.js",
+  "exports": {
+    ".": "./src/index.js",
+    "./components/*": "./src/components/*",
+    "./stores/*": "./src/stores/*",
+    "./assets/*": "./src/assets/*",
+    "./platform": "./src/platform.js"
+  }
+}

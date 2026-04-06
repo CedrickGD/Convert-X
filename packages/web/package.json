@@ -1,0 +1,21 @@
+{
+  "name": "@convertx/web",
+  "private": true,
+  "version": "0.1.0",
+  "type": "module",
+  "scripts": {
+    "dev": "vite",
+    "build": "vite build",
+    "preview": "vite preview"
+  },
+  "dependencies": {
+    "@convertx/shared": "*",
+    "@ffmpeg/ffmpeg": "^0.12",
+    "@ffmpeg/util": "^0.12"
+  },
+  "devDependencies": {
+    "@sveltejs/vite-plugin-svelte": "^4",
+    "svelte": "^5",
+    "vite": "^5"
+  }
+}

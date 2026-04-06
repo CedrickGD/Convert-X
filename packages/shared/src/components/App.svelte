@@ -2,23 +2,22 @@
   import {
     filesStore, settingsStore, appView, appMode, fileTypes,
     createFileEntry, resetAll, isFormatCompatible,
-  } from "./stores/fileStore.js";
-  import { invoke } from "@tauri-apps/api/core";
-  import { listen } from "@tauri-apps/api/event";
-  import { getCurrentWindow } from "@tauri-apps/api/window";
+  } from "../stores/fileStore.js";
+  import { getPlatform } from "../platform.js";
   import { onMount } from "svelte";
-  import Navbar from "./lib/Navbar.svelte";
-  import Dropzone from "./lib/Dropzone.svelte";
-  import FileList from "./lib/FileList.svelte";
-  import FilePreview from "./lib/FilePreview.svelte";
-  import FormatPicker from "./lib/FormatPicker.svelte";
-  import OutputSettings from "./lib/OutputSettings.svelte";
-  import AdvancedSettings from "./lib/AdvancedSettings.svelte";
-  import GifEditor from "./lib/GifEditor.svelte";
-  import ResizeSettings from "./lib/ResizeSettings.svelte";
-  import ProgressBar from "./lib/ProgressBar.svelte";
-  import OutputPanel from "./lib/OutputPanel.svelte";
-  import ThemeToggle from "./lib/ThemeToggle.svelte";
+  import Navbar from "./Navbar.svelte";
+  import Dropzone from "./Dropzone.svelte";
+  import FileList from "./FileList.svelte";
+  import FilePreview from "./FilePreview.svelte";
+  import FormatPicker from "./FormatPicker.svelte";
+  import OutputSettings from "./OutputSettings.svelte";
+  import AdvancedSettings from "./AdvancedSettings.svelte";
+  import GifEditor from "./GifEditor.svelte";
+  import ResizeSettings from "./ResizeSettings.svelte";
+  import ProgressBar from "./ProgressBar.svelte";
+  import OutputPanel from "./OutputPanel.svelte";
+  import ThemeToggle from "./ThemeToggle.svelte";
+
   let files = [];
   let settings = {};
   let view = "idle";
@@ -26,26 +25,30 @@
   let mode = "convert";
   let cancelled = false;
 
+  const platform = getPlatform();
+  const isWeb = platform.platformType === "web";
+
   filesStore.subscribe((v) => (files = v));
   settingsStore.subscribe((v) => (settings = v));
   appView.subscribe((v) => (view = v));
   fileTypes.subscribe((v) => (types = v));
   appMode.subscribe((v) => (mode = v));
 
-  onMount(async () => {
-    await listen("conversion-progress", (event) => {
-      const { file_id, progress, elapsed } = event.payload;
+  onMount(() => {
+    const unlistenProgress = platform.onProgress(({ file_id, progress, elapsed }) => {
       filesStore.update((all) =>
         all.map((f) => f.id === file_id ? { ...f, progress, elapsed } : f)
       );
     });
 
-    const appWindow = getCurrentWindow();
-    await appWindow.onDragDropEvent((event) => {
-      if (event.payload.type === "drop" && event.payload.paths?.length > 0) {
-        handleFilesDrop(event.payload.paths);
-      }
+    const unlistenDrop = platform.onFileDrop((entries) => {
+      handleFilesDrop(entries);
     });
+
+    return () => {
+      if (typeof unlistenProgress === "function") unlistenProgress();
+      if (typeof unlistenDrop === "function") unlistenDrop();
+    };
   });
 
   function switchMode(newMode) {
@@ -67,23 +70,25 @@
     return dot > 0 ? fileName.substring(0, dot) : fileName;
   }
 
-  async function handleFilesDrop(paths) {
+  async function handleFilesDrop(entries) {
     if (view !== "idle" && view !== "ready") {
       resetAll();
     }
 
-    const newEntries = paths.map((p) => createFileEntry(p));
+    // entries: [{name, path, fileObj}] from platform adapter
+    const newEntries = entries.map((e) => createFileEntry(e.path || e.name, e.fileObj || null));
     filesStore.update((existing) => [...existing, ...newEntries]);
 
-    if (!settings.outputDir && paths[0]) {
-      settingsStore.update((s) => ({ ...s, outputDir: getDefaultDir(paths[0]) }));
+    if (!isWeb && !settings.outputDir && entries[0]?.path) {
+      settingsStore.update((s) => ({ ...s, outputDir: getDefaultDir(entries[0].path) }));
     }
 
     appView.set("ready");
 
     for (const entry of newEntries) {
       try {
-        const meta = await invoke("detect_file", { filePath: entry.filePath });
+        const fileRef = entry.fileObj || entry.filePath;
+        const meta = await platform.detectFile(fileRef);
         filesStore.update((all) =>
           all.map((f) =>
             f.id === entry.id
@@ -116,8 +121,8 @@
     }
   }
 
-  function addMoreFiles(paths) {
-    handleFilesDrop(paths);
+  function addMoreFiles(entries) {
+    handleFilesDrop(entries);
   }
 
   function removeFile(id) {
@@ -153,9 +158,10 @@
       );
 
       try {
-        const result = await invoke("convert_file", {
+        const result = await platform.convertFile({
           fileId: file.id,
           filePath: file.filePath,
+          fileObj: file.fileObj,
           fileType: file.detectedType,
           outputFormat: fmt,
           quality: settings.quality,
@@ -174,7 +180,14 @@
         filesStore.update((all) =>
           all.map((f) =>
             f.id === file.id
-              ? { ...f, status: "done", outputPath: result.output_path, outputSize: result.output_size, progress: 100 }
+              ? {
+                  ...f,
+                  status: "done",
+                  outputPath: result.output_path || result.outputName || "",
+                  outputSize: result.output_size || result.outputSize || 0,
+                  outputBlob: result.outputBlob || null,
+                  progress: 100,
+                }
               : f
           )
         );
@@ -199,7 +212,6 @@
 
     const currentFiles = [...files];
 
-    // Mark image files as queued, non-images as skipped
     filesStore.update((all) =>
       all.map((f) => {
         if (f.status === "error") return f;
@@ -218,13 +230,13 @@
       );
 
       try {
-        // Determine output format
         const ext = file.filePath.split(".").pop().toLowerCase();
         const fmt = settings.resizeFormat || ext;
 
-        const result = await invoke("resize_image", {
+        const result = await platform.resizeImage({
           fileId: file.id,
           filePath: file.filePath,
+          fileObj: file.fileObj,
           resizeMode: settings.resizeMode,
           width: settings.resizeMode === "pixels" ? (settings.resizeWidth || null) : null,
           height: settings.resizeMode === "pixels" ? (settings.resizeHeight || null) : null,
@@ -239,7 +251,14 @@
         filesStore.update((all) =>
           all.map((f) =>
             f.id === file.id
-              ? { ...f, status: "done", outputPath: result.output_path, outputSize: result.output_size, progress: 100 }
+              ? {
+                  ...f,
+                  status: "done",
+                  outputPath: result.output_path || result.outputName || "",
+                  outputSize: result.output_size || result.outputSize || 0,
+                  outputBlob: result.outputBlob || null,
+                  progress: 100,
+                }
               : f
           )
         );
@@ -259,7 +278,7 @@
 
   async function handleCancel() {
     cancelled = true;
-    try { await invoke("cancel_conversion"); } catch (_) {}
+    try { await platform.cancelConversion(); } catch (_) {}
     appView.set("ready");
     filesStore.update((all) =>
       all.map((f) =>
@@ -309,7 +328,7 @@
   <header>
     <div class="header-inner">
       <div class="spacer"></div>
-      <h1>Convert<span class="x">X</span></h1>
+      <h1>Convert-<span class="x">X</span></h1>
       <div class="spacer end"><ThemeToggle /></div>
     </div>
     <Navbar activeMode={mode} onModeChange={switchMode} />
@@ -331,7 +350,7 @@
             onAddFiles={addMoreFiles}
           />
         {:else if singleFile}
-          <FilePreview metadata={singleFile.metadata} filePath={singleFile.filePath} />
+          <FilePreview metadata={singleFile.metadata} filePath={singleFile.filePath} fileObj={singleFile.fileObj} />
         {/if}
 
         {#if mode === "convert"}
@@ -353,6 +372,7 @@
               trimStart={settings.trimStart || 0}
               trimEnd={settings.trimEnd || clipMaxDuration}
               filePath={clipVideoFile?.filePath || ""}
+              fileObj={clipVideoFile?.fileObj || null}
               outputFormat={settings.selectedFormat}
               stripAudio={settings.stripAudio || false}
               onUpdate={(start, end) => {

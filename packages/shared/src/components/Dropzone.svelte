@@ -1,5 +1,5 @@
 <script>
-  import { open } from "@tauri-apps/plugin-dialog";
+  import { getPlatform } from "../platform.js";
 
   export let onFilesDrop;
   export let mode = "convert";
@@ -15,22 +15,27 @@
 
   async function handleBrowse() {
     const isResize = mode === "resize";
-    const selected = await open({
+    const entries = await getPlatform().pickFiles({
       multiple: true,
-      filters: [{
-        name: isResize ? "Images" : "All Supported",
-        extensions: isResize ? IMAGE_EXTENSIONS : ALL_EXTENSIONS,
-      }],
+      extensions: isResize ? IMAGE_EXTENSIONS : ALL_EXTENSIONS,
+      filterName: isResize ? "Images" : "All Supported",
     });
-    if (selected) {
-      const paths = Array.isArray(selected) ? selected : [selected];
-      if (paths.length > 0) onFilesDrop(paths);
-    }
+    if (entries.length > 0) onFilesDrop(entries);
   }
 
   function handleDragEnter() { isDragging = true; }
   function handleDragLeave() { isDragging = false; }
-  function handleDrop() { isDragging = false; }
+
+  function handleWebDrop(e) {
+    isDragging = false;
+    const platform = getPlatform();
+    if (platform.platformType === "web" && e.dataTransfer?.files?.length) {
+      const entries = Array.from(e.dataTransfer.files).map((f) => ({
+        name: f.name, path: f.name, fileObj: f,
+      }));
+      if (entries.length > 0) onFilesDrop(entries);
+    }
+  }
 </script>
 
 <!-- svelte-ignore a11y_click_events_have_key_events -->
@@ -42,7 +47,7 @@
   on:dragenter|preventDefault={handleDragEnter}
   on:dragleave|preventDefault={handleDragLeave}
   on:dragover|preventDefault={() => {}}
-  on:drop|preventDefault={handleDrop}
+  on:drop|preventDefault={handleWebDrop}
   role="button"
   tabindex="0"
 >

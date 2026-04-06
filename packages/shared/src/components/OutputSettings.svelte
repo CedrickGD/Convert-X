@@ -1,5 +1,5 @@
 <script>
-  import { open } from "@tauri-apps/plugin-dialog";
+  import { getPlatform } from "../platform.js";
 
   export let outputDir;
   export let quality;
@@ -10,9 +10,11 @@
   export let onDirChange;
   export let onQualityChange;
 
+  $: isWeb = getPlatform().platformType === "web";
+
   async function pickFolder() {
-    const folder = await open({ directory: true, multiple: false });
-    if (folder) onDirChange(folder);
+    const result = await getPlatform().pickFolder();
+    if (result) onDirChange(result);
   }
 
   function truncateDir(dir) {
@@ -44,6 +46,7 @@
   {/if}
 
   <!-- Output directory -->
+  {#if !isWeb}
   <div class="field">
     <span class="label">Save to</span>
     <button class="dir-btn" on:click={pickFolder}>
@@ -52,6 +55,7 @@
       <span class="change">Change</span>
     </button>
   </div>
+  {/if}
 
   <!-- Quality -->
   <div class="field">

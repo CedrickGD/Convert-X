@@ -1,6 +1,6 @@
 {
   "$schema": "https://raw.githubusercontent.com/tauri-apps/tauri/dev/crates/tauri-cli/schema.json",
-  "productName": "ConvertX",
+  "productName": "Convert-X",
   "version": "0.1.0",
   "identifier": "com.convertx.app",
   "build": {
@@ -12,7 +12,7 @@
   "app": {
     "windows": [
       {
-        "title": "ConvertX",
+        "title": "Convert-X",
         "width": 600,
         "height": 700,
         "resizable": true,

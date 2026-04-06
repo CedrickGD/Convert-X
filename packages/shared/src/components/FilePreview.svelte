@@ -1,37 +1,43 @@
 <script>
-  import { invoke } from "@tauri-apps/api/core";
+  import { getPlatform } from "../platform.js";
   import { onDestroy } from "svelte";
 
   export let metadata;
   export let filePath = "";
+  export let fileObj = null;
   export let compact = false;
 
   let previewUrl = "";
-  let loadedPath = "";
+  let loadedRef = "";
 
   $: kind = metadata?.mimeType?.startsWith("video") ? "video"
     : metadata?.mimeType?.startsWith("audio") ? "audio" : "image";
 
-  $: if (filePath && filePath !== loadedPath && (kind === "image" || kind === "video")) {
-    loadPreview(filePath, kind);
+  $: fileRef = filePath || (fileObj ? fileObj.name : "");
+  $: if (fileRef && fileRef !== loadedRef && (kind === "image" || kind === "video")) {
+    loadPreview(fileRef, kind);
   }
 
-  async function loadPreview(path, fileKind) {
-    loadedPath = path;
+  async function loadPreview(ref, fileKind) {
+    loadedRef = ref;
     cleanupUrl();
     try {
-      const buffer = await invoke("read_file_binary", { path });
-      const ext = path.split(".").pop().toLowerCase();
-      let mime;
-      if (fileKind === "image") {
-        const map = { jpg: "image/jpeg", jpeg: "image/jpeg", png: "image/png", gif: "image/gif", webp: "image/webp", bmp: "image/bmp", svg: "image/svg+xml", tiff: "image/tiff", tif: "image/tiff", ico: "image/x-icon", avif: "image/avif" };
-        mime = map[ext] || "image/png";
+      if (fileObj) {
+        previewUrl = URL.createObjectURL(fileObj);
       } else {
-        const map = { mp4: "video/mp4", webm: "video/webm", avi: "video/x-msvideo", mkv: "video/x-matroska", mov: "video/quicktime", m4v: "video/mp4" };
-        mime = map[ext] || "video/mp4";
+        const buffer = await getPlatform().readFileBinary(filePath);
+        const ext = filePath.split(".").pop().toLowerCase();
+        let mime;
+        if (fileKind === "image") {
+          const map = { jpg: "image/jpeg", jpeg: "image/jpeg", png: "image/png", gif: "image/gif", webp: "image/webp", bmp: "image/bmp", svg: "image/svg+xml", tiff: "image/tiff", tif: "image/tiff", ico: "image/x-icon", avif: "image/avif" };
+          mime = map[ext] || "image/png";
+        } else {
+          const map = { mp4: "video/mp4", webm: "video/webm", avi: "video/x-msvideo", mkv: "video/x-matroska", mov: "video/quicktime", m4v: "video/mp4" };
+          mime = map[ext] || "video/mp4";
+        }
+        const blob = new Blob([buffer], { type: mime });
+        previewUrl = URL.createObjectURL(blob);
       }
-      const blob = new Blob([buffer], { type: mime });
-      previewUrl = URL.createObjectURL(blob);
     } catch (e) {
       previewUrl = "";
     }

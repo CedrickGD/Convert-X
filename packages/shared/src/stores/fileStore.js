@@ -1,10 +1,11 @@
 import { writable, derived } from "svelte/store";
 
 // Per-file entry
-export function createFileEntry(filePath) {
+export function createFileEntry(filePath, fileObj = null) {
   return {
     id: crypto.randomUUID(),
     filePath,
+    fileObj,
     detectedType: null,
     metadata: null,
     outputName: "",

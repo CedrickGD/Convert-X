@@ -1,11 +1,12 @@
 <script>
-  import { invoke } from "@tauri-apps/api/core";
+  import { getPlatform } from "../platform.js";
   import { onDestroy } from "svelte";
 
   export let duration = 0;
   export let trimStart = 0;
   export let trimEnd = 0;
   export let filePath = "";
+  export let fileObj = null;
   export let outputFormat = "";
   export let stripAudio = false;
   export let onUpdate;
@@ -23,7 +24,7 @@
   let animFrame = null;
   let blobUrl = "";
   let loading = false;
-  let loadedPath = "";
+  let loadedRef = "";
 
   $: maxDuration = duration || 0;
   $: startPct = maxDuration > 0 ? (trimStart / maxDuration) * 100 : 0;
@@ -31,25 +32,29 @@
   $: clipDuration = trimEnd - trimStart;
   $: playheadPct = maxDuration > 0 ? (playheadTime / maxDuration) * 100 : 0;
 
-  // Load video via Rust command + blob URL
-  $: if (filePath && filePath !== loadedPath) {
-    loadVideo(filePath);
+  $: fileRef = filePath || (fileObj ? fileObj.name : "");
+  $: if (fileRef && fileRef !== loadedRef) {
+    loadVideo(fileRef);
   }
 
-  async function loadVideo(path) {
-    loadedPath = path;
+  async function loadVideo(ref) {
+    loadedRef = ref;
     loading = true;
     cleanupBlob();
     try {
-      const buffer = await invoke("read_file_binary", { path });
-      const ext = path.split(".").pop().toLowerCase();
-      const mimeMap = {
-        mp4: "video/mp4", webm: "video/webm", avi: "video/x-msvideo",
-        mkv: "video/x-matroska", mov: "video/quicktime", m4v: "video/mp4",
-        ts: "video/mp2t", flv: "video/x-flv", wmv: "video/x-ms-wmv",
-      };
-      const blob = new Blob([buffer], { type: mimeMap[ext] || "video/mp4" });
-      blobUrl = URL.createObjectURL(blob);
+      if (fileObj) {
+        blobUrl = URL.createObjectURL(fileObj);
+      } else {
+        const buffer = await getPlatform().readFileBinary(filePath);
+        const ext = filePath.split(".").pop().toLowerCase();
+        const mimeMap = {
+          mp4: "video/mp4", webm: "video/webm", avi: "video/x-msvideo",
+          mkv: "video/x-matroska", mov: "video/quicktime", m4v: "video/mp4",
+          ts: "video/mp2t", flv: "video/x-flv", wmv: "video/x-ms-wmv",
+        };
+        const blob = new Blob([buffer], { type: mimeMap[ext] || "video/mp4" });
+        blobUrl = URL.createObjectURL(blob);
+      }
     } catch (e) {
       console.error("Failed to load video preview:", e);
       blobUrl = "";

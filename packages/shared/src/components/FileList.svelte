@@ -1,5 +1,5 @@
 <script>
-  import { open } from "@tauri-apps/plugin-dialog";
+  import { getPlatform } from "../platform.js";
 
   export let files = [];
   export let view = "ready"; // ready | converting | done
@@ -21,20 +21,16 @@
   }
 
   async function handleAddMore() {
-    const selected = await open({
+    const entries = await getPlatform().pickFiles({
       multiple: true,
-      filters: [{
-        name: "All Supported",
-        extensions: [
-          "png","jpg","jpeg","gif","bmp","tiff","tif","ico","webp",
-          "mp4","mkv","avi","webm","mov","flv","wmv","ts","m4v",
-          "mp3","wav","flac","ogg","aac","wma","m4a","opus",
-        ],
-      }],
+      extensions: [
+        "png","jpg","jpeg","gif","bmp","tiff","tif","ico","webp",
+        "mp4","mkv","avi","webm","mov","flv","wmv","ts","m4v",
+        "mp3","wav","flac","ogg","aac","wma","m4a","opus",
+      ],
+      filterName: "All Supported",
     });
-    if (selected && selected.length > 0) {
-      onAddFiles(Array.isArray(selected) ? selected : [selected]);
-    }
+    if (entries.length > 0) onAddFiles(entries);
   }
 </script>
 

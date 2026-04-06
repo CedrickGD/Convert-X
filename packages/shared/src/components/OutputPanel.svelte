@@ -1,5 +1,5 @@
 <script>
-  import { invoke } from "@tauri-apps/api/core";
+  import { getPlatform } from "../platform.js";
 
   export let files = [];
   export let onStartOver;
@@ -8,6 +8,7 @@
   $: doneFiles = files.filter((f) => f.status === "done");
   $: errorFiles = files.filter((f) => f.status === "error");
   $: totalSize = doneFiles.reduce((sum, f) => sum + (f.outputSize || 0), 0);
+  $: isWeb = getPlatform().platformType === "web";
 
   function fmtSize(bytes) {
     if (!bytes) return "0 B";
@@ -22,11 +23,15 @@
   }
 
   async function openFile(path) {
-    try { await invoke("open_file", { path }); } catch (_) {}
+    try { await getPlatform().openFile(path); } catch (_) {}
   }
 
   async function openFolder(path) {
-    try { await invoke("open_in_folder", { path }); } catch (_) {}
+    try { await getPlatform().openInFolder(path); } catch (_) {}
+  }
+
+  async function downloadFile(file) {
+    try { await getPlatform().saveFile(file.outputBlob, fileName(file.outputPath)); } catch (_) {}
   }
 </script>
 
@@ -54,12 +59,18 @@
       <div class="result-row">
         <span class="result-name">{fileName(file.outputPath)}</span>
         <span class="result-size">{fmtSize(file.outputSize)}</span>
-        <button class="icon-btn" on:click={() => openFile(file.outputPath)} title="Open file">
-          <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M18 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h6"/><polyline points="15 3 21 3 21 9"/><line x1="10" y1="14" x2="21" y2="3"/></svg>
-        </button>
-        <button class="icon-btn" on:click={() => openFolder(file.outputPath)} title="Show in folder">
-          <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z"/></svg>
-        </button>
+        {#if isWeb}
+          <button class="icon-btn" on:click={() => downloadFile(file)} title="Download">
+            <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>
+          </button>
+        {:else}
+          <button class="icon-btn" on:click={() => openFile(file.outputPath)} title="Open file">
+            <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M18 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h6"/><polyline points="15 3 21 3 21 9"/><line x1="10" y1="14" x2="21" y2="3"/></svg>
+          </button>
+          <button class="icon-btn" on:click={() => openFolder(file.outputPath)} title="Show in folder">
+            <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z"/></svg>
+          </button>
+        {/if}
       </div>
     {/each}
   </div>

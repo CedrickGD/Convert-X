@@ -5,12 +5,15 @@ node_modules/
 dist/
 release/
 src-tauri/target/
+packages/desktop/src-tauri/target/
 
 # Bundled binaries (too large for git)
 src-tauri/bin/*.exe
+packages/desktop/src-tauri/bin/*.exe
 
 # Generated schemas
 src-tauri/gen/
+packages/desktop/src-tauri/gen/
 
 # IDE
 .vscode/
