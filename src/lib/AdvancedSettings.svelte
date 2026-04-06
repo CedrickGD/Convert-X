@@ -10,7 +10,7 @@
 
   $: showResolution = hasVideo || selectedFormat === "gif";
   $: showFps = hasVideo || selectedFormat === "gif";
-  $: showTrim = hasDuration;
+  $: showTrim = false;
   $: showBitrate = hasVideo || fileTypes.has("audio");
   $: showPreset = ["mp4", "mkv", "mov", "m4v", "ts"].includes(selectedFormat);
   $: hasAnyOption = showResolution || showFps || showTrim || showBitrate || showPreset;

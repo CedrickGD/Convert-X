@@ -30,6 +30,7 @@ export const settingsStore = writable({
   fps: null,
   trimStart: null,
   trimEnd: null,
+  stripAudio: false,
   bitrate: null,
   preset: "medium",
   // Resize options
@@ -76,6 +77,7 @@ export function resetAll() {
     fps: null,
     trimStart: null,
     trimEnd: null,
+    stripAudio: false,
     bitrate: null,
     preset: "medium",
     resizeMode: "percentage",

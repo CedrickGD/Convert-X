@@ -19,6 +19,7 @@ pub struct FfmpegOptions {
     pub fps: Option<u32>,
     pub trim_start: Option<f64>,
     pub trim_end: Option<f64>,
+    pub strip_audio: bool,
     pub bitrate: Option<String>,
     pub preset: Option<String>,
 }
@@ -31,6 +32,7 @@ impl Default for FfmpegOptions {
             fps: None,
             trim_start: None,
             trim_end: None,
+            strip_audio: false,
             bitrate: None,
             preset: None,
         }
@@ -135,6 +137,10 @@ fn build_gif_args(args: &mut Vec<String>, opts: &FfmpegOptions) {
 }
 
 fn build_video_args(args: &mut Vec<String>, format: &str, opts: &FfmpegOptions) {
+    if opts.strip_audio {
+        args.push("-an".to_string());
+    }
+
     let mut filters = Vec::new();
 
     if let Some(ref res) = opts.resolution {

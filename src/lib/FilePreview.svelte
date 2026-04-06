@@ -1,6 +1,50 @@
 <script>
+  import { invoke } from "@tauri-apps/api/core";
+  import { onDestroy } from "svelte";
+
   export let metadata;
+  export let filePath = "";
   export let compact = false;
+
+  let previewUrl = "";
+  let loadedPath = "";
+
+  $: kind = metadata?.mimeType?.startsWith("video") ? "video"
+    : metadata?.mimeType?.startsWith("audio") ? "audio" : "image";
+
+  $: if (filePath && filePath !== loadedPath && (kind === "image" || kind === "video")) {
+    loadPreview(filePath, kind);
+  }
+
+  async function loadPreview(path, fileKind) {
+    loadedPath = path;
+    cleanupUrl();
+    try {
+      const buffer = await invoke("read_file_binary", { path });
+      const ext = path.split(".").pop().toLowerCase();
+      let mime;
+      if (fileKind === "image") {
+        const map = { jpg: "image/jpeg", jpeg: "image/jpeg", png: "image/png", gif: "image/gif", webp: "image/webp", bmp: "image/bmp", svg: "image/svg+xml", tiff: "image/tiff", tif: "image/tiff", ico: "image/x-icon", avif: "image/avif" };
+        mime = map[ext] || "image/png";
+      } else {
+        const map = { mp4: "video/mp4", webm: "video/webm", avi: "video/x-msvideo", mkv: "video/x-matroska", mov: "video/quicktime", m4v: "video/mp4" };
+        mime = map[ext] || "video/mp4";
+      }
+      const blob = new Blob([buffer], { type: mime });
+      previewUrl = URL.createObjectURL(blob);
+    } catch (e) {
+      previewUrl = "";
+    }
+  }
+
+  function cleanupUrl() {
+    if (previewUrl) {
+      URL.revokeObjectURL(previewUrl);
+      previewUrl = "";
+    }
+  }
+
+  onDestroy(cleanupUrl);
 
   function fmtSize(bytes) {
     if (!bytes) return "0 B";
@@ -19,48 +63,78 @@
       ? `${h}:${String(m).padStart(2,"0")}:${String(s).padStart(2,"0")}`
       : `${m}:${String(s).padStart(2,"0")}`;
   }
-
-  $: kind = metadata?.mimeType?.startsWith("video") ? "video"
-    : metadata?.mimeType?.startsWith("audio") ? "audio" : "image";
 </script>
 
 <div class="preview" class:compact>
-  <div class="badge {kind}">
-    {#if kind === "video"}
-      <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polygon points="5 3 19 12 5 21 5 3"/></svg>
-    {:else if kind === "audio"}
-      <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M9 18V5l12-2v13"/><circle cx="6" cy="18" r="3"/><circle cx="18" cy="16" r="3"/></svg>
-    {:else}
-      <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="3" width="18" height="18" rx="2"/><circle cx="8.5" cy="8.5" r="1.5"/><polyline points="21 15 16 10 5 21"/></svg>
-    {/if}
-  </div>
+  {#if previewUrl && kind === "image"}
+    <div class="media-preview">
+      <img src={previewUrl} alt="Preview" class="media-img" />
+    </div>
+  {/if}
 
-  <div class="info">
-    <p class="name">{metadata?.fileName || "Unknown"}</p>
-    <div class="tags">
-      {#if metadata?.codec}<span class="tag">{metadata.codec}</span>{/if}
-      {#if metadata?.resolution}<span class="tag">{metadata.resolution}</span>{/if}
-      {#if metadata?.duration}<span class="tag">{fmtDuration(metadata.duration)}</span>{/if}
-      {#if metadata?.bitrate}<span class="tag">{metadata.bitrate}</span>{/if}
-      {#if metadata?.frameRate}<span class="tag">{metadata.frameRate} fps</span>{/if}
-      <span class="tag">{fmtSize(metadata?.size)}</span>
+  <div class="meta-row">
+    <div class="badge {kind}">
+      {#if kind === "video"}
+        <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polygon points="5 3 19 12 5 21 5 3"/></svg>
+      {:else if kind === "audio"}
+        <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M9 18V5l12-2v13"/><circle cx="6" cy="18" r="3"/><circle cx="18" cy="16" r="3"/></svg>
+      {:else}
+        <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="3" width="18" height="18" rx="2"/><circle cx="8.5" cy="8.5" r="1.5"/><polyline points="21 15 16 10 5 21"/></svg>
+      {/if}
+    </div>
+
+    <div class="info">
+      <p class="name">{metadata?.fileName || "Unknown"}</p>
+      <div class="tags">
+        {#if metadata?.codec}<span class="tag">{metadata.codec}</span>{/if}
+        {#if metadata?.resolution}<span class="tag">{metadata.resolution}</span>{/if}
+        {#if metadata?.duration}<span class="tag">{fmtDuration(metadata.duration)}</span>{/if}
+        {#if metadata?.bitrate}<span class="tag">{metadata.bitrate}</span>{/if}
+        {#if metadata?.frameRate}<span class="tag">{metadata.frameRate} fps</span>{/if}
+        <span class="tag">{fmtSize(metadata?.size)}</span>
+      </div>
     </div>
   </div>
 </div>
 
 <style>
   .preview {
-    display: flex;
-    gap: 12px;
     background: var(--bg-card);
     border: 1px solid var(--border);
     border-radius: var(--radius-sm);
-    padding: 14px;
-    align-items: center;
+    overflow: hidden;
     animation: fadeUp 0.3s ease-out;
   }
 
   .preview.compact {
+    padding: 0;
+  }
+
+  .media-preview {
+    width: 100%;
+    aspect-ratio: 16 / 9;
+    background: #000;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    overflow: hidden;
+  }
+
+  .media-img {
+    max-width: 100%;
+    max-height: 100%;
+    object-fit: contain;
+    display: block;
+  }
+
+  .meta-row {
+    display: flex;
+    gap: 12px;
+    padding: 14px;
+    align-items: center;
+  }
+
+  .preview.compact .meta-row {
     padding: 10px 14px;
   }
 

@@ -6,6 +6,12 @@ use convert::AppState;
 use std::sync::{Arc, Mutex};
 
 #[tauri::command]
+fn read_file_binary(path: String) -> Result<tauri::ipc::Response, String> {
+    let data = std::fs::read(&path).map_err(|e| format!("Failed to read file: {}", e))?;
+    Ok(tauri::ipc::Response::new(data))
+}
+
+#[tauri::command]
 fn open_file(path: String) -> Result<(), String> {
     std::process::Command::new("cmd")
         .args(["/C", "start", "", &path])
@@ -36,6 +42,7 @@ pub fn run() {
             convert::convert_file,
             convert::cancel_conversion,
             convert::resize_image,
+            read_file_binary,
             open_file,
             open_in_folder,
         ])

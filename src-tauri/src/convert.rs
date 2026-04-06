@@ -110,6 +110,7 @@ pub async fn convert_file(
     fps: Option<u32>,
     trim_start: Option<f64>,
     trim_end: Option<f64>,
+    strip_audio: Option<bool>,
     bitrate: Option<String>,
     preset: Option<String>,
 ) -> Result<ConversionResult, String> {
@@ -132,6 +133,7 @@ pub async fn convert_file(
         fps,
         trim_start,
         trim_end,
+        strip_audio: strip_audio.unwrap_or(false),
         bitrate,
         preset,
     };

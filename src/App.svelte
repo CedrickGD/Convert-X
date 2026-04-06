@@ -166,6 +166,7 @@
           fps: settings.fps || null,
           trimStart: settings.trimStart || null,
           trimEnd: settings.trimEnd || null,
+          stripAudio: fmt === "gif" ? true : (settings.stripAudio || false),
           bitrate: settings.bitrate || null,
           preset: settings.preset || null,
         });
@@ -289,11 +290,9 @@
 
   $: hasVideo = types.has("video");
   $: hasDuration = files.some((f) => f.metadata?.duration > 0);
-  $: showGifEditor = settings.selectedFormat === "gif" && hasDuration;
-  $: gifMaxDuration = (() => {
-    const vf = files.find((f) => f.metadata?.duration > 0);
-    return vf?.metadata?.duration || 0;
-  })();
+  $: showClipEditor = hasDuration && settings.selectedFormat;
+  $: clipVideoFile = files.find((f) => f.metadata?.duration > 0) || null;
+  $: clipMaxDuration = clipVideoFile?.metadata?.duration || 0;
 
   $: overallProgress = (() => {
     const convertable = files.filter((f) => f.status !== "skipped" && f.status !== "error");
@@ -332,7 +331,7 @@
             onAddFiles={addMoreFiles}
           />
         {:else if singleFile}
-          <FilePreview metadata={singleFile.metadata} />
+          <FilePreview metadata={singleFile.metadata} filePath={singleFile.filePath} />
         {/if}
 
         {#if mode === "convert"}
@@ -340,28 +339,31 @@
           <FormatPicker
             fileTypes={types}
             selectedFormat={settings.selectedFormat}
-            onFormatSelect={(fmt) => settingsStore.update((s) => {
-              const updated = { ...s, selectedFormat: fmt };
-              if (fmt === "gif") {
-                // Reset trim for GIF editor: clear so it defaults to full duration
-                updated.trimStart = null;
-                updated.trimEnd = null;
-              }
-              return updated;
-            })}
+            onFormatSelect={(fmt) => settingsStore.update((s) => ({
+              ...s,
+              selectedFormat: fmt,
+              trimStart: null,
+              trimEnd: null,
+            }))}
           />
 
-          {#if showGifEditor}
+          {#if showClipEditor}
             <GifEditor
-              duration={gifMaxDuration}
+              duration={clipMaxDuration}
               trimStart={settings.trimStart || 0}
-              trimEnd={settings.trimEnd || gifMaxDuration}
+              trimEnd={settings.trimEnd || clipMaxDuration}
+              filePath={clipVideoFile?.filePath || ""}
+              outputFormat={settings.selectedFormat}
+              stripAudio={settings.stripAudio || false}
               onUpdate={(start, end) => {
                 settingsStore.update((s) => ({
                   ...s,
                   trimStart: start > 0 ? start : null,
-                  trimEnd: end < gifMaxDuration ? end : null,
+                  trimEnd: end < clipMaxDuration ? end : null,
                 }));
+              }}
+              onStripAudioChange={(val) => {
+                settingsStore.update((s) => ({ ...s, stripAudio: val }));
               }}
             />
           {/if}
