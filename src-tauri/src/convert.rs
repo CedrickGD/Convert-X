@@ -113,6 +113,10 @@ pub async fn convert_file(
     strip_audio: Option<bool>,
     bitrate: Option<String>,
     preset: Option<String>,
+    gif_colors: Option<u32>,
+    gif_dither: Option<String>,
+    gif_width: Option<u32>,
+    gif_fps: Option<u32>,
 ) -> Result<ConversionResult, String> {
     let output_path = build_output_path(
         &file_path,
@@ -136,6 +140,10 @@ pub async fn convert_file(
         strip_audio: strip_audio.unwrap_or(false),
         bitrate,
         preset,
+        gif_colors,
+        gif_dither,
+        gif_width,
+        gif_fps,
     };
 
     // Calculate effective duration for progress tracking

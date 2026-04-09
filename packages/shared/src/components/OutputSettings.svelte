@@ -57,7 +57,8 @@
   </div>
   {/if}
 
-  <!-- Quality -->
+  <!-- Quality (hidden for GIF — handled by GifSettings) -->
+  {#if selectedFormat !== "gif"}
   <div class="field">
     <div class="quality-head">
       <span class="label">Quality</span>
@@ -79,6 +80,7 @@
       </div>
     </div>
   </div>
+  {/if}
 </div>
 
 <style>

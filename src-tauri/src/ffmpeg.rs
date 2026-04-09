@@ -22,6 +22,10 @@ pub struct FfmpegOptions {
     pub strip_audio: bool,
     pub bitrate: Option<String>,
     pub preset: Option<String>,
+    pub gif_colors: Option<u32>,
+    pub gif_dither: Option<String>,
+    pub gif_width: Option<u32>,
+    pub gif_fps: Option<u32>,
 }
 
 impl Default for FfmpegOptions {
@@ -35,6 +39,10 @@ impl Default for FfmpegOptions {
             strip_audio: false,
             bitrate: None,
             preset: None,
+            gif_colors: None,
+            gif_dither: None,
+            gif_width: None,
+            gif_fps: None,
         }
     }
 }
@@ -118,21 +126,38 @@ fn build_gif_args(args: &mut Vec<String>, opts: &FfmpegOptions) {
 
     let mut filters = Vec::new();
 
-    if let Some(ref res) = opts.resolution {
+    // Scale: prefer gif_width, fall back to resolution
+    if let Some(width) = opts.gif_width {
+        filters.push(format!("scale={}:-1:flags=lanczos", width));
+    } else if let Some(ref res) = opts.resolution {
         filters.push(format!("scale={}:flags=lanczos", res.replace('x', ":")));
-    } else {
-        filters.push("scale=480:-1:flags=lanczos".to_string());
     }
 
-    if let Some(fps) = opts.fps {
+    // FPS: prefer gif_fps, fall back to fps
+    if let Some(fps) = opts.gif_fps {
         filters.push(format!("fps={}", fps));
-    } else {
-        filters.push("fps=15".to_string());
+    } else if let Some(fps) = opts.fps {
+        filters.push(format!("fps={}", fps));
     }
 
-    if !filters.is_empty() {
-        args.extend(["-vf".to_string(), filters.join(",")]);
-    }
+    // Palette generation with color count and dithering
+    let colors = opts.gif_colors.unwrap_or(256).max(2).min(256);
+    let dither = opts.gif_dither.as_deref().unwrap_or("sierra2_4a");
+
+    let prefix = if filters.is_empty() {
+        String::new()
+    } else {
+        format!("{},", filters.join(","))
+    };
+
+    args.extend([
+        "-vf".to_string(),
+        format!(
+            "{}split[s0][s1];[s0]palettegen=max_colors={}[p];[s1][p]paletteuse=dither={}",
+            prefix, colors, dither
+        ),
+    ]);
+
     args.extend(["-loop".to_string(), "0".to_string()]);
 }
 

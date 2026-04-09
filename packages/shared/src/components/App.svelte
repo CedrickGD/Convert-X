@@ -13,6 +13,7 @@
   import OutputSettings from "./OutputSettings.svelte";
   import AdvancedSettings from "./AdvancedSettings.svelte";
   import GifEditor from "./GifEditor.svelte";
+  import GifSettings from "./GifSettings.svelte";
   import ResizeSettings from "./ResizeSettings.svelte";
   import ProgressBar from "./ProgressBar.svelte";
   import OutputPanel from "./OutputPanel.svelte";
@@ -175,6 +176,10 @@
           stripAudio: fmt === "gif" ? true : (settings.stripAudio || false),
           bitrate: settings.bitrate || null,
           preset: settings.preset || null,
+          gifColors: settings.gifColors || null,
+          gifDither: settings.gifDither || null,
+          gifWidth: settings.gifWidth != null ? settings.gifWidth : null,
+          gifFps: settings.gifFps != null ? settings.gifFps : null,
         });
 
         filesStore.update((all) =>
@@ -307,6 +312,7 @@
       : ((settings.resizeWidth || 0) > 0 || (settings.resizeHeight || 0) > 0)
   );
 
+  $: isGif = settings.selectedFormat === "gif";
   $: hasVideo = types.has("video");
   $: hasDuration = files.some((f) => f.metadata?.duration > 0);
   $: showClipEditor = hasDuration && settings.selectedFormat;
@@ -388,6 +394,14 @@
             />
           {/if}
 
+          {#if isGif}
+            <GifSettings
+              {settings}
+              {hasDuration}
+              onUpdate={(s) => settingsStore.set(s)}
+            />
+          {/if}
+
           <OutputSettings
             outputDir={settings.outputDir}
             quality={settings.quality}
@@ -403,14 +417,16 @@
             onQualityChange={(q) => settingsStore.update((s) => ({ ...s, quality: q }))}
           />
 
-          <AdvancedSettings
-            fileTypes={types}
-            selectedFormat={settings.selectedFormat}
-            settings={settings}
-            {hasVideo}
-            {hasDuration}
-            onUpdate={(s) => settingsStore.set(s)}
-          />
+          {#if !isGif}
+            <AdvancedSettings
+              fileTypes={types}
+              selectedFormat={settings.selectedFormat}
+              settings={settings}
+              {hasVideo}
+              {hasDuration}
+              onUpdate={(s) => settingsStore.set(s)}
+            />
+          {/if}
 
           <div class="actions">
             <button class="btn ghost" on:click={resetAll}>

@@ -43,6 +43,11 @@ export const settingsStore = writable({
   stripAudio: false,
   bitrate: null,
   preset: "medium",
+  // GIF options
+  gifColors: 256,
+  gifDither: "sierra2_4a",
+  gifWidth: 480,
+  gifFps: 15,
   // Resize options
   resizeMode: "percentage",
   resizeWidth: null,
@@ -93,6 +98,10 @@ export function resetAll() {
     stripAudio: false,
     bitrate: null,
     preset: "medium",
+    gifColors: 256,
+    gifDither: "sierra2_4a",
+    gifWidth: 480,
+    gifFps: 15,
     resizeMode: "percentage",
     resizeWidth: null,
     resizeHeight: null,

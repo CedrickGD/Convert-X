@@ -151,34 +151,57 @@ function getExt(name) {
 
 function buildFFmpegArgs(inputName, outputName, params) {
   const args = ["-i", inputName];
+  const isGif = params.outputFormat === "gif";
 
   if (params.trimStart) args.push("-ss", String(params.trimStart));
   if (params.trimEnd) args.push("-to", String(params.trimEnd));
-  if (params.resolution) {
-    const [w, h] = params.resolution.split("x");
-    args.push("-vf", `scale=${w}:${h}`);
-  }
-  if (params.fps) args.push("-r", String(params.fps));
-  if (params.stripAudio) args.push("-an");
-  if (params.bitrate) args.push("-b:v", params.bitrate);
-  if (params.preset) args.push("-preset", params.preset);
 
-  // Quality mapping
-  if (params.outputFormat === "gif") {
-    const scale = params.resolution ? "" : "scale=480:-1:flags=lanczos,";
-    args.push("-vf", `${scale}split[s0][s1];[s0]palettegen[p];[s1][p]paletteuse`);
-    args.push("-loop", "0");
-  } else if (["jpg", "jpeg", "png", "webp", "bmp", "tiff"].includes(params.outputFormat)) {
-    if (params.outputFormat === "jpg" || params.outputFormat === "jpeg") {
-      args.push("-q:v", String(Math.max(1, Math.round(31 - (params.quality / 100) * 30))));
-    } else if (params.outputFormat === "webp") {
-      args.push("-quality", String(params.quality));
+  if (isGif) {
+    // GIF: build complete filter chain (scale + fps + palette in one -vf)
+    const filters = [];
+
+    if (params.gifWidth) {
+      filters.push(`scale=${params.gifWidth}:-1:flags=lanczos`);
+    } else if (params.resolution) {
+      const [w, h] = params.resolution.split("x");
+      filters.push(`scale=${w}:${h}:flags=lanczos`);
     }
+
+    if (params.gifFps) {
+      filters.push(`fps=${params.gifFps}`);
+    } else if (params.fps) {
+      filters.push(`fps=${params.fps}`);
+    }
+
+    const colors = params.gifColors || 256;
+    const dither = params.gifDither || "sierra2_4a";
+    const prefix = filters.length ? filters.join(",") + "," : "";
+
+    args.push("-vf", `${prefix}split[s0][s1];[s0]palettegen=max_colors=${colors}[p];[s1][p]paletteuse=dither=${dither}`);
+    args.push("-an");
+    args.push("-loop", "0");
   } else {
-    // Video/audio quality via CRF
-    const crf = Math.round(51 - (params.quality / 100) * 51);
-    if (["mp4", "mkv", "webm", "avi", "mov"].includes(params.outputFormat)) {
-      args.push("-crf", String(crf));
+    // Non-GIF formats
+    if (params.resolution) {
+      const [w, h] = params.resolution.split("x");
+      args.push("-vf", `scale=${w}:${h}`);
+    }
+    if (params.fps) args.push("-r", String(params.fps));
+    if (params.stripAudio) args.push("-an");
+    if (params.bitrate) args.push("-b:v", params.bitrate);
+    if (params.preset) args.push("-preset", params.preset);
+
+    if (["jpg", "jpeg", "png", "webp", "bmp", "tiff"].includes(params.outputFormat)) {
+      if (params.outputFormat === "jpg" || params.outputFormat === "jpeg") {
+        args.push("-q:v", String(Math.max(1, Math.round(31 - (params.quality / 100) * 30))));
+      } else if (params.outputFormat === "webp") {
+        args.push("-quality", String(params.quality));
+      }
+    } else {
+      const crf = Math.round(51 - (params.quality / 100) * 51);
+      if (["mp4", "mkv", "webm", "avi", "mov"].includes(params.outputFormat)) {
+        args.push("-crf", String(crf));
+      }
     }
   }
 

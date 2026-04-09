@@ -50,6 +50,10 @@ export function createDesktopAdapter() {
         stripAudio: params.stripAudio,
         bitrate: params.bitrate,
         preset: params.preset,
+        gifColors: params.gifColors,
+        gifDither: params.gifDither,
+        gifWidth: params.gifWidth,
+        gifFps: params.gifFps,
       });
     },
 
