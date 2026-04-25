@@ -1,4 +1,5 @@
 <script>
+  import { convertBusy, resizeBusy } from "../stores/fileStore.js";
   export let activeMode;
   export let onModeChange;
 </script>
@@ -10,6 +11,7 @@
     on:click={() => onModeChange("convert")}
   >
     Convert
+    {#if $convertBusy}<span class="busy-dot" aria-label="conversion in progress"></span>{/if}
   </button>
   <button
     class="tab"
@@ -17,6 +19,14 @@
     on:click={() => onModeChange("resize")}
   >
     Resize
+    {#if $resizeBusy}<span class="busy-dot" aria-label="resize in progress"></span>{/if}
+  </button>
+  <button
+    class="tab"
+    class:active={activeMode === "credits"}
+    on:click={() => onModeChange("credits")}
+  >
+    Credits
   </button>
 </nav>
 
@@ -57,4 +67,18 @@
     box-shadow: 0 1px 4px rgba(0, 0, 0, 0.12);
   }
 
+  .busy-dot {
+    display: inline-block;
+    width: 6px;
+    height: 6px;
+    border-radius: 50%;
+    background: var(--accent);
+    box-shadow: 0 0 6px var(--accent-glow, var(--accent));
+    animation: busyPulse 1.4s ease-in-out infinite;
+  }
+
+  @keyframes busyPulse {
+    0%, 100% { opacity: 0.6; transform: scale(0.9); }
+    50% { opacity: 1; transform: scale(1.1); }
+  }
 </style>

@@ -48,6 +48,7 @@ export const settingsStore = writable({
   gifDither: "sierra2_4a",
   gifWidth: 480,
   gifFps: 15,
+  gifTargetSizeMb: null,
   // Resize options
   resizeMode: "percentage",
   resizeWidth: null,
@@ -60,11 +61,36 @@ export const settingsStore = writable({
 // Save outputDir to localStorage whenever it changes
 settingsStore.subscribe((s) => saveOutputDir(s.outputDir));
 
-// Overall app view state
-export const appView = writable("idle"); // idle | ready | converting | done
-
 // App mode: convert or resize
 export const appMode = writable("convert"); // convert | resize
+
+// Per-mode operation state. "idle" means no run/done in that mode.
+// idle | converting | done
+export const convertOp = writable("idle");
+export const resizeOp = writable("idle");
+
+// Per-mode cancel signal. Each conversion loop reads its own flag via `get()`.
+export const convertCancelled = writable(false);
+export const resizeCancelled = writable(false);
+
+// Derived overall view, scoped to the active mode.
+// - if active op is converting/done, that wins
+// - else if any files are loaded, we're "ready"
+// - else "idle"
+export const appView = derived(
+  [filesStore, appMode, convertOp, resizeOp],
+  ([$files, $mode, $cOp, $rOp]) => {
+    const op = $mode === "convert" ? $cOp : $mode === "resize" ? $rOp : "idle";
+    if (op === "converting") return "converting";
+    if (op === "done") return "done";
+    if ($files.length > 0) return "ready";
+    return "idle";
+  }
+);
+
+// Per-mode busy flags for the navbar dot
+export const convertBusy = derived(convertOp, ($op) => $op === "converting");
+export const resizeBusy = derived(resizeOp, ($op) => $op === "converting");
 
 // Derived: detected file types present
 export const fileTypes = derived(filesStore, ($files) => {
@@ -102,6 +128,7 @@ export function resetAll() {
     gifDither: "sierra2_4a",
     gifWidth: 480,
     gifFps: 15,
+    gifTargetSizeMb: null,
     resizeMode: "percentage",
     resizeWidth: null,
     resizeHeight: null,
@@ -109,7 +136,10 @@ export function resetAll() {
     keepAspect: true,
     resizeFormat: null,
   }));
-  appView.set("idle");
+  convertOp.set("idle");
+  resizeOp.set("idle");
+  convertCancelled.set(false);
+  resizeCancelled.set(false);
 }
 
 // Format compatibility

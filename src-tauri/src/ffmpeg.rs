@@ -26,6 +26,7 @@ pub struct FfmpegOptions {
     pub gif_dither: Option<String>,
     pub gif_width: Option<u32>,
     pub gif_fps: Option<u32>,
+    pub gif_target_size_mb: Option<u32>,
 }
 
 impl Default for FfmpegOptions {
@@ -43,6 +44,7 @@ impl Default for FfmpegOptions {
             gif_dither: None,
             gif_width: None,
             gif_fps: None,
+            gif_target_size_mb: None,
         }
     }
 }
@@ -110,7 +112,10 @@ pub fn build_ffmpeg_args(
         "image" => {
             // Image-to-image via FFmpeg (webp, etc)
             if let Some(ref res) = opts.resolution {
-                args.extend(["-vf".to_string(), format!("scale={}", res.replace('x', ":"))]);
+                args.extend([
+                    "-vf".to_string(),
+                    format!("scale={}", res.replace('x', ":")),
+                ]);
             }
         }
         _ => {}
@@ -118,6 +123,26 @@ pub fn build_ffmpeg_args(
 
     args.push(output_path.to_string());
     args
+}
+
+fn clamp_quality(quality: u32) -> u32 {
+    quality.clamp(1, 100)
+}
+
+fn gif_color_cap(quality: u32) -> u32 {
+    let q = clamp_quality(quality);
+    32 + ((q - 1) * 224 / 99)
+}
+
+fn gif_palette_strategy(quality: u32) -> (&'static str, bool) {
+    let q = clamp_quality(quality);
+    if q >= 90 {
+        ("single", true)
+    } else if q >= 60 {
+        ("full", false)
+    } else {
+        ("diff", false)
+    }
 }
 
 fn build_gif_args(args: &mut Vec<String>, opts: &FfmpegOptions) {
@@ -140,9 +165,11 @@ fn build_gif_args(args: &mut Vec<String>, opts: &FfmpegOptions) {
         filters.push(format!("fps={}", fps));
     }
 
-    // Palette generation with color count and dithering
-    let colors = opts.gif_colors.unwrap_or(256).max(2).min(256);
+    // Let the generic quality slider affect GIF fidelity instead of being ignored.
+    let requested_colors = opts.gif_colors.unwrap_or(256).clamp(2, 256);
+    let colors = requested_colors.min(gif_color_cap(opts.quality)).max(2);
     let dither = opts.gif_dither.as_deref().unwrap_or("sierra2_4a");
+    let (stats_mode, use_per_frame_palette) = gif_palette_strategy(opts.quality);
 
     let prefix = if filters.is_empty() {
         String::new()
@@ -150,11 +177,16 @@ fn build_gif_args(args: &mut Vec<String>, opts: &FfmpegOptions) {
         format!("{},", filters.join(","))
     };
 
+    let mut paletteuse = format!("paletteuse=dither={}", dither);
+    if use_per_frame_palette {
+        paletteuse.push_str(":new=1");
+    }
+
     args.extend([
         "-vf".to_string(),
         format!(
-            "{}split[s0][s1];[s0]palettegen=max_colors={}[p];[s1][p]paletteuse=dither={}",
-            prefix, colors, dither
+            "{}split[s0][s1];[s0]palettegen=max_colors={}:stats_mode={}[p];[s1][p]{}",
+            prefix, colors, stats_mode, paletteuse
         ),
     ]);
 
@@ -181,80 +213,114 @@ fn build_video_args(args: &mut Vec<String>, format: &str, opts: &FfmpegOptions) 
         "mp4" | "m4v" => {
             if let Some(ref br) = opts.bitrate {
                 args.extend([
-                    "-c:v".to_string(), "libx264".to_string(),
-                    "-b:v".to_string(), br.clone(),
-                    "-preset".to_string(), preset.to_string(),
-                    "-c:a".to_string(), "aac".to_string(),
+                    "-c:v".to_string(),
+                    "libx264".to_string(),
+                    "-b:v".to_string(),
+                    br.clone(),
+                    "-preset".to_string(),
+                    preset.to_string(),
+                    "-c:a".to_string(),
+                    "aac".to_string(),
                 ]);
             } else {
                 let crf = ((100 - opts.quality) as f64 * 51.0 / 100.0) as u32;
                 args.extend([
-                    "-c:v".to_string(), "libx264".to_string(),
-                    "-crf".to_string(), crf.to_string(),
-                    "-preset".to_string(), preset.to_string(),
-                    "-c:a".to_string(), "aac".to_string(),
+                    "-c:v".to_string(),
+                    "libx264".to_string(),
+                    "-crf".to_string(),
+                    crf.to_string(),
+                    "-preset".to_string(),
+                    preset.to_string(),
+                    "-c:a".to_string(),
+                    "aac".to_string(),
                 ]);
             }
         }
         "mkv" => {
             let crf = ((100 - opts.quality) as f64 * 51.0 / 100.0) as u32;
             args.extend([
-                "-c:v".to_string(), "libx264".to_string(),
-                "-crf".to_string(), crf.to_string(),
-                "-preset".to_string(), preset.to_string(),
-                "-c:a".to_string(), "copy".to_string(),
+                "-c:v".to_string(),
+                "libx264".to_string(),
+                "-crf".to_string(),
+                crf.to_string(),
+                "-preset".to_string(),
+                preset.to_string(),
+                "-c:a".to_string(),
+                "copy".to_string(),
             ]);
         }
         "avi" => {
             let q = ((100 - opts.quality) as f64 * 31.0 / 100.0) as u32 + 1;
             args.extend([
-                "-c:v".to_string(), "mpeg4".to_string(),
-                "-q:v".to_string(), q.to_string(),
-                "-c:a".to_string(), "mp3".to_string(),
+                "-c:v".to_string(),
+                "mpeg4".to_string(),
+                "-q:v".to_string(),
+                q.to_string(),
+                "-c:a".to_string(),
+                "mp3".to_string(),
             ]);
         }
         "webm" => {
             let crf = ((100 - opts.quality) as f64 * 63.0 / 100.0) as u32;
             args.extend([
-                "-c:v".to_string(), "libvpx-vp9".to_string(),
-                "-crf".to_string(), crf.to_string(),
-                "-b:v".to_string(), "0".to_string(),
-                "-c:a".to_string(), "libopus".to_string(),
+                "-c:v".to_string(),
+                "libvpx-vp9".to_string(),
+                "-crf".to_string(),
+                crf.to_string(),
+                "-b:v".to_string(),
+                "0".to_string(),
+                "-c:a".to_string(),
+                "libopus".to_string(),
             ]);
         }
         "mov" => {
             let crf = ((100 - opts.quality) as f64 * 51.0 / 100.0) as u32;
             args.extend([
-                "-c:v".to_string(), "libx264".to_string(),
-                "-crf".to_string(), crf.to_string(),
-                "-preset".to_string(), preset.to_string(),
-                "-c:a".to_string(), "aac".to_string(),
+                "-c:v".to_string(),
+                "libx264".to_string(),
+                "-crf".to_string(),
+                crf.to_string(),
+                "-preset".to_string(),
+                preset.to_string(),
+                "-c:a".to_string(),
+                "aac".to_string(),
             ]);
         }
         "flv" => {
             let crf = ((100 - opts.quality) as f64 * 51.0 / 100.0) as u32;
             args.extend([
-                "-c:v".to_string(), "libx264".to_string(),
-                "-crf".to_string(), crf.to_string(),
-                "-c:a".to_string(), "aac".to_string(),
-                "-f".to_string(), "flv".to_string(),
+                "-c:v".to_string(),
+                "libx264".to_string(),
+                "-crf".to_string(),
+                crf.to_string(),
+                "-c:a".to_string(),
+                "aac".to_string(),
+                "-f".to_string(),
+                "flv".to_string(),
             ]);
         }
         "wmv" => {
             let q = ((100 - opts.quality) as f64 * 31.0 / 100.0) as u32 + 1;
             args.extend([
-                "-c:v".to_string(), "wmv2".to_string(),
-                "-q:v".to_string(), q.to_string(),
-                "-c:a".to_string(), "wmav2".to_string(),
+                "-c:v".to_string(),
+                "wmv2".to_string(),
+                "-q:v".to_string(),
+                q.to_string(),
+                "-c:a".to_string(),
+                "wmav2".to_string(),
             ]);
         }
         "ts" => {
             let crf = ((100 - opts.quality) as f64 * 51.0 / 100.0) as u32;
             args.extend([
-                "-c:v".to_string(), "libx264".to_string(),
-                "-crf".to_string(), crf.to_string(),
-                "-c:a".to_string(), "aac".to_string(),
-                "-f".to_string(), "mpegts".to_string(),
+                "-c:v".to_string(),
+                "libx264".to_string(),
+                "-crf".to_string(),
+                crf.to_string(),
+                "-c:a".to_string(),
+                "aac".to_string(),
+                "-f".to_string(),
+                "mpegts".to_string(),
             ]);
         }
         _ => {}
@@ -291,8 +357,10 @@ fn build_audio_args(args: &mut Vec<String>, format: &str, opts: &FfmpegOptions) 
     match format {
         "mp3" => {
             args.extend([
-                "-c:a".to_string(), "libmp3lame".to_string(),
-                "-b:a".to_string(), br.to_string(),
+                "-c:a".to_string(),
+                "libmp3lame".to_string(),
+                "-b:a".to_string(),
+                br.to_string(),
             ]);
         }
         "wav" => {
@@ -301,38 +369,50 @@ fn build_audio_args(args: &mut Vec<String>, format: &str, opts: &FfmpegOptions) 
         "flac" => {
             let compression = ((100 - opts.quality) as f64 * 12.0 / 100.0) as u32;
             args.extend([
-                "-c:a".to_string(), "flac".to_string(),
-                "-compression_level".to_string(), compression.to_string(),
+                "-c:a".to_string(),
+                "flac".to_string(),
+                "-compression_level".to_string(),
+                compression.to_string(),
             ]);
         }
         "ogg" => {
             args.extend([
-                "-c:a".to_string(), "libvorbis".to_string(),
-                "-b:a".to_string(), br.to_string(),
+                "-c:a".to_string(),
+                "libvorbis".to_string(),
+                "-b:a".to_string(),
+                br.to_string(),
             ]);
         }
         "aac" => {
             args.extend([
-                "-c:a".to_string(), "aac".to_string(),
-                "-b:a".to_string(), br.to_string(),
+                "-c:a".to_string(),
+                "aac".to_string(),
+                "-b:a".to_string(),
+                br.to_string(),
             ]);
         }
         "wma" => {
             args.extend([
-                "-c:a".to_string(), "wmav2".to_string(),
-                "-b:a".to_string(), br.to_string(),
+                "-c:a".to_string(),
+                "wmav2".to_string(),
+                "-b:a".to_string(),
+                br.to_string(),
             ]);
         }
         "m4a" => {
             args.extend([
-                "-c:a".to_string(), "aac".to_string(),
-                "-b:a".to_string(), br.to_string(),
+                "-c:a".to_string(),
+                "aac".to_string(),
+                "-b:a".to_string(),
+                br.to_string(),
             ]);
         }
         "opus" => {
             args.extend([
-                "-c:a".to_string(), "libopus".to_string(),
-                "-b:a".to_string(), br.to_string(),
+                "-c:a".to_string(),
+                "libopus".to_string(),
+                "-b:a".to_string(),
+                br.to_string(),
             ]);
         }
         _ => {}
@@ -390,7 +470,10 @@ pub async fn run_ffmpeg(
         *process_holder.lock().unwrap() = Some(id);
     }
 
-    let stderr = child.stderr.take().ok_or("Failed to capture FFmpeg output")?;
+    let stderr = child
+        .stderr
+        .take()
+        .ok_or("Failed to capture FFmpeg output")?;
     let reader = BufReader::new(stderr);
     let mut lines = reader.lines();
 
@@ -406,11 +489,14 @@ pub async fn run_ffmpeg(
                 elapsed.as_secs() % 60
             );
 
-            let _ = app.emit("conversion-progress", ProgressPayload {
-                file_id: file_id.clone(),
-                progress,
-                elapsed: elapsed_str,
-            });
+            let _ = app.emit(
+                "conversion-progress",
+                ProgressPayload {
+                    file_id: file_id.clone(),
+                    progress,
+                    elapsed: elapsed_str,
+                },
+            );
         }
         // Keep the last non-empty line for error reporting
         let trimmed = line.trim().to_string();
@@ -419,7 +505,10 @@ pub async fn run_ffmpeg(
         }
     }
 
-    let status = child.wait().await.map_err(|e| format!("FFmpeg process error: {}", e))?;
+    let status = child
+        .wait()
+        .await
+        .map_err(|e| format!("FFmpeg process error: {}", e))?;
 
     *process_holder.lock().unwrap() = None;
 
@@ -431,6 +520,10 @@ pub async fn run_ffmpeg(
         } else {
             format!(": {}", last_error_line)
         };
-        Err(format!("FFmpeg failed (code {}){}", status.code().unwrap_or(-1), detail))
+        Err(format!(
+            "FFmpeg failed (code {}){}",
+            status.code().unwrap_or(-1),
+            detail
+        ))
     }
 }

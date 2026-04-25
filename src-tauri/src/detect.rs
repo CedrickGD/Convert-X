@@ -87,8 +87,10 @@ fn detect_by_magic_bytes(data: &[u8]) -> Option<(&'static str, &'static str)> {
 fn run_ffprobe(file_path: &str, ffprobe_path: &Path) -> Option<serde_json::Value> {
     let output = Command::new(ffprobe_path)
         .args([
-            "-v", "quiet",
-            "-print_format", "json",
+            "-v",
+            "quiet",
+            "-print_format",
+            "json",
             "-show_format",
             "-show_streams",
             file_path,
@@ -103,7 +105,16 @@ fn run_ffprobe(file_path: &str, ffprobe_path: &Path) -> Option<serde_json::Value
     serde_json::from_slice(&output.stdout).ok()
 }
 
-fn parse_ffprobe_output(probe: &serde_json::Value, file_type: &str) -> (Option<String>, Option<String>, Option<f64>, Option<String>, Option<String>) {
+fn parse_ffprobe_output(
+    probe: &serde_json::Value,
+    file_type: &str,
+) -> (
+    Option<String>,
+    Option<String>,
+    Option<f64>,
+    Option<String>,
+    Option<String>,
+) {
     let streams = probe.get("streams").and_then(|s| s.as_array());
     let format = probe.get("format");
 
@@ -112,11 +123,21 @@ fn parse_ffprobe_output(probe: &serde_json::Value, file_type: &str) -> (Option<S
     let mut frame_rate = None;
 
     if let Some(streams) = streams {
-        let target_type = if file_type == "video" { "video" } else { "audio" };
+        let target_type = if file_type == "video" {
+            "video"
+        } else {
+            "audio"
+        };
         for stream in streams {
-            let codec_type = stream.get("codec_type").and_then(|v| v.as_str()).unwrap_or("");
+            let codec_type = stream
+                .get("codec_type")
+                .and_then(|v| v.as_str())
+                .unwrap_or("");
             if codec_type == target_type {
-                codec = stream.get("codec_name").and_then(|v| v.as_str()).map(String::from);
+                codec = stream
+                    .get("codec_name")
+                    .and_then(|v| v.as_str())
+                    .map(String::from);
 
                 if file_type == "video" {
                     let w = stream.get("width").and_then(|v| v.as_u64()).unwrap_or(0);
@@ -124,17 +145,22 @@ fn parse_ffprobe_output(probe: &serde_json::Value, file_type: &str) -> (Option<S
                     if w > 0 && h > 0 {
                         resolution = Some(format!("{}x{}", w, h));
                     }
-                    frame_rate = stream.get("r_frame_rate").and_then(|v| v.as_str()).map(|s| {
-                        let parts: Vec<&str> = s.split('/').collect();
-                        if parts.len() == 2 {
-                            if let (Ok(num), Ok(den)) = (parts[0].parse::<f64>(), parts[1].parse::<f64>()) {
-                                if den > 0.0 {
-                                    return format!("{:.2}", num / den);
+                    frame_rate = stream
+                        .get("r_frame_rate")
+                        .and_then(|v| v.as_str())
+                        .map(|s| {
+                            let parts: Vec<&str> = s.split('/').collect();
+                            if parts.len() == 2 {
+                                if let (Ok(num), Ok(den)) =
+                                    (parts[0].parse::<f64>(), parts[1].parse::<f64>())
+                                {
+                                    if den > 0.0 {
+                                        return format!("{:.2}", num / den);
+                                    }
                                 }
                             }
-                        }
-                        s.to_string()
-                    });
+                            s.to_string()
+                        });
                 }
                 break;
             }

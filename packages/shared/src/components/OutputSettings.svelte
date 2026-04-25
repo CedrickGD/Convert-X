@@ -11,6 +11,8 @@
   export let onQualityChange;
 
   $: isWeb = getPlatform().platformType === "web";
+  $: qualityLabel = selectedFormat === "gif" ? "GIF quality" : "Quality";
+  $: qualityHighLabel = selectedFormat === "gif" ? "Cleaner" : "Better";
 
   async function pickFolder() {
     const result = await getPlatform().pickFolder();
@@ -57,11 +59,9 @@
   </div>
   {/if}
 
-  <!-- Quality (hidden for GIF — handled by GifSettings) -->
-  {#if selectedFormat !== "gif"}
   <div class="field">
     <div class="quality-head">
-      <span class="label">Quality</span>
+      <span class="label">{qualityLabel}</span>
       <span class="quality-val">{quality}%</span>
     </div>
     <div class="slider-wrap">
@@ -76,11 +76,10 @@
       />
       <div class="slider-labels">
         <span>Smaller</span>
-        <span>Better</span>
+        <span>{qualityHighLabel}</span>
       </div>
     </div>
   </div>
-  {/if}
 </div>
 
 <style>

@@ -149,6 +149,126 @@ function getExt(name) {
   return dot > 0 ? name.substring(dot + 1).toLowerCase() : "";
 }
 
+function clampQuality(quality) {
+  return Math.max(1, Math.min(100, quality || 75));
+}
+
+function getGifColorCap(quality) {
+  const q = clampQuality(quality);
+  return Math.round(32 + ((q - 1) * 224 / 99));
+}
+
+function getGifPaletteStrategy(quality) {
+  const q = clampQuality(quality);
+  if (q >= 90) {
+    return { statsMode: "single", usePerFramePalette: true };
+  }
+  if (q >= 60) {
+    return { statsMode: "full", usePerFramePalette: false };
+  }
+  return { statsMode: "diff", usePerFramePalette: false };
+}
+
+function clampEven(value, min) {
+  const safe = Math.max(min, value || min);
+  return safe % 2 === 0 ? safe : Math.max(min, safe - 1);
+}
+
+function lowerPalette(current, suggestedMax) {
+  const stops = [256, 224, 192, 160, 128, 96, 64, 48, 32, 24, 16, 8];
+  const cap = Math.max(8, Math.min(256, suggestedMax || current));
+
+  for (const stop of stops) {
+    if (stop < current && stop <= cap) return stop;
+  }
+  for (const stop of stops) {
+    if (stop < current) return stop;
+  }
+  return current;
+}
+
+function nextGifAttempt(current, targetRatio, allowFpsReduction, minWidth) {
+  const ratio = Math.max(0.2, Math.min(0.96, targetRatio));
+  const next = { ...current };
+
+  if (current.width) {
+    const scaled = clampEven(Math.round(current.width * Math.sqrt(ratio * 0.92)), minWidth);
+    if (scaled < current.width) next.width = scaled;
+  }
+
+  if (allowFpsReduction && current.fps) {
+    const scaled = Math.max(5, Math.min(current.fps, Math.round(current.fps * Math.pow(ratio, 0.35))));
+    if (scaled < current.fps) next.fps = scaled;
+  }
+
+  const suggestedColors = Math.max(8, Math.min(256, Math.round(current.colors * Math.pow(ratio, 0.55))));
+  const nextColors = lowerPalette(current.colors, suggestedColors);
+  if (nextColors < current.colors) next.colors = nextColors;
+
+  const nextQuality = Math.max(20, Math.min(100, Math.round(current.quality * Math.pow(ratio, 0.25))));
+  if (nextQuality < current.quality) next.quality = nextQuality;
+
+  if (
+    next.width === current.width &&
+    next.fps === current.fps &&
+    next.colors === current.colors &&
+    next.quality === current.quality
+  ) {
+    if (current.width) {
+      const forcedWidth = clampEven(current.width - 64, minWidth);
+      if (forcedWidth < current.width) next.width = forcedWidth;
+    }
+
+    if (allowFpsReduction && current.fps) {
+      const forcedFps = Math.max(5, current.fps - (current.fps > 15 ? 5 : 2));
+      if (forcedFps < current.fps) next.fps = forcedFps;
+    }
+
+    const forcedColors = lowerPalette(current.colors, current.colors - 32);
+    if (forcedColors < current.colors) next.colors = forcedColors;
+
+    if (next.quality === current.quality) {
+      next.quality = Math.max(20, current.quality - 10);
+    }
+  }
+
+  if (
+    next.width === current.width &&
+    next.fps === current.fps &&
+    next.colors === current.colors &&
+    next.quality === current.quality
+  ) {
+    return null;
+  }
+
+  return next;
+}
+
+function formatMegabytes(bytes) {
+  return `${(bytes / 1024 / 1024).toFixed(1)} MB`;
+}
+
+async function createGifAttempt(params) {
+  let width = params.gifWidth || null;
+
+  if (!width && params.resolution) {
+    const parsed = parseInt(params.resolution.split("x")[0], 10);
+    width = Number.isFinite(parsed) ? parsed : null;
+  }
+
+  if (!width && params.fileType === "image" && params.fileObj) {
+    const dims = await getImageDimensions(params.fileObj);
+    width = dims?.width || null;
+  }
+
+  return {
+    width,
+    fps: params.fileType === "video" ? (params.gifFps || params.fps || 15) : null,
+    colors: Math.max(8, Math.min(256, params.gifColors || 256)),
+    quality: clampQuality(params.quality),
+  };
+}
+
 function buildFFmpegArgs(inputName, outputName, params) {
   const args = ["-i", inputName];
   const isGif = params.outputFormat === "gif";
@@ -173,11 +293,15 @@ function buildFFmpegArgs(inputName, outputName, params) {
       filters.push(`fps=${params.fps}`);
     }
 
-    const colors = params.gifColors || 256;
+    const requestedColors = Math.max(2, Math.min(256, params.gifColors || 256));
+    const colors = Math.min(requestedColors, getGifColorCap(params.quality));
     const dither = params.gifDither || "sierra2_4a";
+    const { statsMode, usePerFramePalette } = getGifPaletteStrategy(params.quality);
     const prefix = filters.length ? filters.join(",") + "," : "";
+    const paletteuse = [`dither=${dither}`];
+    if (usePerFramePalette) paletteuse.push("new=1");
 
-    args.push("-vf", `${prefix}split[s0][s1];[s0]palettegen=max_colors=${colors}[p];[s1][p]paletteuse=dither=${dither}`);
+    args.push("-vf", `${prefix}split[s0][s1];[s0]palettegen=max_colors=${colors}:stats_mode=${statsMode}[p];[s1][p]paletteuse=${paletteuse.join(":")}`);
     args.push("-an");
     args.push("-loop", "0");
   } else {
@@ -207,6 +331,43 @@ function buildFFmpegArgs(inputName, outputName, params) {
 
   args.push("-y", outputName);
   return args;
+}
+
+async function encodeGifWithTargetSize(ff, inputName, outputName, params) {
+  const targetMb = params.gifTargetSizeMb || null;
+  if (!targetMb) return null;
+
+  const targetBytes = targetMb * 1024 * 1024;
+  const allowFpsReduction = params.fileType === "video";
+  const minWidth = allowFpsReduction ? 160 : 96;
+  let attempt = await createGifAttempt(params);
+  let bestSize = Number.POSITIVE_INFINITY;
+
+  for (let i = 0; i < 7; i += 1) {
+    const attemptParams = {
+      ...params,
+      quality: attempt.quality,
+      gifColors: attempt.colors,
+      gifWidth: attempt.width,
+      gifFps: attempt.fps,
+    };
+
+    await ff.exec(buildFFmpegArgs(inputName, outputName, attemptParams));
+    const data = await ff.readFile(outputName);
+    const size = data.length;
+    bestSize = Math.min(bestSize, size);
+
+    if (size <= targetBytes) {
+      return data;
+    }
+
+    const next = nextGifAttempt(attempt, targetBytes / size, allowFpsReduction, minWidth);
+    if (!next) break;
+    attempt = next;
+  }
+
+  try { await ff.deleteFile(outputName); } catch (_) {}
+  throw new Error(`Couldn't fit GIF under ${targetMb} MB. Smallest result was ${formatMegabytes(bestSize)}.`);
 }
 
 export function createWebAdapter() {
@@ -306,9 +467,13 @@ export function createWebAdapter() {
       const outName = (params.outputName || "output") + "." + params.outputFormat;
 
       await ff.writeFile(inputName, await fetchFile(file));
-      const ffArgs = buildFFmpegArgs(inputName, outName, params);
-      await ff.exec(ffArgs);
-      const data = await ff.readFile(outName);
+      let data;
+      if (params.outputFormat === "gif" && params.gifTargetSizeMb) {
+        data = await encodeGifWithTargetSize(ff, inputName, outName, params);
+      } else {
+        await ff.exec(buildFFmpegArgs(inputName, outName, params));
+        data = await ff.readFile(outName);
+      }
 
       // Cleanup
       try { await ff.deleteFile(inputName); } catch (_) {}

@@ -2,7 +2,10 @@
   import {
     filesStore, settingsStore, appView, appMode, fileTypes,
     createFileEntry, resetAll, isFormatCompatible,
+    convertOp, resizeOp, convertCancelled, resizeCancelled,
+    convertBusy, resizeBusy,
   } from "../stores/fileStore.js";
+  import { get } from "svelte/store";
   import { getPlatform } from "../platform.js";
   import { onMount } from "svelte";
   import Navbar from "./Navbar.svelte";
@@ -18,13 +21,15 @@
   import ProgressBar from "./ProgressBar.svelte";
   import OutputPanel from "./OutputPanel.svelte";
   import ThemeToggle from "./ThemeToggle.svelte";
+  import Credits from "./Credits.svelte";
+  import DesktopDownload from "./DesktopDownload.svelte";
+  import { REPO_URL } from "../lib/github.js";
 
   let files = [];
   let settings = {};
   let view = "idle";
   let types = new Set();
   let mode = "convert";
-  let cancelled = false;
 
   const platform = getPlatform();
   const isWeb = platform.platformType === "web";
@@ -54,7 +59,6 @@
 
   function switchMode(newMode) {
     if (newMode === mode) return;
-    resetAll();
     appMode.set(newMode);
   }
 
@@ -71,6 +75,30 @@
     return dot > 0 ? fileName.substring(0, dot) : fileName;
   }
 
+  function getGifDefaults() {
+    const imageOnly = types.size === 1 && types.has("image");
+
+    if (imageOnly) {
+      return {
+        quality: 100,
+        gifColors: 256,
+        gifDither: "floyd_steinberg",
+        gifWidth: null,
+        gifFps: null,
+        gifTargetSizeMb: null,
+      };
+    }
+
+    return {
+      quality: 75,
+      gifColors: 256,
+      gifDither: "sierra2_4a",
+      gifWidth: 480,
+      gifFps: 15,
+      gifTargetSizeMb: null,
+    };
+  }
+
   async function handleFilesDrop(entries) {
     if (view !== "idle" && view !== "ready") {
       resetAll();
@@ -83,8 +111,6 @@
     if (!isWeb && !settings.outputDir && entries[0]?.path) {
       settingsStore.update((s) => ({ ...s, outputDir: getDefaultDir(entries[0].path) }));
     }
-
-    appView.set("ready");
 
     for (const entry of newEntries) {
       try {
@@ -135,8 +161,8 @@
 
   // ── Convert ──
   async function handleConvert() {
-    cancelled = false;
-    appView.set("converting");
+    convertCancelled.set(false);
+    convertOp.set("converting");
 
     const fmt = settings.selectedFormat;
     const currentFiles = [...files];
@@ -150,7 +176,7 @@
     );
 
     for (const file of currentFiles) {
-      if (cancelled) break;
+      if (get(convertCancelled)) break;
       if (!isFormatCompatible(file.detectedType, fmt)) continue;
       if (file.status === "error") continue;
 
@@ -180,6 +206,7 @@
           gifDither: settings.gifDither || null,
           gifWidth: settings.gifWidth != null ? settings.gifWidth : null,
           gifFps: settings.gifFps != null ? settings.gifFps : null,
+          gifTargetSizeMb: settings.gifTargetSizeMb != null ? settings.gifTargetSizeMb : null,
         });
 
         filesStore.update((all) =>
@@ -205,15 +232,15 @@
       }
     }
 
-    if (!cancelled) {
-      appView.set("done");
+    if (!get(convertCancelled)) {
+      convertOp.set("done");
     }
   }
 
   // ── Resize ──
   async function handleResize() {
-    cancelled = false;
-    appView.set("converting");
+    resizeCancelled.set(false);
+    resizeOp.set("converting");
 
     const currentFiles = [...files];
 
@@ -226,7 +253,7 @@
     );
 
     for (const file of currentFiles) {
-      if (cancelled) break;
+      if (get(resizeCancelled)) break;
       if (file.detectedType !== "image") continue;
       if (file.status === "error") continue;
 
@@ -276,15 +303,20 @@
       }
     }
 
-    if (!cancelled) {
-      appView.set("done");
+    if (!get(resizeCancelled)) {
+      resizeOp.set("done");
     }
   }
 
   async function handleCancel() {
-    cancelled = true;
+    if (mode === "convert") {
+      convertCancelled.set(true);
+      convertOp.set("idle");
+    } else {
+      resizeCancelled.set(true);
+      resizeOp.set("idle");
+    }
     try { await platform.cancelConversion(); } catch (_) {}
-    appView.set("ready");
     filesStore.update((all) =>
       all.map((f) =>
         f.status === "queued" || f.status === "converting"
@@ -333,17 +365,27 @@
 <main>
   <header>
     <div class="header-inner">
-      <div class="spacer"></div>
+      <div class="header-side start">
+        <a class="icon-btn" href={REPO_URL} target="_blank" rel="noopener noreferrer" aria-label="View source on GitHub" title="GitHub">
+          <svg width="18" height="18" viewBox="0 0 24 24" fill="currentColor"><path d="M12 .5C5.65.5.5 5.65.5 12c0 5.08 3.29 9.39 7.86 10.91.58.1.79-.25.79-.56v-2c-3.2.7-3.87-1.36-3.87-1.36-.52-1.32-1.27-1.67-1.27-1.67-1.04-.71.08-.7.08-.7 1.15.08 1.76 1.18 1.76 1.18 1.02 1.75 2.68 1.25 3.34.95.1-.74.4-1.25.72-1.54-2.55-.29-5.24-1.27-5.24-5.66 0-1.25.45-2.27 1.18-3.07-.12-.29-.51-1.46.11-3.04 0 0 .96-.31 3.15 1.17.91-.25 1.89-.38 2.86-.38s1.95.13 2.86.38c2.18-1.48 3.14-1.17 3.14-1.17.62 1.58.23 2.75.11 3.04.74.8 1.18 1.82 1.18 3.07 0 4.4-2.69 5.36-5.25 5.65.41.36.78 1.06.78 2.13v3.16c0 .31.21.67.8.55 4.56-1.52 7.85-5.83 7.85-10.91C23.5 5.65 18.35.5 12 .5z"/></svg>
+        </a>
+      </div>
       <h1>Convert-<span class="x">X</span></h1>
-      <div class="spacer end"><ThemeToggle /></div>
+      <div class="header-side end"><ThemeToggle /></div>
     </div>
     <Navbar activeMode={mode} onModeChange={switchMode} />
   </header>
 
   <div class="content">
-    {#if view === "idle"}
-      <div class="animate-in">
+    {#if mode === "credits"}
+      <Credits />
+
+    {:else if view === "idle"}
+      <div class="animate-in idle-stack">
         <Dropzone onFilesDrop={handleFilesDrop} {mode} />
+        {#if isWeb}
+          <DesktopDownload variant="inline" />
+        {/if}
       </div>
 
     {:else if view === "ready"}
@@ -369,6 +411,7 @@
               selectedFormat: fmt,
               trimStart: null,
               trimEnd: null,
+              ...(fmt === "gif" ? getGifDefaults() : {}),
             }))}
           />
 
@@ -524,10 +567,37 @@
     display: flex;
     align-items: center;
     justify-content: space-between;
+    gap: 8px;
   }
 
-  .spacer { width: 34px; }
-  .spacer.end { display: flex; justify-content: flex-end; }
+  .header-side {
+    width: 34px;
+    display: flex;
+    align-items: center;
+  }
+
+  .header-side.end { justify-content: flex-end; }
+
+  .icon-btn {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    width: 32px;
+    height: 32px;
+    border-radius: var(--radius-sm);
+    color: var(--text-secondary);
+    background: transparent;
+    transition: all var(--transition-fast);
+  }
+
+  .icon-btn:hover {
+    color: var(--text-primary);
+    background: var(--bg-hover);
+  }
+
+  .idle-stack {
+    gap: 12px;
+  }
 
   header h1 {
     font-size: 1.3rem;

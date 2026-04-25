@@ -4,11 +4,11 @@
   export let hasDuration = false;
 
   const PRESETS = [
-    { id: "original", label: "Original", desc: "Full res, 256 colors", width: null, fps: null, colors: 256, dither: "floyd_steinberg" },
-    { id: "high", label: "High Quality", desc: "720p, smooth", width: 720, fps: 24, colors: 256, dither: "floyd_steinberg" },
-    { id: "balanced", label: "Balanced", desc: "480p, good size", width: 480, fps: 15, colors: 256, dither: "sierra2_4a" },
-    { id: "discord", label: "Discord", desc: "360p, share-friendly", width: 360, fps: 15, colors: 128, dither: "sierra2_4a" },
-    { id: "compact", label: "Compact", desc: "240p, tiny file", width: 240, fps: 10, colors: 64, dither: "bayer" },
+    { id: "original", label: "Original", desc: "Full res, max fidelity", width: null, fps: null, colors: 256, dither: "floyd_steinberg", quality: 100 },
+    { id: "high", label: "High Quality", desc: "720p, smooth", width: 720, fps: 24, colors: 256, dither: "floyd_steinberg", quality: 90 },
+    { id: "balanced", label: "Balanced", desc: "480p, good size", width: 480, fps: 15, colors: 256, dither: "sierra2_4a", quality: 75 },
+    { id: "discord", label: "Discord", desc: "360p, share-friendly", width: 360, fps: 15, colors: 128, dither: "sierra2_4a", quality: 60 },
+    { id: "compact", label: "Compact", desc: "240p, tiny file", width: 240, fps: 10, colors: 64, dither: "bayer", quality: 35 },
   ];
 
   const WIDTH_OPTIONS = [
@@ -37,6 +37,13 @@
     { value: "sierra2_4a", label: "Sierra (smooth)" },
   ];
 
+  const SIZE_CAP_OPTIONS = [
+    { value: null, label: "Off" },
+    { value: 5, label: "5 MB" },
+    { value: 10, label: "10 MB" },
+    { value: 25, label: "25 MB" },
+  ];
+
   let showFineTune = false;
 
   $: gifColors = settings.gifColors;
@@ -45,6 +52,7 @@
   $: gifFps = settings.gifFps;
 
   $: activePreset = PRESETS.find((p) =>
+    p.quality === settings.quality &&
     p.colors === gifColors &&
     p.dither === gifDither &&
     p.width === gifWidth &&
@@ -54,6 +62,7 @@
   function selectPreset(preset) {
     const updates = {
       ...settings,
+      quality: preset.quality,
       gifColors: preset.colors,
       gifDither: preset.dither,
       gifWidth: preset.width,
@@ -70,7 +79,7 @@
 </script>
 
 <div class="gif-settings">
-  <span class="section-label">GIF Quality</span>
+  <span class="section-label">GIF Settings</span>
 
   <div class="presets">
     {#each PRESETS as preset}
@@ -83,6 +92,37 @@
         <span class="preset-desc">{preset.desc}</span>
       </button>
     {/each}
+  </div>
+
+  <div class="size-cap">
+    <div class="size-cap-head">
+      <span class="size-cap-label">Size cap</span>
+      <span class="size-cap-value">
+        {#if settings.gifTargetSizeMb}
+          Under {settings.gifTargetSizeMb} MB
+        {:else}
+          No limit
+        {/if}
+      </span>
+    </div>
+
+    <div class="size-cap-grid">
+      {#each SIZE_CAP_OPTIONS as option}
+        <button
+          class="cap-btn"
+          class:active={settings.gifTargetSizeMb === option.value}
+          on:click={() => updateField("gifTargetSizeMb", option.value)}
+        >
+          {option.label}
+        </button>
+      {/each}
+    </div>
+
+    {#if settings.gifTargetSizeMb}
+      <p class="size-cap-note">
+        Convert-X will keep compressing this GIF until it fits under the selected size cap.
+      </p>
+    {/if}
   </div>
 
   <button class="fine-tune-toggle" on:click={() => (showFineTune = !showFineTune)}>
@@ -223,6 +263,72 @@
     font-size: 0.58rem;
     color: var(--text-muted);
     line-height: 1.2;
+  }
+
+  .size-cap {
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+    padding: 10px 12px;
+    background: var(--bg-input);
+    border: 1px solid var(--border);
+    border-radius: var(--radius-xs);
+  }
+
+  .size-cap-head {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    gap: 10px;
+  }
+
+  .size-cap-label {
+    font-size: 0.72rem;
+    color: var(--text-muted);
+    font-weight: 600;
+    text-transform: uppercase;
+    letter-spacing: 0.08em;
+  }
+
+  .size-cap-value {
+    font-size: 0.72rem;
+    color: var(--accent);
+    font-weight: 700;
+  }
+
+  .size-cap-grid {
+    display: grid;
+    grid-template-columns: repeat(4, 1fr);
+    gap: 6px;
+  }
+
+  .cap-btn {
+    padding: 7px 6px;
+    background: var(--bg-card);
+    border: 1px solid var(--border);
+    border-radius: var(--radius-xs);
+    color: var(--text-secondary);
+    font-size: 0.7rem;
+    font-weight: 600;
+  }
+
+  .cap-btn:hover:not(.active) {
+    border-color: var(--border-hover);
+    background: var(--bg-hover);
+    color: var(--text-primary);
+  }
+
+  .cap-btn.active {
+    border-color: var(--accent);
+    background: var(--accent-subtle);
+    color: var(--accent);
+  }
+
+  .size-cap-note {
+    margin: 0;
+    font-size: 0.68rem;
+    color: var(--text-muted);
+    line-height: 1.35;
   }
 
   .fine-tune-toggle {
