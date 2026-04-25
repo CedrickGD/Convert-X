@@ -26,7 +26,7 @@
     class:active={activeMode === "credits"}
     on:click={() => onModeChange("credits")}
   >
-    Credits
+    Credits &amp; App
   </button>
 </nav>
 

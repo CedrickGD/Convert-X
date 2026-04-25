@@ -22,7 +22,6 @@
   import OutputPanel from "./OutputPanel.svelte";
   import ThemeToggle from "./ThemeToggle.svelte";
   import Credits from "./Credits.svelte";
-  import DesktopDownload from "./DesktopDownload.svelte";
   import { REPO_URL } from "../lib/github.js";
 
   let files = [];
@@ -381,11 +380,8 @@
       <Credits />
 
     {:else if view === "idle"}
-      <div class="animate-in idle-stack">
+      <div class="animate-in">
         <Dropzone onFilesDrop={handleFilesDrop} {mode} />
-        {#if isWeb}
-          <DesktopDownload variant="inline" />
-        {/if}
       </div>
 
     {:else if view === "ready"}
@@ -593,10 +589,6 @@
   .icon-btn:hover {
     color: var(--text-primary);
     background: var(--bg-hover);
-  }
-
-  .idle-stack {
-    gap: 12px;
   }
 
   header h1 {
