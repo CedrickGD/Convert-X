@@ -844,13 +844,20 @@ pub async fn probe_url(
     }
 
     let ytdlp_path = get_ytdlp_path(&app);
+    // Don't pass --flat-playlist: it strips per-entry metadata (titles,
+    // thumbnails, kind classification) so multi-item posts came back as
+    // 1 stub entry with a black preview box. Probing each entry adds a few
+    // seconds for large playlists but produces a real preview.
     let mut args: Vec<String> = vec![
         "--dump-single-json".to_string(),
-        "--flat-playlist".to_string(),
         "--no-warnings".to_string(),
         "--skip-download".to_string(),
         "--socket-timeout".to_string(),
         "15".to_string(),
+        // Cap how many playlist entries we probe so a giant YouTube channel
+        // URL doesn't take 10 minutes. 50 is enough for any Instagram post.
+        "--playlist-end".to_string(),
+        "50".to_string(),
     ];
     if let Some(c) = cookies_path.as_deref().filter(|s| !s.trim().is_empty()) {
         args.push("--cookies".to_string());
