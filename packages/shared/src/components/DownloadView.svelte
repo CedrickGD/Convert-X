@@ -7,9 +7,13 @@
   const platform = getPlatform();
   const isDesktop = platform.platformType === "desktop";
 
+  const VIDEO_FORMATS = ["mp4", "mkv", "webm", "avi", "mov"];
+  const AUDIO_FORMATS = ["mp3", "m4a", "wav", "flac", "ogg", "opus"];
+
   let url = "";
   let detectedSite = "";
-  let format = "mp4";
+  let category = "video";       // "video" | "audio"
+  let format = "mp4";           // any value from VIDEO_FORMATS or AUDIO_FORMATS
   let quality = "best";
   let outputDir = "";
 
@@ -92,10 +96,13 @@
   $: selectedCount = selected.size;
   $: selectedEntries = entries.filter((e) => selected.has(e.index));
 
-  // Force format for image-only previews; force mp3 for audio-only (Spotify, etc.).
+  // Force format for image-only previews; force audio category for Spotify/SoundCloud.
   $: if (allImages && format !== "image") format = "image";
-  $: if (!allImages && format === "image") format = audioForced ? "mp3" : "mp4";
-  $: if (allAudio && !audioForced && format === "image") format = "mp3";
+  $: if (!allImages && format === "image") format = category === "audio" ? "mp3" : "mp4";
+  $: if (audioForced && category !== "audio") category = "audio";
+  // Keep `format` in sync with the chosen category.
+  $: if (category === "video" && !VIDEO_FORMATS.includes(format)) format = "mp4";
+  $: if (category === "audio" && !AUDIO_FORMATS.includes(format)) format = "mp3";
 
   $: stageLabel = ({
     fetching: "Fetching info…",
@@ -171,8 +178,10 @@
 
   function entryFormat(entry) {
     if (entry.kind === "image") return "image";
-    if (entry.kind === "audio") return "mp3";
-    return format === "mp3" ? "mp3" : "mp4";
+    // Audio-only sources can't produce a video container — fall back to mp3 if
+    // the user picked a video format.
+    if (entry.kind === "audio" && VIDEO_FORMATS.includes(format)) return "mp3";
+    return format;
   }
 
   async function handleDownload() {
@@ -446,19 +455,30 @@
     {/if}
 
     <div class="options">
-      {#if !allImages && !audioForced}
+      {#if !allImages}
         <div class="field">
-          <span class="field-label">Format</span>
-          <div class="seg" role="group" aria-label="Format">
-            <button class:active={format === "mp4"} on:click={() => (format = "mp4")}>Video (MP4)</button>
-            <button class:active={format === "mp3"} on:click={() => (format = "mp3")}>Audio (MP3)</button>
+          <span class="field-label">Type</span>
+          <div class="seg" role="group" aria-label="Type">
+            <button class:active={category === "video"} on:click={() => (category = "video")} disabled={audioForced}>Video</button>
+            <button class:active={category === "audio"} on:click={() => (category = "audio")}>Audio</button>
           </div>
-          {#if anyImages}
+          {#if audioForced}
+            <span class="field-hint">{detectedSite} only supports audio downloads.</span>
+          {:else if anyImages}
             <span class="field-hint">Images are downloaded as-is (jpg/png/webp).</span>
           {/if}
         </div>
 
-        {#if format === "mp4"}
+        <div class="field">
+          <span class="field-label">Format</span>
+          <select class="select" bind:value={format} aria-label="Output format">
+            {#each (category === "video" ? VIDEO_FORMATS : AUDIO_FORMATS) as f}
+              <option value={f}>{f.toUpperCase()}</option>
+            {/each}
+          </select>
+        </div>
+
+        {#if category === "video"}
           <div class="field">
             <span class="field-label">Quality</span>
             <div class="seg" role="group" aria-label="Quality">
@@ -469,13 +489,9 @@
             </div>
           </div>
         {/if}
-      {:else if allImages}
+      {:else}
         <div class="field">
           <span class="field-hint">Images downloaded in their original format (.jpg / .png / .webp).</span>
-        </div>
-      {:else if audioForced}
-        <div class="field">
-          <span class="field-hint">{detectedSite} only supports audio downloads.</span>
         </div>
       {/if}
 
@@ -621,6 +637,9 @@
 
   .dir-row { display: flex; gap: 6px; }
   .dir-input { flex: 1; padding: 8px 10px; background: var(--bg-secondary); border: 1px solid var(--border); border-radius: var(--radius-sm); color: var(--text-primary); font-size: 0.78rem; font-family: inherit; cursor: pointer; }
+  .select { padding: 8px 12px; background: var(--bg-secondary); border: 1px solid var(--border); border-radius: var(--radius-sm); color: var(--text-primary); font-size: 0.82rem; font-family: inherit; font-weight: 600; outline: none; cursor: pointer; }
+  .select:hover { border-color: var(--accent-dim); }
+  .select:focus { border-color: var(--accent-dim); box-shadow: 0 0 0 3px var(--accent-glow, rgba(0,0,0,0.05)); }
 
   .actions { display: flex; gap: 10px; justify-content: center; padding: 4px 0 2px; flex-wrap: wrap; }
   .actions.done-actions { padding-top: 8px; }

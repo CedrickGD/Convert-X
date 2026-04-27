@@ -121,9 +121,42 @@ pub fn get_spotdl_path(app: &tauri::AppHandle) -> PathBuf {
     PathBuf::from("spotdl")
 }
 
+const AUDIO_FORMATS: &[&str] = &["mp3", "m4a", "wav", "flac", "ogg", "opus", "aac"];
+const VIDEO_FORMATS: &[&str] = &["mp4", "mkv", "webm", "avi", "mov"];
+
+fn is_audio_format(f: &str) -> bool { AUDIO_FORMATS.contains(&f) }
+fn is_video_format(f: &str) -> bool { VIDEO_FORMATS.contains(&f) }
+
+fn build_video_selector(quality: &str, format: &str) -> String {
+    let height = match quality {
+        "1080" => "[height<=1080]",
+        "720"  => "[height<=720]",
+        "480"  => "[height<=480]",
+        _ => "",
+    };
+    // Constrain stream ext only when the container natively supports a common
+    // codec choice. For mkv/mov/avi we let yt-dlp grab the best and remux.
+    let ext_filter = match format {
+        "mp4"  => Some(("[ext=mp4]", "[ext=m4a]")),
+        "webm" => Some(("[ext=webm]", "[ext=webm]")),
+        _      => None,
+    };
+    match ext_filter {
+        Some((v, a)) => format!(
+            "bestvideo{v}{h}+bestaudio{a}/bestvideo{h}+bestaudio/best{h}",
+            v = v, a = a, h = height
+        ),
+        None => format!(
+            "bestvideo{h}+bestaudio/best{h}",
+            h = height
+        ),
+    }
+}
+
 fn build_ytdlp_args(
     opts: &DownloadOptions,
-    output_template: &str,
+    output_dir: &std::path::Path,
+    temp_dir: &std::path::Path,
     ffmpeg_path: &std::path::Path,
 ) -> Vec<String> {
     let is_image = opts.format == "image";
@@ -131,20 +164,26 @@ fn build_ytdlp_args(
 
     let mut args: Vec<String> = vec![
         opts.url.clone(),
+        // Final filename keeps the title; temp fragments use only the video ID
+        // so users don't see the title leaking into their Downloads folder
+        // mid-download (or in System notifications, Recent Files, etc.).
         "-o".to_string(),
-        output_template.to_string(),
+        "%(title)s.%(ext)s".to_string(),
+        "-o".to_string(),
+        "temp:%(id)s.%(ext)s".to_string(),
+        // Split temp fragments into the OS temp dir; final file lands in home.
+        "--paths".to_string(),
+        format!("home:{}", output_dir.display()),
+        "--paths".to_string(),
+        format!("temp:{}", temp_dir.display()),
         "--newline".to_string(),
         "--no-warnings".to_string(),
         "--no-colors".to_string(),
         "--ffmpeg-location".to_string(),
         ffmpeg_path.to_string_lossy().to_string(),
-        // Embed title / artist / uploader / etc. as ID3 (mp3) or container (mp4) tags.
-        // Harmless on images.
         "--embed-metadata".to_string(),
     ];
 
-    // --no-playlist (default for single-video URLs) is incompatible with --playlist-items.
-    // When the caller pins a specific carousel/playlist entry, we must NOT pass --no-playlist.
     if let Some(items) = pin_item {
         args.push("--playlist-items".to_string());
         args.push(items.to_string());
@@ -153,40 +192,36 @@ fn build_ytdlp_args(
     }
 
     if is_image {
-        // Images: let yt-dlp pick the original. Don't merge, don't extract audio,
-        // don't embed thumbnail (the image IS the thumbnail).
+        args.extend(["-f".to_string(), "best".to_string()]);
+    } else if is_audio_format(&opts.format) {
+        args.push("--embed-thumbnail".to_string());
         args.extend([
             "-f".to_string(),
-            "best".to_string(),
+            "bestaudio/best".to_string(),
+            "-x".to_string(),
+            "--audio-format".to_string(),
+            opts.format.clone(),
+            "--audio-quality".to_string(),
+            "0".to_string(),
+        ]);
+    } else if is_video_format(&opts.format) {
+        args.push("--embed-thumbnail".to_string());
+        let selector = build_video_selector(&opts.quality, &opts.format);
+        args.extend([
+            "-f".to_string(),
+            selector,
+            "--merge-output-format".to_string(),
+            opts.format.clone(),
         ]);
     } else {
-        // Videos / audio get thumbnail embedded where supported.
+        // Unknown format — fall back to mp4 with the requested quality.
         args.push("--embed-thumbnail".to_string());
-
-        if opts.format == "mp3" {
-            args.extend([
-                "-f".to_string(),
-                "bestaudio/best".to_string(),
-                "-x".to_string(),
-                "--audio-format".to_string(),
-                "mp3".to_string(),
-                "--audio-quality".to_string(),
-                "0".to_string(),
-            ]);
-        } else {
-            let selector = match opts.quality.as_str() {
-                "1080" => "bestvideo[height<=1080][ext=mp4]+bestaudio[ext=m4a]/bestvideo[height<=1080]+bestaudio/best[height<=1080]",
-                "720"  => "bestvideo[height<=720][ext=mp4]+bestaudio[ext=m4a]/bestvideo[height<=720]+bestaudio/best[height<=720]",
-                "480"  => "bestvideo[height<=480][ext=mp4]+bestaudio[ext=m4a]/bestvideo[height<=480]+bestaudio/best[height<=480]",
-                _      => "bestvideo[ext=mp4]+bestaudio[ext=m4a]/bestvideo+bestaudio/best",
-            };
-            args.extend([
-                "-f".to_string(),
-                selector.to_string(),
-                "--merge-output-format".to_string(),
-                "mp4".to_string(),
-            ]);
-        }
+        args.extend([
+            "-f".to_string(),
+            build_video_selector(&opts.quality, "mp4"),
+            "--merge-output-format".to_string(),
+            "mp4".to_string(),
+        ]);
     }
     args
 }
@@ -289,10 +324,21 @@ fn resolve_final_path(reported: &str, format: &str) -> String {
     if p.exists() { return reported.to_string(); }
     let stem = p.file_stem().unwrap_or_default().to_string_lossy();
     let dir = p.parent().unwrap_or(Path::new("."));
-    let candidates = if format == "mp3" {
-        vec!["mp3"]
+    let candidates: Vec<&str> = if is_audio_format(format) {
+        vec![format]
+    } else if is_video_format(format) {
+        // Look for the requested ext first, then common siblings if yt-dlp
+        // failed to merge into the chosen container.
+        match format {
+            "mp4"  => vec!["mp4", "mkv", "webm"],
+            "mkv"  => vec!["mkv", "mp4", "webm"],
+            "webm" => vec!["webm", "mp4", "mkv"],
+            "avi"  => vec!["avi", "mp4", "mkv"],
+            "mov"  => vec!["mov", "mp4", "mkv"],
+            _      => vec!["mp4", "mkv", "webm"],
+        }
     } else if format == "image" {
-        vec!["jpg", "jpeg", "png", "webp", "gif"]
+        vec!["jpg", "jpeg", "png", "webp", "gif", "heic"]
     } else {
         vec!["mp4", "mkv", "webm"]
     };
@@ -307,10 +353,17 @@ fn resolve_final_path(reported: &str, format: &str) -> String {
 
 fn friendly_error(detail: &str, exit_code: i32) -> String {
     let low = detail.to_lowercase();
-    if low.contains("unavailable") || low.contains("video unavailable") {
+    if low.contains("rate/request limit") || low.contains("rate limit") && low.contains("spotify") {
+        "Spotify's free API quota is used up (shared across all spotdl users). \
+         Either wait ~24h, or set your own Spotify Client ID + Secret \
+         (free, 5-min signup at developer.spotify.com — paste them in Settings).".to_string()
+    } else if low.contains("rate-limit reached") || low.contains("login required") && low.contains("instagram") {
+        "Instagram blocked the request — either rate-limited, or the post is \
+         private/login-only. Public Reels usually work; private posts need cookies.".to_string()
+    } else if low.contains("unavailable") || low.contains("video unavailable") {
         "This video is unavailable (private, removed, or region-locked).".to_string()
-    } else if low.contains("sign in") || low.contains("login required") || low.contains("age") {
-        "This content requires sign-in or age verification — not supported.".to_string()
+    } else if low.contains("sign in") || low.contains("login required") || low.contains("age-restricted") {
+        "This content requires sign-in or age verification — not supported without cookies.".to_string()
     } else if low.contains("unsupported url") {
         "This URL isn't supported. Try the desktop site URL instead of mobile/share links.".to_string()
     } else if low.contains("http error 403") {
@@ -436,12 +489,12 @@ pub async fn run_ytdlp(
     std::fs::create_dir_all(&output_dir)
         .map_err(|e| format!("Failed to create output directory: {}", e))?;
 
-    let template = output_dir
-        .join("%(title)s.%(ext)s")
-        .to_string_lossy()
-        .to_string();
+    // Stash fragments / .part files in the OS temp dir so the user's Downloads
+    // folder doesn't show "<title>.mp4.part-Frag72.part" mid-download.
+    let temp_dir = std::env::temp_dir().join("convertx-ytdlp");
+    let _ = std::fs::create_dir_all(&temp_dir);
 
-    let args = build_ytdlp_args(&opts, &template, &ffmpeg_path);
+    let args = build_ytdlp_args(&opts, &output_dir, &temp_dir, &ffmpeg_path);
 
     let (captured, _) = run_child(
         app,
@@ -546,7 +599,11 @@ pub async fn run_spotdl(
     let stdout_task = tokio::spawn(async move {
         let mut lines = BufReader::new(stdout).lines();
         let mut captured_path: Option<String> = None;
+        let mut rate_limited = false;
         while let Ok(Some(line)) = lines.next_line().await {
+            if line.to_lowercase().contains("rate/request limit") {
+                rate_limited = true;
+            }
             if let Some(p) = parse_output_path_spotdl(&line) {
                 captured_path = Some(p);
             }
@@ -568,19 +625,23 @@ pub async fn run_spotdl(
                 );
             }
         }
-        captured_path
+        (captured_path, rate_limited)
     });
 
     let mut last_error = String::new();
+    let mut stderr_rate_limited = false;
     let mut stderr_lines = BufReader::new(stderr).lines();
     while let Ok(Some(line)) = stderr_lines.next_line().await {
         let trimmed = line.trim().to_string();
+        if trimmed.to_lowercase().contains("rate/request limit") {
+            stderr_rate_limited = true;
+        }
         if !trimmed.is_empty() {
             last_error = trimmed;
         }
     }
 
-    let captured = stdout_task.await.ok().flatten();
+    let (captured, stdout_rate_limited) = stdout_task.await.unwrap_or((None, false));
     let status = child
         .wait()
         .await
@@ -588,13 +649,17 @@ pub async fn run_spotdl(
 
     *process_holder.lock().unwrap() = None;
 
+    // spotdl exits 0 on rate-limit even though no file was downloaded — treat
+    // this as a clear error so the UI surfaces a helpful message.
+    if stdout_rate_limited || stderr_rate_limited {
+        return Err(friendly_error("rate/request limit spotify", -1));
+    }
+
     if !status.success() {
         let detail = if last_error.is_empty() { "spotdl failed".to_string() } else { last_error };
         return Err(friendly_error(&detail, status.code().unwrap_or(-1)));
     }
 
-    // Fallback: scan output_dir for the most recently modified mp3 if we didn't
-    // capture a path from stdout (older spotdl versions print differently).
     let output_path = captured.or_else(|| newest_file_in(&output_dir, "mp3"))
         .ok_or_else(|| "Spotify download finished but the file path couldn't be located.".to_string())?;
 
