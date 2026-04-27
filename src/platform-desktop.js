@@ -91,7 +91,12 @@ export function createDesktopAdapter() {
         format: params.format,
         quality: params.quality,
         outputDir: params.outputDir,
+        playlistItems: params.playlistItems || null,
       });
+    },
+
+    async probeUrl(url) {
+      return invoke("probe_url", { url });
     },
 
     async cancelDownload() {

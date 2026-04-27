@@ -619,6 +619,10 @@ export function createWebAdapter() {
       throw new Error("URL downloads need the desktop app — browser sandbox can't run yt-dlp.");
     },
 
+    async probeUrl() {
+      throw new Error("URL preview needs the desktop app — browser sandbox can't run yt-dlp.");
+    },
+
     async cancelDownload() { /* no-op on web */ },
 
     onDownloadProgress() { return () => {}; },

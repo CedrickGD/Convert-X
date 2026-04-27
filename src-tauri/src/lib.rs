@@ -46,6 +46,7 @@ pub fn run() {
             convert::resize_image,
             downloader::download_from_url,
             downloader::cancel_download,
+            downloader::probe_url,
             read_file_binary,
             open_file,
             open_in_folder,
