@@ -94,8 +94,12 @@
   $: audioForced = !!detectedHit?.audioOnly;
   $: if (audioForced && format !== "mp3") format = "mp3";
 
-  $: isValidUrl = /^https?:\/\//i.test(url.trim()) || /^spotify:/i.test(url.trim());
+  // Parse multi-URL input: one URL per line, blanks ignored.
+  $: urlList = url.split(/\r?\n/).map((l) => l.trim()).filter((l) => l.length > 0);
+  $: validUrls = urlList.filter((u) => /^https?:\/\//i.test(u) || /^spotify:/i.test(u));
+  $: isValidUrl = validUrls.length > 0;
   $: canPreview = isDesktop && isValidUrl && state === "idle";
+  $: multiUrlInput = urlList.length > 1;
 
   // Preview-derived flags
   $: entries = probe?.entries || [];
@@ -104,7 +108,7 @@
   $: allAudio = entries.length > 0 && entries.every((e) => e.kind === "audio");
   $: isMulti = probe?.kind === "multi";
   $: selectedCount = selected.size;
-  $: selectedEntries = entries.filter((e) => selected.has(e.index));
+  $: selectedEntries = entries.filter((e) => selected.has(entryKey(e)));
 
   // Force format for image-only previews; force audio category for Spotify/SoundCloud.
   $: if (allImages && format !== "image") format = "image";
@@ -131,6 +135,12 @@
     } catch (_) {}
   }
 
+  // Make a stable per-entry id when downloading and selecting across multiple
+  // source URLs (each has its own 1-based index that --playlist-items uses).
+  function entryKey(entry) {
+    return `${entry.sourceUrl || ""}#${entry.index}`;
+  }
+
   async function handlePreview() {
     if (!canPreview) return;
     state = "probing";
@@ -140,10 +150,50 @@
     results = [];
 
     try {
-      const res = await platform.probeUrl(url.trim(), { cookiesPath: dlSettings.cookiesPath });
-      probe = res;
-      // Default: select all entries.
-      selected = new Set((res.entries || []).map((e) => e.index));
+      if (validUrls.length === 1) {
+        // Single-URL: keep ProbeResult shape, tag entries with sourceUrl.
+        const u = validUrls[0];
+        const res = await platform.probeUrl(u, { cookiesPath: dlSettings.cookiesPath });
+        const entries = (res.entries || []).map((e) => ({ ...e, sourceUrl: u }));
+        probe = { ...res, entries };
+        selected = new Set(entries.map(entryKey));
+      } else {
+        // Multi-URL: probe each in parallel, aggregate entries into one synthetic
+        // multi ProbeResult so the existing grid UI just works.
+        const settled = await Promise.allSettled(
+          validUrls.map((u) =>
+            platform.probeUrl(u, { cookiesPath: dlSettings.cookiesPath })
+              .then((r) => ({ u, r }))
+          )
+        );
+        const flat = [];
+        let okCount = 0;
+        let firstError = "";
+        for (const s of settled) {
+          if (s.status === "fulfilled") {
+            okCount += 1;
+            const { u, r } = s.value;
+            for (const e of (r.entries || [])) {
+              flat.push({ ...e, sourceUrl: u, sourceTitle: r.title });
+            }
+          } else if (!firstError) {
+            firstError = `${s.reason?.message || s.reason}`;
+          }
+        }
+        if (flat.length === 0) {
+          errorMessage = firstError || "All URLs failed to probe.";
+          state = "error";
+          return;
+        }
+        probe = {
+          kind: "multi",
+          title: `${okCount} URL${okCount !== 1 ? "s" : ""} · ${flat.length} item${flat.length !== 1 ? "s" : ""}`,
+          uploader: null,
+          thumbnail: null,
+          entries: flat,
+        };
+        selected = new Set(flat.map(entryKey));
+      }
       state = "preview";
     } catch (err) {
       errorMessage = `${err?.message || err}`;
@@ -163,15 +213,15 @@
     downloadOp.set("idle");
   }
 
-  function toggleEntry(idx) {
+  function toggleEntry(key) {
     const next = new Set(selected);
-    if (next.has(idx)) next.delete(idx);
-    else next.add(idx);
+    if (next.has(key)) next.delete(key);
+    else next.add(key);
     selected = next;
   }
 
   function selectAll() {
-    selected = new Set(entries.map((e) => e.index));
+    selected = new Set(entries.map(entryKey));
   }
 
   function clearSelection() {
@@ -211,16 +261,17 @@
     totalItems = items.length;
 
     try {
-      if (!isMulti) {
-        // Single item: no playlist_items pin.
-        const only = items[0] || { index: 1, title: probe?.title || "", kind: "video" };
+      if (!isMulti && items.length === 1) {
+        // Single item, single source URL: no playlist_items pin.
+        const only = items[0];
+        const sourceUrl = only.sourceUrl || validUrls[0] || url.trim();
         currentItemTitle = only.title || probe?.title || "";
         currentItemIndex = 1;
         progress = 0;
         stage = "fetching";
         const res = await platform.downloadFromUrl({
           fileId: baseId,
-          url: url.trim(),
+          url: sourceUrl,
           format: entryFormat(only),
           quality,
           outputDir: outputDir || null,
@@ -230,29 +281,36 @@
         });
         results = [res];
       } else {
-        // Multi-item: download each entry sequentially with --playlist-items pinning.
+        // Multi-item (within a single URL or across multiple URLs): download each
+        // entry sequentially. For entries that came from a multi-item source URL,
+        // pin to the right index via --playlist-items.
         for (let i = 0; i < items.length; i += 1) {
           const entry = items[i];
+          const sourceUrl = entry.sourceUrl || validUrls[0] || url.trim();
+          // Only pin index when we're inside a multi-item source. For single-entry
+          // URLs (e.g. one of N pasted YouTube links), passing --playlist-items is
+          // unnecessary and yt-dlp logs a warning.
+          const sourceMatches = entries.filter((e) => e.sourceUrl === entry.sourceUrl).length;
+          const pin = sourceMatches > 1 ? String(entry.index) : null;
           currentItemTitle = entry.title;
           currentItemIndex = i + 1;
           progress = 0;
           stage = "fetching";
-          const perItemId = `${baseId}_${entry.index}`;
+          const perItemId = `${baseId}_${i + 1}`;
           fileId = perItemId;
           const res = await platform.downloadFromUrl({
             fileId: perItemId,
-            url: url.trim(),
+            url: sourceUrl,
             format: entryFormat(entry),
             quality,
             outputDir: outputDir || null,
-            playlistItems: String(entry.index),
+            playlistItems: pin,
             spotifyClientId: dlSettings.spotifyClientId,
             spotifyClientSecret: dlSettings.spotifyClientSecret,
             cookiesPath: dlSettings.cookiesPath,
           });
           results = [...results, res];
         }
-        // Restore base id so any trailing progress events are still matched.
         fileId = baseId;
       }
       state = "done";
@@ -275,6 +333,7 @@
   }
 
   function handleReset() {
+    url = "";
     backToIdle();
   }
 
@@ -313,19 +372,22 @@
   </div>
 
   {#if state === "idle" || state === "error"}
-    <div class="url-box">
-      <input
-        type="text"
+    <div class="url-box" class:multi={multiUrlInput}>
+      <textarea
         class="url-input"
-        placeholder="https://… or spotify:track:…"
+        class:multi={multiUrlInput}
+        placeholder="https://… or spotify:track:…&#10;Tip: paste multiple URLs, one per line"
         bind:value={url}
+        rows={multiUrlInput ? Math.min(8, urlList.length + 1) : 1}
         autocomplete="off"
         spellcheck="false"
-      />
-      {#if detectedSite}
+      ></textarea>
+      {#if detectedSite && !multiUrlInput}
         <span class="site-chip" class:unknown={detectedSite === "Unknown source"} class:spotify={isSpotify}>
           {detectedSite}
         </span>
+      {:else if multiUrlInput}
+        <span class="site-chip multi-chip">{validUrls.length} URLs</span>
       {/if}
     </div>
 
@@ -480,18 +542,22 @@
     {#if !isMulti}
       <!-- Single item card -->
       <div class="single-card">
-        {#if entries[0]?.thumbnail || probe?.thumbnail}
-          <div class="single-thumb">
-            <img src={entries[0]?.thumbnail || probe?.thumbnail} alt="" referrerpolicy="no-referrer" />
-            {#if entries[0]?.kind === "image"}
-              <span class="kind-chip image">Image</span>
-            {:else if entries[0]?.kind === "audio"}
-              <span class="kind-chip audio">Audio</span>
-            {:else if entries[0]?.duration}
-              <span class="duration-chip">{formatDuration(entries[0].duration)}</span>
-            {/if}
-          </div>
-        {/if}
+        <div class="single-thumb">
+          {#if entries[0]?.thumbnail || probe?.thumbnail}
+            <img src={entries[0]?.thumbnail || probe?.thumbnail} alt="" referrerpolicy="no-referrer" on:error={(e) => e.currentTarget.style.display = 'none'} />
+          {:else}
+            <div class="thumb-placeholder">
+              {entries[0]?.kind === "image" ? "IMG" : entries[0]?.kind === "audio" ? "AUD" : "VID"}
+            </div>
+          {/if}
+          {#if entries[0]?.kind === "image"}
+            <span class="kind-chip image">Image</span>
+          {:else if entries[0]?.kind === "audio"}
+            <span class="kind-chip audio">Audio</span>
+          {:else if entries[0]?.duration}
+            <span class="duration-chip">{formatDuration(entries[0].duration)}</span>
+          {/if}
+        </div>
         <div class="single-meta">
           <div class="single-title">{probe?.title || entries[0]?.title || "Untitled"}</div>
           {#if probe?.uploader}
@@ -512,23 +578,23 @@
         </div>
       </div>
       <div class="grid">
-        {#each entries as entry (entry.index)}
+        {#each entries as entry (entryKey(entry))}
           <button
             type="button"
             class="grid-card"
-            class:selected={selected.has(entry.index)}
-            on:click={() => toggleEntry(entry.index)}
+            class:selected={selected.has(entryKey(entry))}
+            on:click={() => toggleEntry(entryKey(entry))}
           >
             <div class="grid-thumb">
               {#if entry.thumbnail}
-                <img src={entry.thumbnail} alt="" referrerpolicy="no-referrer" />
+                <img src={entry.thumbnail} alt="" referrerpolicy="no-referrer" on:error={(e) => e.currentTarget.style.display = 'none'} />
               {:else}
                 <div class="thumb-placeholder">
                   {entry.kind === "image" ? "IMG" : entry.kind === "audio" ? "AUD" : "VID"}
                 </div>
               {/if}
-              <span class="check" class:on={selected.has(entry.index)}>
-                {#if selected.has(entry.index)}
+              <span class="check" class:on={selected.has(entryKey(entry))}>
+                {#if selected.has(entryKey(entry))}
                   <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round" stroke-linejoin="round">
                     <polyline points="20 6 9 17 4 12" />
                   </svg>
@@ -710,7 +776,9 @@
   .sub { font-size: 0.78rem; color: var(--text-muted); margin: 0; line-height: 1.45; }
 
   .url-box { position: relative; display: flex; }
-  .url-input { flex: 1; padding: 12px 88px 12px 14px; background: var(--bg-card); border: 1px solid var(--border); border-radius: var(--radius-sm); color: var(--text-primary); font-size: 0.88rem; font-family: inherit; outline: none; transition: border-color var(--transition-fast); }
+  .url-input { flex: 1; padding: 12px 88px 12px 14px; background: var(--bg-card); border: 1px solid var(--border); border-radius: var(--radius-sm); color: var(--text-primary); font-size: 0.88rem; font-family: inherit; outline: none; transition: border-color var(--transition-fast); resize: vertical; min-height: 44px; line-height: 1.45; }
+  .url-input.multi { padding: 10px 14px 10px 14px; font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; font-size: 0.78rem; }
+  .multi-chip { background: var(--accent-dim) !important; color: var(--accent) !important; }
   .url-input:focus { border-color: var(--accent-dim); box-shadow: 0 0 0 3px var(--accent-glow, rgba(0,0,0,0.05)); }
 
   .site-chip { position: absolute; right: 8px; top: 50%; transform: translateY(-50%); padding: 3px 9px; border-radius: 100px; background: var(--accent-dim, var(--bg-secondary)); color: var(--accent); font-size: 0.68rem; font-weight: 600; pointer-events: none; }
