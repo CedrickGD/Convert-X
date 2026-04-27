@@ -92,11 +92,17 @@ export function createDesktopAdapter() {
         quality: params.quality,
         outputDir: params.outputDir,
         playlistItems: params.playlistItems || null,
+        spotifyClientId: params.spotifyClientId || null,
+        spotifyClientSecret: params.spotifyClientSecret || null,
+        cookiesPath: params.cookiesPath || null,
       });
     },
 
-    async probeUrl(url) {
-      return invoke("probe_url", { url });
+    async probeUrl(url, opts = {}) {
+      return invoke("probe_url", {
+        url,
+        cookiesPath: opts.cookiesPath || null,
+      });
     },
 
     async cancelDownload() {

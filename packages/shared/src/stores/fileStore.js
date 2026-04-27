@@ -68,6 +68,29 @@ export const settingsStore = writable({
 // Save outputDir to localStorage whenever it changes
 settingsStore.subscribe((s) => saveOutputDir(s.outputDir));
 
+// Downloader-specific settings: Spotify API credentials, cookies file path.
+// Persisted in localStorage in plaintext — these are user-issued tokens, not
+// passwords, but worth being aware of.
+const DL_SETTINGS_KEY = "convertx-downloader-settings";
+function loadDownloaderSettings() {
+  try {
+    const raw = localStorage.getItem(DL_SETTINGS_KEY);
+    if (!raw) return { spotifyClientId: "", spotifyClientSecret: "", cookiesPath: "" };
+    const parsed = JSON.parse(raw);
+    return {
+      spotifyClientId: parsed.spotifyClientId || "",
+      spotifyClientSecret: parsed.spotifyClientSecret || "",
+      cookiesPath: parsed.cookiesPath || "",
+    };
+  } catch {
+    return { spotifyClientId: "", spotifyClientSecret: "", cookiesPath: "" };
+  }
+}
+export const downloaderSettings = writable(loadDownloaderSettings());
+downloaderSettings.subscribe((s) => {
+  try { localStorage.setItem(DL_SETTINGS_KEY, JSON.stringify(s)); } catch {}
+});
+
 // App mode: convert | resize | download | credits
 export const appMode = writable("convert");
 

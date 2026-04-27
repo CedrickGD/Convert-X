@@ -1,7 +1,7 @@
 <script>
   import { onMount, onDestroy } from "svelte";
   import { getPlatform } from "../platform.js";
-  import { settingsStore, downloadOp } from "../stores/fileStore.js";
+  import { settingsStore, downloadOp, downloaderSettings } from "../stores/fileStore.js";
   import DesktopDownload from "./DesktopDownload.svelte";
 
   const platform = getPlatform();
@@ -16,6 +16,15 @@
   let format = "mp4";           // any value from VIDEO_FORMATS or AUDIO_FORMATS
   let quality = "best";
   let outputDir = "";
+
+  // Persisted settings (Spotify credentials, cookies path)
+  let dlSettings = { spotifyClientId: "", spotifyClientSecret: "", cookiesPath: "" };
+  let settingsOpen = false;
+  downloaderSettings.subscribe((v) => { dlSettings = v; });
+
+  function updateDlSettings(patch) {
+    downloaderSettings.update((s) => ({ ...s, ...patch }));
+  }
 
   // States: idle | probing | preview | downloading | done | error
   let state = "idle";
@@ -131,7 +140,7 @@
     results = [];
 
     try {
-      const res = await platform.probeUrl(url.trim());
+      const res = await platform.probeUrl(url.trim(), { cookiesPath: dlSettings.cookiesPath });
       probe = res;
       // Default: select all entries.
       selected = new Set((res.entries || []).map((e) => e.index));
@@ -215,6 +224,9 @@
           format: entryFormat(only),
           quality,
           outputDir: outputDir || null,
+          spotifyClientId: dlSettings.spotifyClientId,
+          spotifyClientSecret: dlSettings.spotifyClientSecret,
+          cookiesPath: dlSettings.cookiesPath,
         });
         results = [res];
       } else {
@@ -234,6 +246,9 @@
             quality,
             outputDir: outputDir || null,
             playlistItems: String(entry.index),
+            spotifyClientId: dlSettings.spotifyClientId,
+            spotifyClientSecret: dlSettings.spotifyClientSecret,
+            cookiesPath: dlSettings.cookiesPath,
           });
           results = [...results, res];
         }
@@ -354,6 +369,84 @@
           Preview
         </button>
       </div>
+
+      <!-- Optional Settings panel: Spotify creds + cookies file -->
+      <button class="settings-toggle" on:click={() => (settingsOpen = !settingsOpen)} type="button">
+        <svg class="chevron" class:open={settingsOpen} width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4"><polyline points="9 18 15 12 9 6"/></svg>
+        Advanced settings (Spotify credentials, cookies)
+        {#if dlSettings.spotifyClientId || dlSettings.cookiesPath}
+          <span class="settings-tag">Configured</span>
+        {/if}
+      </button>
+      {#if settingsOpen}
+        <div class="settings-panel">
+          <div class="settings-section">
+            <div class="settings-title">Spotify API credentials</div>
+            <p class="settings-help">
+              Bypasses spotdl's shared API quota (which is rate-limited globally for everyone).
+              Free, 5 minutes:
+              <a href="https://developer.spotify.com/dashboard" target="_blank" rel="noopener noreferrer">developer.spotify.com/dashboard</a>
+              → Create app → copy Client ID + Secret.
+            </p>
+            <div class="settings-field">
+              <label for="sp-id">Client ID</label>
+              <input
+                id="sp-id"
+                type="text"
+                class="settings-input"
+                placeholder="32-char hex"
+                value={dlSettings.spotifyClientId}
+                on:input={(e) => updateDlSettings({ spotifyClientId: e.target.value.trim() })}
+                spellcheck="false"
+                autocomplete="off"
+              />
+            </div>
+            <div class="settings-field">
+              <label for="sp-secret">Client Secret</label>
+              <input
+                id="sp-secret"
+                type="password"
+                class="settings-input"
+                placeholder="32-char hex"
+                value={dlSettings.spotifyClientSecret}
+                on:input={(e) => updateDlSettings({ spotifyClientSecret: e.target.value.trim() })}
+                spellcheck="false"
+                autocomplete="off"
+              />
+            </div>
+          </div>
+
+          <div class="settings-section">
+            <div class="settings-title">Cookies file</div>
+            <p class="settings-help">
+              Netscape-format cookies.txt exported from a logged-in browser session.
+              Unlocks private Instagram posts, age-restricted YouTube, paywalled stuff you have access to.
+              Browser extensions like "Get cookies.txt LOCALLY" produce the right format.
+            </p>
+            <div class="settings-field">
+              <label for="cookies-path">cookies.txt path</label>
+              <div class="dir-row">
+                <input
+                  id="cookies-path"
+                  type="text"
+                  class="settings-input"
+                  placeholder="C:\path\to\cookies.txt"
+                  value={dlSettings.cookiesPath}
+                  on:input={(e) => updateDlSettings({ cookiesPath: e.target.value.trim() })}
+                  spellcheck="false"
+                  autocomplete="off"
+                />
+                <button class="btn ghost small" on:click={async () => {
+                  const f = await platform.pickFiles?.({ multiple: false, extensions: ["txt"], filterName: "cookies.txt" });
+                  if (f && f[0]?.path) updateDlSettings({ cookiesPath: f[0].path });
+                }}>Choose…</button>
+              </div>
+            </div>
+          </div>
+
+          <p class="settings-note">Settings are stored locally (browser localStorage / app data). Not shared.</p>
+        </div>
+      {/if}
     {:else}
       <div class="web-notice">
         <DesktopDownload variant="card" />
@@ -661,6 +754,94 @@
 
   .web-notice { display: flex; flex-direction: column; gap: 10px; }
   .web-explainer { font-size: 0.74rem; color: var(--text-muted); line-height: 1.5; margin: 0; text-align: center; }
+
+  .settings-toggle {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    padding: 10px 14px;
+    background: transparent;
+    border: 1px dashed var(--border);
+    border-radius: var(--radius-sm);
+    color: var(--text-muted);
+    font-size: 0.78rem;
+    font-weight: 600;
+    text-align: left;
+    cursor: pointer;
+    transition: all var(--transition-fast);
+  }
+  .settings-toggle:hover { color: var(--text-secondary); border-color: var(--accent-dim); }
+  .settings-toggle .chevron { transition: transform 0.15s ease; }
+  .settings-toggle .chevron.open { transform: rotate(90deg); }
+  .settings-tag {
+    margin-left: auto;
+    padding: 2px 8px;
+    background: var(--accent-dim);
+    color: var(--accent);
+    border-radius: 100px;
+    font-size: 0.62rem;
+    font-weight: 700;
+  }
+  .settings-panel {
+    display: flex;
+    flex-direction: column;
+    gap: 14px;
+    padding: 14px;
+    background: var(--bg-card);
+    border: 1px solid var(--border);
+    border-radius: var(--radius-sm);
+  }
+  .settings-section {
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+  }
+  .settings-section + .settings-section {
+    padding-top: 12px;
+    border-top: 1px solid var(--border);
+  }
+  .settings-title {
+    font-size: 0.78rem;
+    font-weight: 700;
+    color: var(--text-primary);
+  }
+  .settings-help {
+    font-size: 0.72rem;
+    color: var(--text-muted);
+    line-height: 1.5;
+    margin: 0;
+  }
+  .settings-help a { color: var(--accent); text-decoration: underline; text-underline-offset: 2px; }
+  .settings-field {
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+  }
+  .settings-field label {
+    font-size: 0.68rem;
+    font-weight: 600;
+    color: var(--text-muted);
+    text-transform: uppercase;
+    letter-spacing: 0.06em;
+  }
+  .settings-input {
+    padding: 8px 10px;
+    background: var(--bg-secondary);
+    border: 1px solid var(--border);
+    border-radius: var(--radius-sm);
+    color: var(--text-primary);
+    font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+    font-size: 0.78rem;
+    outline: none;
+    transition: border-color var(--transition-fast);
+  }
+  .settings-input:focus { border-color: var(--accent-dim); }
+  .settings-note {
+    font-size: 0.68rem;
+    color: var(--text-muted);
+    margin: 0;
+    text-align: center;
+  }
 
   .progress-panel { padding: 18px; background: var(--bg-card); border: 1px solid var(--border); border-radius: var(--radius-sm); display: flex; flex-direction: column; gap: 10px; }
   .progress-top { display: flex; justify-content: space-between; align-items: baseline; }

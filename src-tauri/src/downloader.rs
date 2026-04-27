@@ -48,6 +48,13 @@ pub struct DownloadOptions {
     /// When set, passed to yt-dlp as --playlist-items (e.g. "1,3,5"). Used to pin
     /// a multi-item post (Instagram carousel, etc.) to a specific entry index.
     pub playlist_items: Option<String>,
+    /// Optional user-supplied Spotify API credentials (overrides spotdl's
+    /// shared default app, which routinely hits a 24h global rate limit).
+    pub spotify_client_id: Option<String>,
+    pub spotify_client_secret: Option<String>,
+    /// Optional path to a Netscape-format cookies.txt — unlocks login-gated
+    /// content (private Instagram, age-restricted YouTube, etc.).
+    pub cookies_path: Option<String>,
 }
 
 #[derive(Clone, Serialize)]
@@ -164,14 +171,10 @@ fn build_ytdlp_args(
 
     let mut args: Vec<String> = vec![
         opts.url.clone(),
-        // Final filename keeps the title; temp fragments use only the video ID
-        // so users don't see the title leaking into their Downloads folder
-        // mid-download (or in System notifications, Recent Files, etc.).
         "-o".to_string(),
         "%(title)s.%(ext)s".to_string(),
         "-o".to_string(),
         "temp:%(id)s.%(ext)s".to_string(),
-        // Split temp fragments into the OS temp dir; final file lands in home.
         "--paths".to_string(),
         format!("home:{}", output_dir.display()),
         "--paths".to_string(),
@@ -183,6 +186,12 @@ fn build_ytdlp_args(
         ffmpeg_path.to_string_lossy().to_string(),
         "--embed-metadata".to_string(),
     ];
+
+    // Optional cookies.txt for login-gated content.
+    if let Some(cookies) = opts.cookies_path.as_deref().filter(|s| !s.trim().is_empty()) {
+        args.push("--cookies".to_string());
+        args.push(cookies.to_string());
+    }
 
     if let Some(items) = pin_item {
         args.push("--playlist-items".to_string());
@@ -543,7 +552,7 @@ pub async fn run_spotdl(
         .to_string_lossy()
         .to_string();
 
-    let args: Vec<String> = vec![
+    let mut args: Vec<String> = vec![
         "download".to_string(),
         opts.url.clone(),
         "--output".to_string(),
@@ -559,6 +568,18 @@ pub async fn run_spotdl(
         "--bitrate".to_string(),
         "auto".to_string(),
     ];
+
+    // User-supplied Spotify Web API credentials override spotdl's shared
+    // default app (which is rate-limited globally for everyone).
+    if let (Some(id), Some(secret)) = (
+        opts.spotify_client_id.as_deref().filter(|s| !s.trim().is_empty()),
+        opts.spotify_client_secret.as_deref().filter(|s| !s.trim().is_empty()),
+    ) {
+        args.push("--client-id".to_string());
+        args.push(id.to_string());
+        args.push("--client-secret".to_string());
+        args.push(secret.to_string());
+    }
 
     // Make sure spotdl can find yt-dlp (it spawns yt-dlp itself).
     // If our bundled yt-dlp lives in src-tauri/bin/ but isn't on PATH, prepend it.
@@ -700,6 +721,9 @@ pub async fn download_from_url(
     quality: String,
     output_dir: Option<String>,
     playlist_items: Option<String>,
+    spotify_client_id: Option<String>,
+    spotify_client_secret: Option<String>,
+    cookies_path: Option<String>,
 ) -> Result<DownloadResult, String> {
     let opts = DownloadOptions {
         url: url.clone(),
@@ -707,6 +731,9 @@ pub async fn download_from_url(
         quality,
         output_dir,
         playlist_items,
+        spotify_client_id,
+        spotify_client_secret,
+        cookies_path,
     };
     if is_spotify_url(&url) {
         run_spotdl(app, opts, file_id, state.ytdlp_process.clone()).await
@@ -718,14 +745,16 @@ pub async fn download_from_url(
 /// Probe a URL with yt-dlp's --dump-single-json so the UI can show a preview
 /// (title, thumbnail, multi-item carousels, etc.) before committing to a download.
 #[tauri::command]
-pub async fn probe_url(app: tauri::AppHandle, url: String) -> Result<ProbeResult, String> {
+pub async fn probe_url(
+    app: tauri::AppHandle,
+    url: String,
+    cookies_path: Option<String>,
+) -> Result<ProbeResult, String> {
     let trimmed = url.trim().to_string();
     if trimmed.is_empty() {
         return Err("URL is empty".to_string());
     }
 
-    // Spotify: spotdl save-mode probing is slow and the metadata is not worth the
-    // wait for the preview. Trust the URL and return a single-entry stub.
     if is_spotify_url(&trimmed) {
         return Ok(ProbeResult {
             kind: "single".to_string(),
@@ -744,15 +773,19 @@ pub async fn probe_url(app: tauri::AppHandle, url: String) -> Result<ProbeResult
     }
 
     let ytdlp_path = get_ytdlp_path(&app);
-    let args: Vec<String> = vec![
+    let mut args: Vec<String> = vec![
         "--dump-single-json".to_string(),
         "--flat-playlist".to_string(),
         "--no-warnings".to_string(),
         "--skip-download".to_string(),
         "--socket-timeout".to_string(),
         "15".to_string(),
-        trimmed.clone(),
     ];
+    if let Some(c) = cookies_path.as_deref().filter(|s| !s.trim().is_empty()) {
+        args.push("--cookies".to_string());
+        args.push(c.to_string());
+    }
+    args.push(trimmed.clone());
 
     let mut cmd = Command::new(&ytdlp_path);
     cmd.args(&args)
