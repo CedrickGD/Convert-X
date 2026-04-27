@@ -181,12 +181,24 @@
       const newStart = Math.max(0, clamped);
       onUpdate(newStart, trimEnd);
       seekVideo(newStart);
-    } else {
+    } else if (dragging === "end") {
       const clamped = Math.max(time, trimStart + 0.1);
       const newEnd = Math.min(maxDuration, clamped);
       onUpdate(trimStart, newEnd);
       seekVideo(newEnd);
+    } else if (dragging === "playhead") {
+      seekVideo(Math.max(trimStart, Math.min(trimEnd, time)));
     }
+  }
+
+  function onPlayheadDown(e) {
+    e.preventDefault();
+    e.stopPropagation();
+    if (playing) stopPlayback();
+    dragging = "playhead";
+    didDrag = false;
+    window.addEventListener("mousemove", onMouseMove, true);
+    window.addEventListener("mouseup", onMouseUp, true);
   }
 
   function onMouseUp() {
@@ -209,17 +221,7 @@
     if (playing) stopPlayback();
     const pct = getTrackPct(e.clientX);
     const time = pctToTime(pct);
-    const distStart = Math.abs(time - trimStart);
-    const distEnd = Math.abs(time - trimEnd);
-    if (distStart < distEnd) {
-      const newStart = Math.max(0, Math.min(time, trimEnd - 0.1));
-      onUpdate(newStart, trimEnd);
-      seekVideo(newStart);
-    } else {
-      const newEnd = Math.min(maxDuration, Math.max(time, trimStart + 0.1));
-      onUpdate(trimStart, newEnd);
-      seekVideo(newEnd);
-    }
+    seekVideo(Math.max(trimStart, Math.min(trimEnd, time)));
   }
 
   function togglePlay() {
@@ -563,7 +565,6 @@
   let gainNode;
   let srcNode;
   let webAudioEnabled = false;
-  let volumeOpen = volume != null && volume !== 100;
 
   function ensureWebAudio() {
     if (webAudioEnabled || !videoEl) return;
@@ -591,8 +592,6 @@
     }
   }
 
-  $: if (volume != null && volume !== 100 && !volumeOpen) volumeOpen = true;
-
   function setVolume(v) {
     const clamped = Math.max(0, Math.min(200, Math.round(v)));
     onVolumeChange(clamped);
@@ -613,6 +612,8 @@
     <span class="clip-duration">{fmtTime(clipDuration)}</span>
   </div>
 
+  <div class="editor-grid">
+  <div class="editor-left">
   <div class="preview-container">
     {#if loading}
       <div class="loading-indicator">Loading preview...</div>
@@ -696,7 +697,14 @@
       <div class="selection" style="left: {startPct}%; width: {endPct - startPct}%"></div>
 
       {#if blobUrl}
-        <div class="playhead" style="left: {playheadPct}%"></div>
+        <!-- svelte-ignore a11y-no-static-element-interactions -->
+        <div
+          class="playhead"
+          class:active={dragging === "playhead"}
+          style="left: {playheadPct}%"
+          on:mousedown={onPlayheadDown}
+          title="Drag to scrub"
+        ></div>
       {/if}
 
       <!-- svelte-ignore a11y-no-static-element-interactions -->
@@ -755,7 +763,9 @@
       />
     </div>
   </div>
+  </div><!-- /.editor-left -->
 
+  <div class="editor-right">
   {#if showAudioToggle}
     <label class="audio-toggle">
       <span class="toggle-track" class:active={stripAudio}>
@@ -861,36 +871,33 @@
     </div>
 
     {#if !stripAudio}
-      <div class="sub-section">
-        <button class="sub-head" on:click={() => (volumeOpen = !volumeOpen)}>
-          <svg class="chevron" class:open={volumeOpen} width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><polyline points="9 18 15 12 9 6"/></svg>
-          <span>Volume</span>
-          <span class="sub-tag">{volume == null ? 100 : volume}%</span>
-        </button>
-        {#if volumeOpen}
-          <div class="sub-body">
-            <div class="volume-row">
-              <input
-                type="range"
-                min="0"
-                max="200"
-                step="1"
-                value={volume == null ? 100 : volume}
-                on:input={onVolumeSlider}
-                class="vol-slider"
-              />
-              <button class="chip ghost" on:click={resetVolume} disabled={(volume == null ? 100 : volume) === 100}>Reset</button>
-            </div>
-            <div class="volume-ticks">
-              <span>0%</span>
-              <span class="tick-100">100%</span>
-              <span>200%</span>
-            </div>
-          </div>
-        {/if}
+      <div class="volume-section">
+        <div class="volume-header">
+          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polygon points="11 5 6 9 2 9 2 15 6 15 11 19 11 5"/><path d="M15.54 8.46a5 5 0 0 1 0 7.07"/><path d="M19.07 4.93a10 10 0 0 1 0 14.14"/></svg>
+          <span class="vol-label">Volume</span>
+          <span class="vol-value">{volume == null ? 100 : volume}%</span>
+          <button class="chip ghost vol-reset" on:click={resetVolume} disabled={(volume == null ? 100 : volume) === 100}>Reset</button>
+        </div>
+        <input
+          type="range"
+          min="0"
+          max="200"
+          step="1"
+          value={volume == null ? 100 : volume}
+          on:input={onVolumeSlider}
+          class="vol-slider"
+          aria-label="Volume"
+        />
+        <div class="volume-ticks">
+          <span>0%</span>
+          <span class="tick-100">100%</span>
+          <span>200%</span>
+        </div>
       </div>
     {/if}
   {/if}
+  </div><!-- /.editor-right -->
+  </div><!-- /.editor-grid -->
 </div>
 
 <style>
@@ -908,6 +915,27 @@
     gap: 8px;
     margin-bottom: 14px;
     color: var(--text-secondary);
+  }
+
+  .editor-grid {
+    display: grid;
+    grid-template-columns: 1fr;
+    gap: 14px;
+    align-items: start;
+  }
+
+  .editor-left,
+  .editor-right {
+    display: flex;
+    flex-direction: column;
+    gap: 10px;
+    min-width: 0;
+  }
+
+  @media (min-width: 900px) {
+    .editor-grid {
+      grid-template-columns: minmax(0, 1fr) minmax(280px, 340px);
+    }
   }
 
   .editor-header svg { color: var(--accent); flex-shrink: 0; }
@@ -1095,15 +1123,31 @@
 
   .playhead {
     position: absolute;
-    top: -2px;
-    bottom: -2px;
-    width: 2px;
-    background: #fff;
-    transform: translateX(-50%);
+    top: -6px;
+    bottom: -6px;
+    width: 16px;
+    margin-left: -8px;
     z-index: 4;
-    pointer-events: none;
-    box-shadow: 0 0 6px rgba(255, 255, 255, 0.5);
+    cursor: ew-resize;
+    display: flex;
+    justify-content: center;
+    background: transparent;
+  }
+
+  .playhead::before {
+    content: "";
+    width: 2px;
+    height: 100%;
+    background: #fff;
     border-radius: 1px;
+    box-shadow: 0 0 6px rgba(255, 255, 255, 0.5);
+    transition: width 0.12s ease, box-shadow 0.12s ease;
+  }
+
+  .playhead:hover::before,
+  .playhead.active::before {
+    width: 3px;
+    box-shadow: 0 0 10px rgba(255, 255, 255, 0.85);
   }
 
   .handle {
@@ -1386,14 +1430,38 @@
 
   .speed-input-row input:focus { border-color: var(--accent-dim); }
 
-  .volume-row {
-    display: flex;
-    align-items: center;
-    gap: 10px;
+  .volume-section {
+    background: var(--bg-card);
+    border: 1px solid var(--border);
+    border-radius: var(--radius-sm);
+    padding: 10px 12px;
   }
 
+  .volume-header {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    color: var(--text-secondary);
+    font-size: 0.78rem;
+    font-weight: 600;
+    margin-bottom: 6px;
+  }
+
+  .volume-header svg { color: var(--accent); }
+
+  .vol-label { letter-spacing: -0.01em; }
+
+  .vol-value {
+    margin-left: auto;
+    font-variant-numeric: tabular-nums;
+    color: var(--text-primary);
+    font-weight: 600;
+  }
+
+  .vol-reset { padding: 3px 10px; font-size: 0.7rem; }
+
   .vol-slider {
-    flex: 1;
+    width: 100%;
     height: 4px;
     -webkit-appearance: none;
     appearance: none;

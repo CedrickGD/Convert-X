@@ -14,7 +14,7 @@
     : metadata?.mimeType?.startsWith("audio") ? "audio" : "image";
 
   $: fileRef = filePath || (fileObj ? fileObj.name : "");
-  $: if (fileRef && fileRef !== loadedRef && (kind === "image" || kind === "video")) {
+  $: if (fileRef && fileRef !== loadedRef) {
     loadPreview(fileRef, kind);
   }
 
@@ -31,6 +31,9 @@
         if (fileKind === "image") {
           const map = { jpg: "image/jpeg", jpeg: "image/jpeg", png: "image/png", gif: "image/gif", webp: "image/webp", bmp: "image/bmp", svg: "image/svg+xml", tiff: "image/tiff", tif: "image/tiff", ico: "image/x-icon", avif: "image/avif" };
           mime = map[ext] || "image/png";
+        } else if (fileKind === "audio") {
+          const map = { mp3: "audio/mpeg", wav: "audio/wav", ogg: "audio/ogg", flac: "audio/flac", aac: "audio/aac", m4a: "audio/mp4", opus: "audio/opus", wma: "audio/x-ms-wma" };
+          mime = map[ext] || "audio/mpeg";
         } else {
           const map = { mp4: "video/mp4", webm: "video/webm", avi: "video/x-msvideo", mkv: "video/x-matroska", mov: "video/quicktime", m4v: "video/mp4" };
           mime = map[ext] || "video/mp4";
@@ -75,6 +78,11 @@
   {#if previewUrl && kind === "image"}
     <div class="media-preview">
       <img src={previewUrl} alt="Preview" class="media-img" />
+    </div>
+  {:else if previewUrl && kind === "audio"}
+    <div class="audio-preview">
+      <!-- svelte-ignore a11y-media-has-caption -->
+      <audio src={previewUrl} controls preload="metadata" class="audio-el"></audio>
     </div>
   {/if}
 
@@ -131,6 +139,21 @@
     max-height: 100%;
     object-fit: contain;
     display: block;
+  }
+
+  .audio-preview {
+    width: 100%;
+    padding: 14px;
+    background: var(--bg-secondary);
+    border-bottom: 1px solid var(--border);
+    display: flex;
+    align-items: center;
+    justify-content: center;
+  }
+
+  .audio-el {
+    width: 100%;
+    max-width: 480px;
   }
 
   .meta-row {

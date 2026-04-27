@@ -359,7 +359,7 @@
   $: isGif = settings.selectedFormat === "gif";
   $: hasVideo = types.has("video");
   $: hasDuration = files.some((f) => f.metadata?.duration > 0);
-  $: showClipEditor = hasDuration && settings.selectedFormat;
+  $: showClipEditor = hasDuration;
   $: clipVideoFile = files.find((f) => f.metadata?.duration > 0) || null;
   $: clipMaxDuration = clipVideoFile?.metadata?.duration || 0;
 
