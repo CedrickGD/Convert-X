@@ -51,6 +51,18 @@ if not exist "%~dp0src-tauri\bin\ffprobe.exe" (
     pause
     exit /b 1
 )
+if not exist "%~dp0src-tauri\bin\yt-dlp.exe" (
+    echo  [ERROR] yt-dlp.exe not found in src-tauri\bin\
+    echo  Download from: https://github.com/yt-dlp/yt-dlp/releases/latest/download/yt-dlp.exe
+    pause
+    exit /b 1
+)
+if not exist "%~dp0src-tauri\bin\spotdl.exe" (
+    echo  [ERROR] spotdl.exe not found in src-tauri\bin\
+    echo  Download from: https://github.com/spotDL/spotify-downloader/releases/latest
+    pause
+    exit /b 1
+)
 
 :: Install npm dependencies if needed
 if not exist "%~dp0node_modules" (

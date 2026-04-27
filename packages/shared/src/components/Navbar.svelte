@@ -1,5 +1,5 @@
 <script>
-  import { convertBusy, resizeBusy } from "../stores/fileStore.js";
+  import { convertBusy, resizeBusy, downloadBusy } from "../stores/fileStore.js";
   export let activeMode;
   export let onModeChange;
 </script>
@@ -20,6 +20,14 @@
   >
     Resize
     {#if $resizeBusy}<span class="busy-dot" aria-label="resize in progress"></span>{/if}
+  </button>
+  <button
+    class="tab"
+    class:active={activeMode === "download"}
+    on:click={() => onModeChange("download")}
+  >
+    Download
+    {#if $downloadBusy}<span class="busy-dot" aria-label="download in progress"></span>{/if}
   </button>
   <button
     class="tab"

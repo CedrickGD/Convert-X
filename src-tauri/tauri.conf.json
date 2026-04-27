@@ -35,7 +35,9 @@
     ],
     "resources": {
       "bin/ffmpeg.exe": "bin/ffmpeg.exe",
-      "bin/ffprobe.exe": "bin/ffprobe.exe"
+      "bin/ffprobe.exe": "bin/ffprobe.exe",
+      "bin/yt-dlp.exe": "bin/yt-dlp.exe",
+      "bin/spotdl.exe": "bin/spotdl.exe"
     }
   }
 }

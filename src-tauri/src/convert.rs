@@ -7,6 +7,7 @@ use tauri::Manager;
 
 pub struct AppState {
     pub ffmpeg_process: Arc<Mutex<Option<u32>>>,
+    pub ytdlp_process: Arc<Mutex<Option<u32>>>,
 }
 
 #[derive(Clone, Serialize)]

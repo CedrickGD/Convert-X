@@ -1,5 +1,6 @@
 mod convert;
 mod detect;
+mod downloader;
 mod ffmpeg;
 
 use convert::AppState;
@@ -36,12 +37,15 @@ pub fn run() {
         .plugin(tauri_plugin_dialog::init())
         .manage(AppState {
             ffmpeg_process: Arc::new(Mutex::new(None)),
+            ytdlp_process: Arc::new(Mutex::new(None)),
         })
         .invoke_handler(tauri::generate_handler![
             detect::detect_file,
             convert::convert_file,
             convert::cancel_conversion,
             convert::resize_image,
+            downloader::download_from_url,
+            downloader::cancel_download,
             read_file_binary,
             open_file,
             open_in_folder,

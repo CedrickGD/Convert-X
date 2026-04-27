@@ -23,6 +23,7 @@
   import OutputPanel from "./OutputPanel.svelte";
   import ThemeToggle from "./ThemeToggle.svelte";
   import Credits from "./Credits.svelte";
+  import DownloadView from "./DownloadView.svelte";
   import { REPO_URL } from "../lib/github.js";
 
   let files = [];
@@ -391,6 +392,9 @@
   <div class="content">
     {#if mode === "credits"}
       <Credits />
+
+    {:else if mode === "download"}
+      <DownloadView />
 
     {:else if view === "idle"}
       <div class="animate-in">

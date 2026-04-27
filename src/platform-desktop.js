@@ -84,6 +84,27 @@ export function createDesktopAdapter() {
       return invoke("cancel_conversion");
     },
 
+    async downloadFromUrl(params) {
+      return invoke("download_from_url", {
+        fileId: params.fileId,
+        url: params.url,
+        format: params.format,
+        quality: params.quality,
+        outputDir: params.outputDir,
+      });
+    },
+
+    async cancelDownload() {
+      return invoke("cancel_download");
+    },
+
+    onDownloadProgress(callback) {
+      let unlisten;
+      listen("download-progress", (event) => callback(event.payload))
+        .then((fn) => (unlisten = fn));
+      return () => unlisten?.();
+    },
+
     onProgress(callback) {
       let unlisten;
       listen("conversion-progress", (event) => callback(event.payload))

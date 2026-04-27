@@ -68,13 +68,14 @@ export const settingsStore = writable({
 // Save outputDir to localStorage whenever it changes
 settingsStore.subscribe((s) => saveOutputDir(s.outputDir));
 
-// App mode: convert or resize
-export const appMode = writable("convert"); // convert | resize
+// App mode: convert | resize | download | credits
+export const appMode = writable("convert");
 
 // Per-mode operation state. "idle" means no run/done in that mode.
 // idle | converting | done
 export const convertOp = writable("idle");
 export const resizeOp = writable("idle");
+export const downloadOp = writable("idle");
 
 // Per-mode cancel signal. Each conversion loop reads its own flag via `get()`.
 export const convertCancelled = writable(false);
@@ -98,6 +99,7 @@ export const appView = derived(
 // Per-mode busy flags for the navbar dot
 export const convertBusy = derived(convertOp, ($op) => $op === "converting");
 export const resizeBusy = derived(resizeOp, ($op) => $op === "converting");
+export const downloadBusy = derived(downloadOp, ($op) => $op === "downloading");
 
 // Derived: detected file types present
 export const fileTypes = derived(filesStore, ($files) => {

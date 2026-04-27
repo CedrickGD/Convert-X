@@ -615,6 +615,14 @@ export function createWebAdapter() {
       }
     },
 
+    async downloadFromUrl() {
+      throw new Error("URL downloads need the desktop app — browser sandbox can't run yt-dlp.");
+    },
+
+    async cancelDownload() { /* no-op on web */ },
+
+    onDownloadProgress() { return () => {}; },
+
     onProgress(callback) {
       progressCallbacks.push(callback);
       return () => {
