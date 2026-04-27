@@ -101,10 +101,12 @@ mkdir "%RELEASE_DIR%"
 :: Copy the exe
 copy "%~dp0src-tauri\target\release\convertx.exe" "%RELEASE_DIR%\ConvertX.exe" >nul
 
-:: Copy FFmpeg binaries (needed alongside the exe for portable use)
+:: Copy bundled binaries (needed alongside the exe for portable use)
 mkdir "%RELEASE_DIR%\bin" >nul 2>&1
 copy "%~dp0src-tauri\bin\ffmpeg.exe" "%RELEASE_DIR%\bin\ffmpeg.exe" >nul
 copy "%~dp0src-tauri\bin\ffprobe.exe" "%RELEASE_DIR%\bin\ffprobe.exe" >nul
+copy "%~dp0src-tauri\bin\yt-dlp.exe" "%RELEASE_DIR%\bin\yt-dlp.exe" >nul
+copy "%~dp0src-tauri\bin\spotdl.exe" "%RELEASE_DIR%\bin\spotdl.exe" >nul
 
 :: Copy the MSI installer if it exists
 for %%f in ("%~dp0src-tauri\target\release\bundle\msi\*.msi") do (
