@@ -33,6 +33,10 @@ export function createDesktopAdapter() {
       return invoke("read_file_binary", { path });
     },
 
+    async fetchRemoteImage(url) {
+      return invoke("fetch_remote_image", { url });
+    },
+
     async convertFile(params) {
       return invoke("convert_file", {
         fileId: params.fileId,

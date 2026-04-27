@@ -12,6 +12,32 @@ fn read_file_binary(path: String) -> Result<tauri::ipc::Response, String> {
     Ok(tauri::ipc::Response::new(data))
 }
 
+/// Fetch a remote image and return its bytes. Used to proxy thumbnails through
+/// Tauri so CDNs that hotlink-block (Instagram, etc.) still load in the preview.
+#[tauri::command]
+async fn fetch_remote_image(url: String) -> Result<tauri::ipc::Response, String> {
+    let client = reqwest::Client::builder()
+        .timeout(std::time::Duration::from_secs(15))
+        .build()
+        .map_err(|e| format!("HTTP client init: {}", e))?;
+    let res = client
+        .get(&url)
+        .header(
+            "User-Agent",
+            "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 \
+             (KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36",
+        )
+        .header("Accept", "image/webp,image/jpeg,image/png,*/*;q=0.8")
+        .send()
+        .await
+        .map_err(|e| format!("Failed to fetch image: {}", e))?;
+    if !res.status().is_success() {
+        return Err(format!("Image fetch returned HTTP {}", res.status().as_u16()));
+    }
+    let bytes = res.bytes().await.map_err(|e| format!("Failed to read image bytes: {}", e))?;
+    Ok(tauri::ipc::Response::new(bytes.to_vec()))
+}
+
 #[tauri::command]
 fn open_file(path: String) -> Result<(), String> {
     let p = std::path::Path::new(&path);
@@ -69,6 +95,7 @@ pub fn run() {
             downloader::cancel_download,
             downloader::probe_url,
             read_file_binary,
+            fetch_remote_image,
             open_file,
             open_in_folder,
         ])

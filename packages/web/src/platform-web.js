@@ -623,6 +623,14 @@ export function createWebAdapter() {
       throw new Error("URL preview needs the desktop app — browser sandbox can't run yt-dlp.");
     },
 
+    async fetchRemoteImage(url) {
+      // Browser fetch may CORS-fail for hotlink-blocked CDNs but try anyway —
+      // the <img> fallback handles errors.
+      const r = await fetch(url);
+      if (!r.ok) throw new Error(`HTTP ${r.status}`);
+      return new Uint8Array(await r.arrayBuffer());
+    },
+
     async cancelDownload() { /* no-op on web */ },
 
     onDownloadProgress() { return () => {}; },

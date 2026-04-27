@@ -34,7 +34,7 @@
   let errorMessage = "";
 
   let probe = null;            // ProbeResult from backend
-  let selected = new Set();    // entry indexes (1-based) selected for download
+  let selected = new Set();    // entry keys selected for download
   let currentItemTitle = "";
   let currentItemIndex = 0;
   let totalItems = 0;
@@ -42,6 +42,34 @@
 
   let fileId = "";
   let unlistenProgress = null;
+
+  // Proxied thumbnail blob URLs keyed by entryKey. CDN-hotlink-blocked images
+  // (Instagram especially) won't load from a remote <img src>, so we fetch via
+  // a Tauri command and turn the bytes into a blob URL.
+  let thumbBlobs = {}; // record { [entryKey]: blobUrl }
+
+  function clearThumbBlobs() {
+    for (const k of Object.keys(thumbBlobs)) {
+      try { URL.revokeObjectURL(thumbBlobs[k]); } catch {}
+    }
+    thumbBlobs = {};
+  }
+
+  async function loadThumbnails(entries) {
+    // Fire all fetches in parallel, ignore failures — placeholder will show.
+    await Promise.all(entries.map(async (e) => {
+      const url = e.thumbnail;
+      if (!url) return;
+      try {
+        const bytes = await platform.fetchRemoteImage(url);
+        const buf = bytes instanceof Uint8Array ? bytes : new Uint8Array(bytes);
+        const blob = new Blob([buf], { type: "image/jpeg" });
+        thumbBlobs = { ...thumbBlobs, [entryKey(e)]: URL.createObjectURL(blob) };
+      } catch (_) {
+        // Leave entry without a thumb — UI shows placeholder.
+      }
+    }));
+  }
 
   settingsStore.subscribe((s) => {
     outputDir = s.outputDir || "";
@@ -149,6 +177,7 @@
     selected = new Set();
     results = [];
 
+    clearThumbBlobs();
     try {
       if (validUrls.length === 1) {
         // Single-URL: keep ProbeResult shape, tag entries with sourceUrl.
@@ -157,6 +186,7 @@
         const entries = (res.entries || []).map((e) => ({ ...e, sourceUrl: u }));
         probe = { ...res, entries };
         selected = new Set(entries.map(entryKey));
+        loadThumbnails(entries);  // background fetch, doesn't block transition
       } else {
         // Multi-URL: probe each in parallel, aggregate entries into one synthetic
         // multi ProbeResult so the existing grid UI just works.
@@ -193,6 +223,7 @@
           entries: flat,
         };
         selected = new Set(flat.map(entryKey));
+        loadThumbnails(flat);
       }
       state = "preview";
     } catch (err) {
@@ -210,6 +241,7 @@
     errorMessage = "";
     fileId = "";
     results = [];
+    clearThumbBlobs();
     downloadOp.set("idle");
   }
 
@@ -543,8 +575,8 @@
       <!-- Single item card -->
       <div class="single-card">
         <div class="single-thumb">
-          {#if entries[0]?.thumbnail || probe?.thumbnail}
-            <img src={entries[0]?.thumbnail || probe?.thumbnail} alt="" referrerpolicy="no-referrer" on:error={(e) => e.currentTarget.style.display = 'none'} />
+          {#if entries[0] && (thumbBlobs[entryKey(entries[0])] || entries[0].thumbnail || probe?.thumbnail)}
+            <img src={thumbBlobs[entryKey(entries[0])] || entries[0].thumbnail || probe?.thumbnail} alt="" referrerpolicy="no-referrer" on:error={(e) => e.currentTarget.style.display = 'none'} />
           {:else}
             <div class="thumb-placeholder">
               {entries[0]?.kind === "image" ? "IMG" : entries[0]?.kind === "audio" ? "AUD" : "VID"}
@@ -586,8 +618,8 @@
             on:click={() => toggleEntry(entryKey(entry))}
           >
             <div class="grid-thumb">
-              {#if entry.thumbnail}
-                <img src={entry.thumbnail} alt="" referrerpolicy="no-referrer" on:error={(e) => e.currentTarget.style.display = 'none'} />
+              {#if thumbBlobs[entryKey(entry)] || entry.thumbnail}
+                <img src={thumbBlobs[entryKey(entry)] || entry.thumbnail} alt="" referrerpolicy="no-referrer" on:error={(e) => e.currentTarget.style.display = 'none'} />
               {:else}
                 <div class="thumb-placeholder">
                   {entry.kind === "image" ? "IMG" : entry.kind === "audio" ? "AUD" : "VID"}
@@ -950,9 +982,9 @@
   .multi-count { font-size: 0.7rem; color: var(--text-muted); margin-top: 2px; }
   .multi-actions { display: flex; gap: 6px; flex-shrink: 0; }
 
-  .grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 10px; }
-  @media (max-width: 540px) { .grid { grid-template-columns: repeat(2, 1fr); } }
-  .grid-card { display: flex; flex-direction: column; gap: 6px; padding: 6px; background: var(--bg-card); border: 1px solid var(--border); border-radius: var(--radius-sm); cursor: pointer; text-align: left; transition: border-color var(--transition-fast), box-shadow var(--transition-fast); }
+  .grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(200px, 1fr)); gap: 12px; }
+  @media (max-width: 540px) { .grid { grid-template-columns: repeat(auto-fill, minmax(150px, 1fr)); } }
+  .grid-card { display: flex; flex-direction: column; gap: 8px; padding: 8px; background: var(--bg-card); border: 1px solid var(--border); border-radius: var(--radius-sm); cursor: pointer; text-align: left; transition: border-color var(--transition-fast), box-shadow var(--transition-fast); }
   .grid-card:hover { border-color: var(--accent-dim, var(--border)); }
   .grid-card.selected { border-color: var(--accent); box-shadow: 0 0 0 1px var(--accent); }
   .grid-thumb { position: relative; width: 100%; aspect-ratio: 1 / 1; border-radius: calc(var(--radius-sm) - 2px); overflow: hidden; background: var(--bg-secondary); }
