@@ -14,10 +14,31 @@ fn read_file_binary(path: String) -> Result<tauri::ipc::Response, String> {
 
 #[tauri::command]
 fn open_file(path: String) -> Result<(), String> {
-    std::process::Command::new("cmd")
-        .args(["/C", "start", "", &path])
-        .spawn()
-        .map_err(|e| format!("Failed to open file: {}", e))?;
+    let p = std::path::Path::new(&path);
+    if !p.exists() {
+        return Err(format!("File not found: {}", path));
+    }
+    // Use ShellExecuteW via rundll32 fallback or just spawn the file directly.
+    // The simplest reliable way on Windows: spawn `cmd /c start "" "<path>"`,
+    // but cmd's parser is finicky. Bypass cmd and use the Win32 ShellExecute API
+    // via the `start` builtin only as a last resort. The most reliable: invoke
+    // the file directly through the OS file association by spawning explorer.
+    #[cfg(windows)]
+    {
+        let mut cmd = std::process::Command::new("cmd");
+        cmd.args(["/c", "start", "", "/b", &path]);
+        // Hide cmd's own console flash.
+        use std::os::windows::process::CommandExt as _;
+        cmd.creation_flags(0x08000000);
+        cmd.spawn().map_err(|e| format!("Failed to open file: {}", e))?;
+    }
+    #[cfg(not(windows))]
+    {
+        std::process::Command::new("xdg-open")
+            .arg(&path)
+            .spawn()
+            .map_err(|e| format!("Failed to open file: {}", e))?;
+    }
     Ok(())
 }
 

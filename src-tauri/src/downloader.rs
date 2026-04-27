@@ -505,6 +505,11 @@ pub async fn run_ytdlp(
 
     let args = build_ytdlp_args(&opts, &output_dir, &temp_dir, &ffmpeg_path);
 
+    // Take the timestamp before launching so we can find files that yt-dlp
+    // wrote during this run by mtime — more reliable than parsing stdout
+    // (which varies wildly per extractor).
+    let started_at = std::time::SystemTime::now();
+
     let (captured, _) = run_child(
         app,
         ytdlp_path,
@@ -515,10 +520,25 @@ pub async fn run_ytdlp(
         parse_output_path_ytdlp,
     ).await?;
 
-    let output_path = captured.ok_or_else(||
-        "Download finished but output path could not be determined.".to_string()
-    )?;
-    let resolved = resolve_final_path(&output_path, &opts.format);
+    // Trust the filesystem first: the freshest matching file in output_dir is
+    // the one yt-dlp just wrote. Falls back to the captured stdout path
+    // (resolved against likely extensions) if no fresh file is found —
+    // shouldn't happen on success, but covers obscure extractors.
+    let on_disk = newest_file_since(&output_dir, expected_exts(&opts.format), started_at);
+    let resolved = on_disk.unwrap_or_else(|| {
+        captured
+            .map(|p| resolve_final_path(&p, &opts.format))
+            .unwrap_or_default()
+    });
+
+    if resolved.is_empty() || !std::path::Path::new(&resolved).exists() {
+        return Err(format!(
+            "Download finished but the file couldn't be located in {}. \
+             yt-dlp may have used a different output naming scheme for this site.",
+            output_dir.display()
+        ));
+    }
+
     let size = std::fs::metadata(&resolved).map(|m| m.len()).unwrap_or(0);
 
     Ok(DownloadResult {
@@ -613,6 +633,7 @@ pub async fn run_spotdl(
     let stdout = child.stdout.take().ok_or("Failed to capture spotdl stdout")?;
     let stderr = child.stderr.take().ok_or("Failed to capture spotdl stderr")?;
     let start_time = std::time::Instant::now();
+    let started_at = std::time::SystemTime::now();
 
     let app_for_stdout = app.clone();
     let file_id_for_stdout = file_id.clone();
@@ -681,8 +702,15 @@ pub async fn run_spotdl(
         return Err(friendly_error(&detail, status.code().unwrap_or(-1)));
     }
 
-    let output_path = captured.or_else(|| newest_file_in(&output_dir, "mp3"))
+    // Trust the filesystem: newest mp3 in output_dir written during this run.
+    let on_disk = newest_file_since(&output_dir, &["mp3"], started_at);
+    let output_path = on_disk
+        .or(captured)
+        .or_else(|| newest_file_in(&output_dir, "mp3"))
         .ok_or_else(|| "Spotify download finished but the file path couldn't be located.".to_string())?;
+    if !std::path::Path::new(&output_path).exists() {
+        return Err("Spotify download finished but the resulting file is missing.".to_string());
+    }
 
     let size = std::fs::metadata(&output_path).map(|m| m.len()).unwrap_or(0);
 
@@ -706,6 +734,49 @@ fn newest_file_in(dir: &std::path::Path, ext: &str) -> Option<String> {
                     }
                 }
             }
+        }
+    }
+    best.map(|(_, p)| p.to_string_lossy().to_string())
+}
+
+const VIDEO_EXTS: &[&str] = &["mp4", "mkv", "webm", "avi", "mov"];
+const AUDIO_EXTS: &[&str] = &["mp3", "m4a", "wav", "flac", "ogg", "opus", "aac"];
+const IMAGE_EXTS: &[&str] = &["jpg", "jpeg", "png", "webp", "gif", "heic"];
+
+fn expected_exts(format: &str) -> &'static [&'static str] {
+    if is_audio_format(format) { AUDIO_EXTS }
+    else if is_video_format(format) { VIDEO_EXTS }
+    else if format == "image" { IMAGE_EXTS }
+    else { VIDEO_EXTS }
+}
+
+/// Find the newest file in `dir` whose extension matches one in `exts` and that
+/// was modified at or after `since`. Used to robustly locate the just-downloaded
+/// file when yt-dlp's stdout reports a temp/intermediate path instead of the
+/// final home path. Sequential downloads make this unambiguous.
+fn newest_file_since(
+    dir: &std::path::Path,
+    exts: &[&str],
+    since: std::time::SystemTime,
+) -> Option<String> {
+    let entries = std::fs::read_dir(dir).ok()?;
+    let mut best: Option<(std::time::SystemTime, PathBuf)> = None;
+    for entry in entries.flatten() {
+        let path = entry.path();
+        // Skip yt-dlp's temp artifacts that sometimes leak into output_dir
+        // (the .part / .ytdl files when downloads fail mid-stream).
+        let ext = match path.extension().and_then(|s| s.to_str()) {
+            Some(e) => e.to_lowercase(),
+            None => continue,
+        };
+        if !exts.iter().any(|e| e.eq_ignore_ascii_case(&ext)) { continue; }
+        let meta = match entry.metadata() { Ok(m) => m, Err(_) => continue };
+        let modified = match meta.modified() { Ok(m) => m, Err(_) => continue };
+        // Allow a small skew: SystemTime resolution + filesystem rounding.
+        let cutoff = since.checked_sub(std::time::Duration::from_secs(2)).unwrap_or(since);
+        if modified < cutoff { continue; }
+        if best.as_ref().map(|(t, _)| modified > *t).unwrap_or(true) {
+            best = Some((modified, path));
         }
     }
     best.map(|(_, p)| p.to_string_lossy().to_string())
