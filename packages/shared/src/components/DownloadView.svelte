@@ -76,6 +76,7 @@
     { match: /streamable\.com/i, name: "Streamable" },
     { match: /dailymotion\.com/i, name: "Dailymotion" },
     { match: /bilibili\.com/i, name: "Bilibili" },
+    { match: /(cdn\.discordapp\.com|media\.discordapp\.net)/i, name: "Discord CDN" },
   ];
 
   $: detectedHit = url.trim() ? SITE_PATTERNS.find((p) => p.match.test(url)) : null;
