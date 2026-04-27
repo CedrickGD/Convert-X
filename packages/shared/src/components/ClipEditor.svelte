@@ -114,9 +114,16 @@
     }
   });
 
-  $: if (videoEl && !playing && !dragging) {
-    videoEl.currentTime = trimStart;
-    playheadTime = trimStart;
+  // Only snap to a new trimStart when it actually changes (e.g. user dragged
+  // the start handle). Don't fire on every mouseup of the scrubber, which
+  // was causing the playhead to jump back to the start on release.
+  let lastTrimStart = trimStart;
+  $: if (videoEl && trimStart !== lastTrimStart) {
+    lastTrimStart = trimStart;
+    if (!playing && dragging !== "playhead") {
+      videoEl.currentTime = trimStart;
+      playheadTime = trimStart;
+    }
   }
 
   $: if (videoEl) {
@@ -126,6 +133,25 @@
   $: if (videoEl) {
     videoEl.playbackRate = Math.max(0.1, Math.min(10, speed || 1));
   }
+
+  // Live preview of rotate / flip via CSS transform.
+  $: previewTransform = (() => {
+    const parts = [];
+    if (rotate) parts.push(`rotate(${rotate}deg)`);
+    if (flipH) parts.push("scaleX(-1)");
+    if (flipV) parts.push("scaleY(-1)");
+    return parts.join(" ");
+  })();
+
+  // Live preview of crop — clip-path inset() in % of the natural video size.
+  $: previewClipPath = (() => {
+    if (!crop || !srcW || !srcH) return "";
+    const x1 = Math.max(0, (crop.x / srcW) * 100);
+    const y1 = Math.max(0, (crop.y / srcH) * 100);
+    const x2 = Math.min(100, ((crop.x + crop.w) / srcW) * 100);
+    const y2 = Math.min(100, ((crop.y + crop.h) / srcH) * 100);
+    return `inset(${y1}% ${100 - x2}% ${100 - y2}% ${x1}%)`;
+  })();
 
   function fmtTime(sec) {
     if (!sec && sec !== 0) return "0:00.0";
@@ -612,8 +638,6 @@
     <span class="clip-duration">{fmtTime(clipDuration)}</span>
   </div>
 
-  <div class="editor-grid">
-  <div class="editor-left">
   <div class="preview-container">
     {#if loading}
       <div class="loading-indicator">Loading preview...</div>
@@ -625,6 +649,7 @@
         preload="auto"
         on:loadeddata={onVideoLoaded}
         class="video-preview"
+        style="transform: {previewTransform}; clip-path: {previewClipPath};"
       ></video>
 
       {#if showVideoEdits && cropOpen && srcW > 0 && srcH > 0}
@@ -763,9 +788,7 @@
       />
     </div>
   </div>
-  </div><!-- /.editor-left -->
 
-  <div class="editor-right">
   {#if showAudioToggle}
     <label class="audio-toggle">
       <span class="toggle-track" class:active={stripAudio}>
@@ -896,8 +919,6 @@
       </div>
     {/if}
   {/if}
-  </div><!-- /.editor-right -->
-  </div><!-- /.editor-grid -->
 </div>
 
 <style>
@@ -917,26 +938,6 @@
     color: var(--text-secondary);
   }
 
-  .editor-grid {
-    display: grid;
-    grid-template-columns: 1fr;
-    gap: 14px;
-    align-items: start;
-  }
-
-  .editor-left,
-  .editor-right {
-    display: flex;
-    flex-direction: column;
-    gap: 10px;
-    min-width: 0;
-  }
-
-  @media (min-width: 900px) {
-    .editor-grid {
-      grid-template-columns: minmax(0, 1fr) minmax(280px, 340px);
-    }
-  }
 
   .editor-header svg { color: var(--accent); flex-shrink: 0; }
 
@@ -961,20 +962,23 @@
     margin-bottom: 12px;
     border-radius: 6px;
     overflow: hidden;
-    background: #000;
-    aspect-ratio: 16 / 9;
-    max-height: 45vh;
+    background: transparent;
     display: flex;
     align-items: center;
     justify-content: center;
+    min-height: 0;
+    max-height: var(--clip-preview-max-h, 50vh);
   }
 
   .video-preview {
-    width: 100%;
-    height: 100%;
-    max-height: 45vh;
-    object-fit: contain;
     display: block;
+    max-width: 100%;
+    max-height: var(--clip-preview-max-h, 50vh);
+    width: auto;
+    height: auto;
+    object-fit: contain;
+    transform-origin: center center;
+    transition: transform 0.18s ease;
   }
 
   .loading-indicator {

@@ -411,22 +411,9 @@
         {/if}
 
         {#if mode === "convert"}
-          <!-- Convert mode settings -->
-          <FormatPicker
-            fileTypes={types}
-            selectedFormat={settings.selectedFormat}
-            sourceFormats={sources}
-            hasEdits={edited}
-            onFormatSelect={(fmt) => settingsStore.update((s) => ({
-              ...s,
-              selectedFormat: fmt,
-              trimStart: null,
-              trimEnd: null,
-              ...(fmt === "gif" ? getGifDefaults() : {}),
-            }))}
-          />
-
+          <div class="convert-split" class:single-col={!showClipEditor}>
           {#if showClipEditor}
+          <div class="split-left">
             <ClipEditor
               duration={clipMaxDuration}
               trimStart={settings.trimStart || 0}
@@ -458,7 +445,23 @@
               onSpeedChange={(v) => settingsStore.update((s) => ({ ...s, speed: v }))}
               onVolumeChange={(v) => settingsStore.update((s) => ({ ...s, volume: v }))}
             />
+          </div>
           {/if}
+
+          <div class="split-right">
+          <FormatPicker
+            fileTypes={types}
+            selectedFormat={settings.selectedFormat}
+            sourceFormats={sources}
+            hasEdits={edited}
+            onFormatSelect={(fmt) => settingsStore.update((s) => ({
+              ...s,
+              selectedFormat: fmt,
+              trimStart: null,
+              trimEnd: null,
+              ...(fmt === "gif" ? getGifDefaults() : {}),
+            }))}
+          />
 
           {#if isGif}
             <GifSettings
@@ -511,6 +514,8 @@
               {/if}
             </button>
           </div>
+          </div><!-- /.split-right -->
+          </div><!-- /.convert-split -->
 
         {:else}
           <!-- Resize mode settings -->
@@ -654,6 +659,33 @@
     flex-direction: column;
     gap: 10px;
     animation: fadeUp 0.35s ease-out;
+  }
+
+  .convert-split {
+    display: grid;
+    grid-template-columns: 1fr;
+    gap: 12px;
+    align-items: start;
+    min-width: 0;
+  }
+
+  .split-left,
+  .split-right {
+    display: flex;
+    flex-direction: column;
+    gap: 10px;
+    min-width: 0;
+  }
+
+  @media (min-width: 900px) {
+    .convert-split {
+      grid-template-columns: minmax(0, 1.4fr) minmax(320px, 1fr);
+    }
+    .convert-split.single-col {
+      grid-template-columns: 1fr;
+      max-width: 720px;
+      margin: 0 auto;
+    }
   }
 
   .converting-view {
