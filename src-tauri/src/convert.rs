@@ -5,6 +5,9 @@ use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 use tauri::Manager;
 
+#[cfg(windows)]
+use std::os::windows::process::CommandExt as _;
+
 pub struct AppState {
     pub ffmpeg_process: Arc<Mutex<Option<u32>>>,
     pub ytdlp_process: Arc<Mutex<Option<u32>>>,
@@ -150,17 +153,18 @@ fn probe_video_width_and_fps(
     app: &tauri::AppHandle,
     file_path: &str,
 ) -> Option<(u32, Option<u32>)> {
-    let output = std::process::Command::new(get_ffprobe_path(app))
-        .args([
-            "-v",
-            "quiet",
-            "-print_format",
-            "json",
-            "-show_streams",
-            file_path,
-        ])
-        .output()
-        .ok()?;
+    let mut cmd = std::process::Command::new(get_ffprobe_path(app));
+    cmd.args([
+        "-v",
+        "quiet",
+        "-print_format",
+        "json",
+        "-show_streams",
+        file_path,
+    ]);
+    #[cfg(windows)]
+    cmd.creation_flags(0x08000000); // CREATE_NO_WINDOW
+    let output = cmd.output().ok()?;
 
     if !output.status.success() {
         return None;
@@ -699,9 +703,11 @@ pub async fn resize_image(
 #[tauri::command]
 pub async fn cancel_conversion(state: tauri::State<'_, AppState>) -> Result<(), String> {
     if let Some(pid) = state.ffmpeg_process.lock().unwrap().take() {
-        let _ = std::process::Command::new("taskkill")
-            .args(["/PID", &pid.to_string(), "/F"])
-            .output();
+        let mut tk = std::process::Command::new("taskkill");
+        tk.args(["/PID", &pid.to_string(), "/F"]);
+        #[cfg(windows)]
+        tk.creation_flags(0x08000000); // CREATE_NO_WINDOW
+        let _ = tk.output();
     }
     Ok(())
 }

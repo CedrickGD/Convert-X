@@ -568,11 +568,14 @@ pub async fn run_ffmpeg(
     file_id: String,
     process_holder: std::sync::Arc<std::sync::Mutex<Option<u32>>>,
 ) -> Result<(), String> {
-    let mut child = Command::new(ffmpeg_path)
-        .args(&args)
+    let mut cmd = Command::new(ffmpeg_path);
+    cmd.args(&args)
         .stderr(Stdio::piped())
         .stdout(Stdio::null())
-        .stdin(Stdio::null())
+        .stdin(Stdio::null());
+    #[cfg(windows)]
+    cmd.creation_flags(0x08000000); // CREATE_NO_WINDOW
+    let mut child = cmd
         .spawn()
         .map_err(|e| format!("Failed to start FFmpeg: {}", e))?;
 

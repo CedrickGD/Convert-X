@@ -65,6 +65,13 @@
     { match: /facebook\.com|fb\.watch/i, name: "Facebook" },
     { match: /soundcloud\.com/i, name: "SoundCloud", audioOnly: true },
     { match: /twitch\.tv/i, name: "Twitch" },
+    { match: /pornhub\.com|phncdn\.com/i, name: "Pornhub" },
+    { match: /xvideos\.com/i, name: "XVideos" },
+    { match: /xhamster\.com/i, name: "xHamster" },
+    { match: /redgifs\.com/i, name: "RedGIFs" },
+    { match: /streamable\.com/i, name: "Streamable" },
+    { match: /dailymotion\.com/i, name: "Dailymotion" },
+    { match: /bilibili\.com/i, name: "Bilibili" },
   ];
 
   $: detectedHit = url.trim() ? SITE_PATTERNS.find((p) => p.match.test(url)) : null;

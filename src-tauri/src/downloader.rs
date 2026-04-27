@@ -17,6 +17,25 @@ use tauri::{Emitter, Manager};
 use tokio::io::{AsyncBufReadExt, BufReader};
 use tokio::process::Command;
 
+#[cfg(windows)]
+use std::os::windows::process::CommandExt as _;
+
+#[cfg(windows)]
+const CREATE_NO_WINDOW: u32 = 0x08000000;
+
+/// Hide the console window when spawning a child on Windows. No-op elsewhere.
+fn no_window(cmd: &mut Command) -> &mut Command {
+    #[cfg(windows)]
+    { cmd.creation_flags(CREATE_NO_WINDOW); }
+    cmd
+}
+
+fn no_window_std(cmd: &mut std::process::Command) -> &mut std::process::Command {
+    #[cfg(windows)]
+    { cmd.creation_flags(CREATE_NO_WINDOW); }
+    cmd
+}
+
 #[derive(Debug, Clone, Deserialize)]
 pub struct DownloadOptions {
     pub url: String,
@@ -320,11 +339,13 @@ where
     F: Fn(&str) -> Option<(f64, &'static str)> + Send + Sync + 'static,
     G: Fn(&str) -> Option<String> + Send + Sync + 'static,
 {
-    let mut child = Command::new(&program)
-        .args(&args)
+    let mut cmd = Command::new(&program);
+    cmd.args(&args)
         .stderr(Stdio::piped())
         .stdout(Stdio::piped())
-        .stdin(Stdio::null())
+        .stdin(Stdio::null());
+    no_window(&mut cmd);
+    let mut child = cmd
         .spawn()
         .map_err(|e| {
             format!(
@@ -494,12 +515,14 @@ pub async fn run_spotdl(
         .map(|p| p.to_string_lossy().to_string())
         .unwrap_or_default();
 
-    let mut child = Command::new(&spotdl_path)
-        .args(&args)
+    let mut cmd = Command::new(&spotdl_path);
+    cmd.args(&args)
         .env("PATH", format!("{};{}", bin_dir, env_path))
         .stderr(Stdio::piped())
         .stdout(Stdio::piped())
-        .stdin(Stdio::null())
+        .stdin(Stdio::null());
+    no_window(&mut cmd);
+    let mut child = cmd
         .spawn()
         .map_err(|e| {
             format!(
@@ -661,14 +684,18 @@ pub async fn probe_url(app: tauri::AppHandle, url: String) -> Result<ProbeResult
         "--flat-playlist".to_string(),
         "--no-warnings".to_string(),
         "--skip-download".to_string(),
+        "--socket-timeout".to_string(),
+        "15".to_string(),
         trimmed.clone(),
     ];
 
-    let output = Command::new(&ytdlp_path)
-        .args(&args)
+    let mut cmd = Command::new(&ytdlp_path);
+    cmd.args(&args)
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
+        .stderr(Stdio::piped());
+    no_window(&mut cmd);
+    let output = cmd
         .output()
         .await
         .map_err(|e| {
@@ -839,9 +866,10 @@ pub fn cancel_download(state: tauri::State<'_, crate::convert::AppState>) -> Res
     if let Some(pid) = pid_opt {
         #[cfg(windows)]
         {
-            let _ = std::process::Command::new("taskkill")
-                .args(["/PID", &pid.to_string(), "/F", "/T"])
-                .output();
+            let mut tk = std::process::Command::new("taskkill");
+            tk.args(["/PID", &pid.to_string(), "/F", "/T"]);
+            no_window_std(&mut tk);
+            let _ = tk.output();
         }
         #[cfg(not(windows))]
         {

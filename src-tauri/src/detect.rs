@@ -2,6 +2,9 @@ use serde::Serialize;
 use std::path::Path;
 use std::process::Command;
 
+#[cfg(windows)]
+use std::os::windows::process::CommandExt as _;
+
 #[derive(Debug, Serialize, Clone)]
 pub struct FileMetadata {
     pub file_type: String,
@@ -85,18 +88,19 @@ fn detect_by_magic_bytes(data: &[u8]) -> Option<(&'static str, &'static str)> {
 }
 
 fn run_ffprobe(file_path: &str, ffprobe_path: &Path) -> Option<serde_json::Value> {
-    let output = Command::new(ffprobe_path)
-        .args([
-            "-v",
-            "quiet",
-            "-print_format",
-            "json",
-            "-show_format",
-            "-show_streams",
-            file_path,
-        ])
-        .output()
-        .ok()?;
+    let mut cmd = Command::new(ffprobe_path);
+    cmd.args([
+        "-v",
+        "quiet",
+        "-print_format",
+        "json",
+        "-show_format",
+        "-show_streams",
+        file_path,
+    ]);
+    #[cfg(windows)]
+    cmd.creation_flags(0x08000000); // CREATE_NO_WINDOW
+    let output = cmd.output().ok()?;
 
     if !output.status.success() {
         return None;
