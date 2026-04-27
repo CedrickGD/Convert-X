@@ -4,6 +4,7 @@ const TTL_MS = 60 * 60 * 1000;
 
 export const REPO_URL = `https://github.com/${REPO}`;
 export const RELEASES_URL = `${REPO_URL}/releases/latest`;
+export const WEB_URL = "https://convert-x-online.pages.dev";
 
 export async function fetchLatestRelease() {
   try {

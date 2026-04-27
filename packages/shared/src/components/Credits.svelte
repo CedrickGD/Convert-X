@@ -1,6 +1,7 @@
 <script>
   import { onMount } from "svelte";
   import DesktopDownload from "./DesktopDownload.svelte";
+  import WebVersionLink from "./WebVersionLink.svelte";
   import { fetchLatestRelease, REPO_URL } from "../lib/github.js";
   import { getPlatform } from "../platform.js";
 
@@ -36,6 +37,8 @@
 
   {#if isWeb}
     <DesktopDownload variant="card" />
+  {:else}
+    <WebVersionLink />
   {/if}
 
   <section class="card">
