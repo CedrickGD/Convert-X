@@ -2,6 +2,8 @@
   export let fileTypes = new Set();
   export let selectedFormat;
   export let onFormatSelect;
+  export let sourceFormats = new Set();
+  export let hasEdits = false;
 
   const FORMATS = {
     video: ["mp4", "mkv", "avi", "webm", "mov", "gif", "flv", "wmv", "ts"],
@@ -20,6 +22,10 @@
   })();
 
   $: showLabels = sections.length > 1;
+
+  function isMuted(fmt) {
+    return sourceFormats && sourceFormats.has(fmt) && !hasEdits;
+  }
 </script>
 
 <div class="picker">
@@ -31,11 +37,14 @@
     {/if}
     <div class="grid">
       {#each section.formats as fmt, i}
+        {@const muted = isMuted(fmt)}
         <button
           class="fmt"
           class:selected={selectedFormat === fmt}
+          class:muted
           on:click={() => onFormatSelect(fmt)}
           style="animation-delay: {(si * 6 + i) * 25}ms"
+          title={muted ? "Same format as source — change a setting (trim, quality, bitrate, …) to re-encode." : ""}
         >
           {fmt.toUpperCase()}
         </button>
@@ -110,5 +119,18 @@
 
   .fmt.selected:hover {
     background: var(--accent-hover);
+  }
+
+  .fmt.muted {
+    opacity: 0.45;
+    border-style: dashed;
+  }
+
+  .fmt.muted:hover {
+    opacity: 0.7;
+  }
+
+  .fmt.muted.selected {
+    opacity: 0.85;
   }
 </style>

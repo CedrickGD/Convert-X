@@ -1,5 +1,5 @@
 @echo off
-setlocal
+setlocal enabledelayedexpansion
 
 echo.
 echo  ===================================
@@ -26,6 +26,15 @@ where node >nul 2>&1
 if %errorlevel% neq 0 (
     echo  [ERROR] Node.js not found.
     echo  Install from: https://nodejs.org
+    pause
+    exit /b 1
+)
+
+:: Source the MSVC build environment so the Rust linker can find system libs
+:: (msvcrt.lib, kernel32.lib, etc). Skip if LIB is already set — caller is
+:: already in a Developer Command Prompt.
+if not defined LIB call :setup_msvc
+if errorlevel 1 (
     pause
     exit /b 1
 )
@@ -118,3 +127,33 @@ echo.
 explorer "%RELEASE_DIR%"
 
 pause
+exit /b 0
+
+
+:setup_msvc
+set "VSWHERE=%ProgramFiles(x86)%\Microsoft Visual Studio\Installer\vswhere.exe"
+if not exist "%VSWHERE%" set "VSWHERE=%ProgramFiles%\Microsoft Visual Studio\Installer\vswhere.exe"
+if not exist "%VSWHERE%" (
+    echo  [ERROR] vswhere.exe not found. Install Visual Studio with the
+    echo  "Desktop development with C++" workload, or run this script from
+    echo  a Developer Command Prompt.
+    exit /b 1
+)
+set "VSINSTALL="
+for /f "usebackq tokens=*" %%i in (`"%VSWHERE%" -prerelease -latest -products * -requires Microsoft.VisualStudio.Component.VC.Tools.x86.x64 -property installationPath`) do set "VSINSTALL=%%i"
+if not defined VSINSTALL (
+    echo  [ERROR] No Visual Studio install with the MSVC v14x x64/x86 build tools was found.
+    echo  Open Visual Studio Installer and add the "Desktop development with C++" workload.
+    exit /b 1
+)
+if not exist "%VSINSTALL%\Common7\Tools\VsDevCmd.bat" (
+    echo  [ERROR] VsDevCmd.bat missing under "%VSINSTALL%\Common7\Tools\"
+    exit /b 1
+)
+echo  [0/3] Loading MSVC build environment from "%VSINSTALL%"...
+call "%VSINSTALL%\Common7\Tools\VsDevCmd.bat" -arch=x64 -host_arch=x64 -no_logo >nul
+if errorlevel 1 (
+    echo  [ERROR] VsDevCmd.bat failed to initialise.
+    exit /b 1
+)
+exit /b 0

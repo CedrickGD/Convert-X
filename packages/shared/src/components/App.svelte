@@ -4,6 +4,7 @@
     createFileEntry, resetAll, isFormatCompatible,
     convertOp, resizeOp, convertCancelled, resizeCancelled,
     convertBusy, resizeBusy,
+    sourceFormats, hasEdits,
   } from "../stores/fileStore.js";
   import { get } from "svelte/store";
   import { getPlatform } from "../platform.js";
@@ -15,7 +16,7 @@
   import FormatPicker from "./FormatPicker.svelte";
   import OutputSettings from "./OutputSettings.svelte";
   import AdvancedSettings from "./AdvancedSettings.svelte";
-  import GifEditor from "./GifEditor.svelte";
+  import ClipEditor from "./ClipEditor.svelte";
   import GifSettings from "./GifSettings.svelte";
   import ResizeSettings from "./ResizeSettings.svelte";
   import ProgressBar from "./ProgressBar.svelte";
@@ -29,6 +30,8 @@
   let view = "idle";
   let types = new Set();
   let mode = "convert";
+  let sources = new Set();
+  let edited = false;
 
   const platform = getPlatform();
   const isWeb = platform.platformType === "web";
@@ -38,6 +41,8 @@
   appView.subscribe((v) => (view = v));
   fileTypes.subscribe((v) => (types = v));
   appMode.subscribe((v) => (mode = v));
+  sourceFormats.subscribe((v) => (sources = v));
+  hasEdits.subscribe((v) => (edited = v));
 
   onMount(() => {
     const unlistenProgress = platform.onProgress(({ file_id, progress, elapsed }) => {
@@ -206,6 +211,12 @@
           gifWidth: settings.gifWidth != null ? settings.gifWidth : null,
           gifFps: settings.gifFps != null ? settings.gifFps : null,
           gifTargetSizeMb: settings.gifTargetSizeMb != null ? settings.gifTargetSizeMb : null,
+          crop: settings.crop || null,
+          rotate: settings.rotate || 0,
+          flipH: settings.flipH || false,
+          flipV: settings.flipV || false,
+          speed: settings.speed || 1,
+          volume: settings.volume != null ? settings.volume / 100 : 1,
         });
 
         filesStore.update((all) =>
@@ -333,7 +344,9 @@
   $: compatibleCount = files.filter((f) =>
     f.detectedType && settings.selectedFormat && isFormatCompatible(f.detectedType, settings.selectedFormat)
   ).length;
-  $: canConvert = settings.selectedFormat && compatibleCount > 0 && files.some((f) => f.status === "ready");
+  // Block the action when target == source AND no edits — that would be a no-op re-encode.
+  $: sameFormatNoEdits = settings.selectedFormat && sources.has(settings.selectedFormat) && !edited;
+  $: canConvert = settings.selectedFormat && compatibleCount > 0 && files.some((f) => f.status === "ready") && !sameFormatNoEdits;
 
   // Resize
   $: imageCount = files.filter((f) => f.detectedType === "image" && f.status === "ready").length;
@@ -402,6 +415,8 @@
           <FormatPicker
             fileTypes={types}
             selectedFormat={settings.selectedFormat}
+            sourceFormats={sources}
+            hasEdits={edited}
             onFormatSelect={(fmt) => settingsStore.update((s) => ({
               ...s,
               selectedFormat: fmt,
@@ -412,7 +427,7 @@
           />
 
           {#if showClipEditor}
-            <GifEditor
+            <ClipEditor
               duration={clipMaxDuration}
               trimStart={settings.trimStart || 0}
               trimEnd={settings.trimEnd || clipMaxDuration}
@@ -420,6 +435,12 @@
               fileObj={clipVideoFile?.fileObj || null}
               outputFormat={settings.selectedFormat}
               stripAudio={settings.stripAudio || false}
+              crop={settings.crop || null}
+              rotate={settings.rotate || 0}
+              flipH={settings.flipH || false}
+              flipV={settings.flipV || false}
+              speed={settings.speed || 1}
+              volume={settings.volume != null ? settings.volume : 100}
               onUpdate={(start, end) => {
                 settingsStore.update((s) => ({
                   ...s,
@@ -430,6 +451,12 @@
               onStripAudioChange={(val) => {
                 settingsStore.update((s) => ({ ...s, stripAudio: val }));
               }}
+              onCropChange={(c) => settingsStore.update((s) => ({ ...s, crop: c }))}
+              onRotateChange={(r) => settingsStore.update((s) => ({ ...s, rotate: r }))}
+              onFlipHChange={(v) => settingsStore.update((s) => ({ ...s, flipH: v }))}
+              onFlipVChange={(v) => settingsStore.update((s) => ({ ...s, flipV: v }))}
+              onSpeedChange={(v) => settingsStore.update((s) => ({ ...s, speed: v }))}
+              onVolumeChange={(v) => settingsStore.update((s) => ({ ...s, volume: v }))}
             />
           {/if}
 
@@ -465,6 +492,10 @@
               {hasDuration}
               onUpdate={(s) => settingsStore.set(s)}
             />
+          {/if}
+
+          {#if sameFormatNoEdits}
+            <p class="hint">Same format as source — change a setting (trim, quality, bitrate, …) to re-encode.</p>
           {/if}
 
           <div class="actions">
@@ -630,6 +661,14 @@
     flex-direction: column;
     gap: 14px;
     animation: fadeUp 0.3s ease-out;
+  }
+
+  .hint {
+    font-size: 0.75rem;
+    color: var(--text-muted);
+    text-align: center;
+    margin: 0;
+    padding: 4px 8px;
   }
 
   .actions {

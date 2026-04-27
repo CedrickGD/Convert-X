@@ -13,6 +13,14 @@ pub struct ProgressPayload {
 }
 
 #[derive(Debug, Clone, Deserialize)]
+pub struct CropRect {
+    pub x: u32,
+    pub y: u32,
+    pub w: u32,
+    pub h: u32,
+}
+
+#[derive(Debug, Clone, Deserialize)]
 pub struct FfmpegOptions {
     pub quality: u32,
     pub resolution: Option<String>,
@@ -27,6 +35,12 @@ pub struct FfmpegOptions {
     pub gif_width: Option<u32>,
     pub gif_fps: Option<u32>,
     pub gif_target_size_mb: Option<u32>,
+    pub crop: Option<CropRect>,
+    pub rotate: Option<u32>,
+    pub flip_h: bool,
+    pub flip_v: bool,
+    pub speed: Option<f64>,
+    pub volume: Option<f64>,
 }
 
 impl Default for FfmpegOptions {
@@ -45,7 +59,90 @@ impl Default for FfmpegOptions {
             gif_width: None,
             gif_fps: None,
             gif_target_size_mb: None,
+            crop: None,
+            rotate: None,
+            flip_h: false,
+            flip_v: false,
+            speed: None,
+            volume: None,
         }
+    }
+}
+
+fn volume_active(opts: &FfmpegOptions) -> Option<f64> {
+    let v = opts.volume?;
+    if (v - 1.0).abs() < 1e-6 { None } else { Some(v.clamp(0.0, 8.0)) }
+}
+
+fn speed_for_audio(opts: &FfmpegOptions) -> Option<f64> {
+    if opts.strip_audio { return None; }
+    speed_active(opts)
+}
+
+fn build_audio_filter_chain(opts: &FfmpegOptions) -> Option<String> {
+    if opts.strip_audio { return None; }
+    let mut parts: Vec<String> = Vec::new();
+    if let Some(s) = speed_for_audio(opts) {
+        for f in split_atempo(s) {
+            parts.push(format!("atempo={}", f));
+        }
+    }
+    if let Some(v) = volume_active(opts) {
+        parts.push(format!("volume={}", v));
+    }
+    if parts.is_empty() { None } else { Some(parts.join(",")) }
+}
+
+fn split_atempo(speed: f64) -> Vec<f64> {
+    let mut out: Vec<f64> = Vec::new();
+    let mut s = speed.clamp(0.1, 10.0);
+    if (s - 1.0).abs() < 1e-6 {
+        return out;
+    }
+    while s > 2.0 {
+        out.push(2.0);
+        s /= 2.0;
+    }
+    while s < 0.5 {
+        out.push(0.5);
+        s /= 0.5;
+    }
+    out.push((s * 10000.0).round() / 10000.0);
+    out
+}
+
+fn build_edit_filters(opts: &FfmpegOptions) -> Vec<String> {
+    let mut filters = Vec::new();
+    if let Some(ref c) = opts.crop {
+        if c.w > 0 && c.h > 0 {
+            filters.push(format!("crop={}:{}:{}:{}", c.w, c.h, c.x, c.y));
+        }
+    }
+    let rot = opts.rotate.unwrap_or(0) % 360;
+    match rot {
+        90 => filters.push("transpose=1".to_string()),
+        180 => {
+            filters.push("transpose=1".to_string());
+            filters.push("transpose=1".to_string());
+        }
+        270 => filters.push("transpose=2".to_string()),
+        _ => {}
+    }
+    if opts.flip_h {
+        filters.push("hflip".to_string());
+    }
+    if opts.flip_v {
+        filters.push("vflip".to_string());
+    }
+    filters
+}
+
+fn speed_active(opts: &FfmpegOptions) -> Option<f64> {
+    let s = opts.speed?;
+    if (s - 1.0).abs() > 1e-6 {
+        Some(s.clamp(0.1, 10.0))
+    } else {
+        None
     }
 }
 
@@ -149,7 +246,7 @@ fn build_gif_args(args: &mut Vec<String>, opts: &FfmpegOptions) {
     // Strip audio — GIF doesn't support it
     args.push("-an".to_string());
 
-    let mut filters = Vec::new();
+    let mut filters = build_edit_filters(opts);
 
     // Scale: prefer gif_width, fall back to resolution
     if let Some(width) = opts.gif_width {
@@ -163,6 +260,10 @@ fn build_gif_args(args: &mut Vec<String>, opts: &FfmpegOptions) {
         filters.push(format!("fps={}", fps));
     } else if let Some(fps) = opts.fps {
         filters.push(format!("fps={}", fps));
+    }
+
+    if let Some(s) = speed_active(opts) {
+        filters.push(format!("setpts=PTS/{}", s));
     }
 
     // Let the generic quality slider affect GIF fidelity instead of being ignored.
@@ -196,15 +297,20 @@ fn build_gif_args(args: &mut Vec<String>, opts: &FfmpegOptions) {
 fn build_video_args(args: &mut Vec<String>, format: &str, opts: &FfmpegOptions) {
     if opts.strip_audio {
         args.push("-an".to_string());
+    } else if let Some(chain) = build_audio_filter_chain(opts) {
+        args.extend(["-af".to_string(), chain]);
     }
 
-    let mut filters = Vec::new();
+    let mut filters = build_edit_filters(opts);
 
     if let Some(ref res) = opts.resolution {
         filters.push(format!("scale={}", res.replace('x', ":")));
     }
     if let Some(fps) = opts.fps {
         filters.push(format!("fps={}", fps));
+    }
+    if let Some(s) = speed_active(opts) {
+        filters.push(format!("setpts=PTS/{}", s));
     }
 
     let preset = opts.preset.as_deref().unwrap_or("medium");
@@ -353,6 +459,10 @@ fn build_audio_args(args: &mut Vec<String>, format: &str, opts: &FfmpegOptions) 
 
     // Strip video tracks
     args.push("-vn".to_string());
+
+    if let Some(chain) = build_audio_filter_chain(opts) {
+        args.extend(["-af".to_string(), chain]);
+    }
 
     match format {
         "mp3" => {

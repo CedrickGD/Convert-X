@@ -56,6 +56,13 @@ export const settingsStore = writable({
   resizePercent: 50,
   keepAspect: true,
   resizeFormat: null,
+  // Editor options (video)
+  crop: null,
+  rotate: 0,
+  flipH: false,
+  flipV: false,
+  speed: 1,
+  volume: 100,
 });
 
 // Save outputDir to localStorage whenever it changes
@@ -135,6 +142,12 @@ export function resetAll() {
     resizePercent: 50,
     keepAspect: true,
     resizeFormat: null,
+    crop: null,
+    rotate: 0,
+    flipH: false,
+    flipV: false,
+    speed: 1,
+    volume: 100,
   }));
   convertOp.set("idle");
   resizeOp.set("idle");
@@ -154,3 +167,51 @@ export function isFormatCompatible(fileType, format) {
   if (fileType === "audio") return AUDIO_FORMATS.includes(format);
   return false;
 }
+
+// Map source file extensions to the canonical button labels used in FormatPicker.
+const EXT_ALIAS = { jpeg: "jpg", tif: "tiff", m4v: "mp4" };
+
+export function normalizeExt(ext) {
+  if (!ext) return "";
+  const lower = ext.toLowerCase();
+  return EXT_ALIAS[lower] || lower;
+}
+
+function extOf(filePathOrName) {
+  if (!filePathOrName) return "";
+  const dot = filePathOrName.lastIndexOf(".");
+  return dot > 0 ? filePathOrName.substring(dot + 1) : "";
+}
+
+// Set of normalized source extensions across all currently loaded files.
+export const sourceFormats = derived(filesStore, ($files) => {
+  const set = new Set();
+  for (const f of $files) {
+    const name = f.metadata?.fileName || f.filePath || (f.fileObj && f.fileObj.name) || "";
+    const ext = normalizeExt(extOf(name));
+    if (ext) set.add(ext);
+  }
+  return set;
+});
+
+// True when the user has changed any encode-affecting setting from its default.
+// Used to decide whether a same-format target is a no-op or a real re-encode.
+export function settingsHaveEdits(s) {
+  if (!s) return false;
+  if (s.trimStart != null && s.trimStart > 0) return true;
+  if (s.trimEnd != null) return true;
+  if (s.resolution) return true;
+  if (s.fps != null) return true;
+  if (s.bitrate) return true;
+  if (s.preset && s.preset !== "medium") return true;
+  if (s.stripAudio === true) return true;
+  if (s.quality != null && s.quality !== 75) return true;
+  if (s.crop) return true;
+  if (s.rotate) return true;
+  if (s.flipH || s.flipV) return true;
+  if (s.speed != null && s.speed !== 1) return true;
+  if (s.volume != null && s.volume !== 100) return true;
+  return false;
+}
+
+export const hasEdits = derived(settingsStore, ($s) => settingsHaveEdits($s));

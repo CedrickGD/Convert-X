@@ -269,16 +269,64 @@ async function createGifAttempt(params) {
   };
 }
 
+function splitAtempo(speed) {
+  // ffmpeg's atempo accepts factors in [0.5, 2.0]; chain them to reach others.
+  const out = [];
+  let s = Math.max(0.1, Math.min(10, speed || 1));
+  if (Math.abs(s - 1) < 1e-6) return out;
+  while (s > 2.0) { out.push(2.0); s /= 2.0; }
+  while (s < 0.5) { out.push(0.5); s /= 0.5; }
+  out.push(Number(s.toFixed(4)));
+  return out;
+}
+
+function buildEditFilters(params) {
+  // Returns array of filters in order: crop, rotate, flips, then caller-appended.
+  const filters = [];
+  if (params.crop && params.crop.w > 0 && params.crop.h > 0) {
+    const c = params.crop;
+    filters.push(`crop=${c.w}:${c.h}:${c.x}:${c.y}`);
+  }
+  const rot = ((params.rotate || 0) % 360 + 360) % 360;
+  if (rot === 90) filters.push("transpose=1");
+  else if (rot === 180) filters.push("transpose=1", "transpose=1");
+  else if (rot === 270) filters.push("transpose=2");
+  if (params.flipH) filters.push("hflip");
+  if (params.flipV) filters.push("vflip");
+  return filters;
+}
+
+function volumeMultiplier(params) {
+  const v = Number(params.volume);
+  if (!Number.isFinite(v)) return null;
+  const clamped = Math.max(0, Math.min(8, v));
+  return Math.abs(clamped - 1) < 1e-6 ? null : clamped;
+}
+
+function buildAudioFilterChain(params) {
+  if (params.stripAudio) return null;
+  const parts = [];
+  const speed = Number(params.speed) || 1;
+  if (Math.abs(speed - 1) > 1e-6) {
+    for (const f of splitAtempo(speed)) parts.push(`atempo=${f}`);
+  }
+  const vol = volumeMultiplier(params);
+  if (vol != null) parts.push(`volume=${vol}`);
+  return parts.length ? parts.join(",") : null;
+}
+
 function buildFFmpegArgs(inputName, outputName, params) {
   const args = ["-i", inputName];
   const isGif = params.outputFormat === "gif";
+  const speed = Number(params.speed) || 1;
+  const speedActive = Math.abs(speed - 1) > 1e-6;
 
   if (params.trimStart) args.push("-ss", String(params.trimStart));
   if (params.trimEnd) args.push("-to", String(params.trimEnd));
 
   if (isGif) {
-    // GIF: build complete filter chain (scale + fps + palette in one -vf)
-    const filters = [];
+    // GIF: build complete filter chain (edits + scale + fps + palette in one -vf)
+    const filters = buildEditFilters(params);
 
     if (params.gifWidth) {
       filters.push(`scale=${params.gifWidth}:-1:flags=lanczos`);
@@ -291,6 +339,10 @@ function buildFFmpegArgs(inputName, outputName, params) {
       filters.push(`fps=${params.gifFps}`);
     } else if (params.fps) {
       filters.push(`fps=${params.fps}`);
+    }
+
+    if (speedActive) {
+      filters.push(`setpts=PTS/${speed}`);
     }
 
     const requestedColors = Math.max(2, Math.min(256, params.gifColors || 256));
@@ -306,12 +358,28 @@ function buildFFmpegArgs(inputName, outputName, params) {
     args.push("-loop", "0");
   } else {
     // Non-GIF formats
+    const filters = buildEditFilters(params);
+
     if (params.resolution) {
       const [w, h] = params.resolution.split("x");
-      args.push("-vf", `scale=${w}:${h}`);
+      filters.push(`scale=${w}:${h}`);
     }
+
+    if (speedActive) {
+      filters.push(`setpts=PTS/${speed}`);
+    }
+
+    if (filters.length) {
+      args.push("-vf", filters.join(","));
+    }
+
     if (params.fps) args.push("-r", String(params.fps));
-    if (params.stripAudio) args.push("-an");
+    if (params.stripAudio) {
+      args.push("-an");
+    } else {
+      const audioChain = buildAudioFilterChain(params);
+      if (audioChain) args.push("-af", audioChain);
+    }
     if (params.bitrate) args.push("-b:v", params.bitrate);
     if (params.preset) args.push("-preset", params.preset);
 

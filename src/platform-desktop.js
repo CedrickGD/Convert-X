@@ -55,6 +55,12 @@ export function createDesktopAdapter() {
         gifWidth: params.gifWidth,
         gifFps: params.gifFps,
         gifTargetSizeMb: params.gifTargetSizeMb,
+        crop: params.crop,
+        rotate: params.rotate,
+        flipH: params.flipH,
+        flipV: params.flipV,
+        speed: params.speed,
+        volume: params.volume,
       });
     },
 

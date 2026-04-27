@@ -1,4 +1,4 @@
-use crate::ffmpeg::{self, FfmpegOptions};
+use crate::ffmpeg::{self, CropRect, FfmpegOptions};
 use image::{GenericImageView, ImageFormat};
 use serde::Serialize;
 use std::path::{Path, PathBuf};
@@ -418,6 +418,12 @@ pub async fn convert_file(
     gif_width: Option<u32>,
     gif_fps: Option<u32>,
     gif_target_size_mb: Option<u32>,
+    crop: Option<CropRect>,
+    rotate: Option<u32>,
+    flip_h: Option<bool>,
+    flip_v: Option<bool>,
+    speed: Option<f64>,
+    volume: Option<f64>,
 ) -> Result<ConversionResult, String> {
     let output_path = build_output_path(
         &file_path,
@@ -446,6 +452,12 @@ pub async fn convert_file(
         gif_width,
         gif_fps,
         gif_target_size_mb,
+        crop,
+        rotate,
+        flip_h: flip_h.unwrap_or(false),
+        flip_v: flip_v.unwrap_or(false),
+        speed,
+        volume,
     };
 
     // Calculate effective duration for progress tracking
