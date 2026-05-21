@@ -13,123 +13,35 @@ export type FormatDef = {
 };
 
 /**
- * On mobile we currently implement image format conversion via expo-image-manipulator.
- * Video and audio entries are catalogued for UI completeness but marked `supported: false`
- * so the UI can dim them and explain they're coming in a future release.
+ * Mobile format catalog.
+ *
+ * - Image conversion goes through expo-image-manipulator (PNG/JPG/WebP).
+ * - Video + audio conversion goes through the convert-x-ffmpeg native
+ *   module (Phase 4). BMP, TIFF, ICO and GIF need additional FFmpeg
+ *   filter graphs and are deferred until Phase 9 polish.
  */
 export const FORMATS: readonly FormatDef[] = [
-  // Images — implemented today
-  {
-    key: 'png',
-    label: 'PNG',
-    ext: 'png',
-    mime: 'image/png',
-    category: 'image',
-    accepts: ['image'],
-    supported: true,
-  },
-  {
-    key: 'jpg',
-    label: 'JPG',
-    ext: 'jpg',
-    mime: 'image/jpeg',
-    category: 'image',
-    accepts: ['image'],
-    supported: true,
-  },
-  {
-    key: 'webp',
-    label: 'WebP',
-    ext: 'webp',
-    mime: 'image/webp',
-    category: 'image',
-    accepts: ['image'],
-    supported: true,
-  },
-  // Images — planned
-  {
-    key: 'bmp',
-    label: 'BMP',
-    ext: 'bmp',
-    mime: 'image/bmp',
-    category: 'image',
-    accepts: ['image'],
-    supported: false,
-  },
-  {
-    key: 'tiff',
-    label: 'TIFF',
-    ext: 'tiff',
-    mime: 'image/tiff',
-    category: 'image',
-    accepts: ['image'],
-    supported: false,
-  },
-  {
-    key: 'gif',
-    label: 'GIF',
-    ext: 'gif',
-    mime: 'image/gif',
-    category: 'image',
-    accepts: ['image', 'video'],
-    supported: false,
-  },
-  // Video — planned
-  {
-    key: 'mp4',
-    label: 'MP4',
-    ext: 'mp4',
-    mime: 'video/mp4',
-    category: 'video',
-    accepts: ['video', 'image'],
-    supported: false,
-  },
-  {
-    key: 'webm',
-    label: 'WebM',
-    ext: 'webm',
-    mime: 'video/webm',
-    category: 'video',
-    accepts: ['video'],
-    supported: false,
-  },
-  {
-    key: 'mov',
-    label: 'MOV',
-    ext: 'mov',
-    mime: 'video/quicktime',
-    category: 'video',
-    accepts: ['video'],
-    supported: false,
-  },
-  // Audio — planned
-  {
-    key: 'mp3',
-    label: 'MP3',
-    ext: 'mp3',
-    mime: 'audio/mpeg',
-    category: 'audio',
-    accepts: ['audio', 'video'],
-    supported: false,
-  },
-  {
-    key: 'wav',
-    label: 'WAV',
-    ext: 'wav',
-    mime: 'audio/wav',
-    category: 'audio',
-    accepts: ['audio', 'video'],
-    supported: false,
-  },
-  {
-    key: 'flac',
-    label: 'FLAC',
-    ext: 'flac',
-    mime: 'audio/flac',
-    category: 'audio',
-    accepts: ['audio', 'video'],
-    supported: false,
-  },
+  // ── Images ────────────────────────────────────────────────────────────
+  { key: 'png',  label: 'PNG',  ext: 'png',  mime: 'image/png',  category: 'image', accepts: ['image'],          supported: true  },
+  { key: 'jpg',  label: 'JPG',  ext: 'jpg',  mime: 'image/jpeg', category: 'image', accepts: ['image'],          supported: true  },
+  { key: 'webp', label: 'WebP', ext: 'webp', mime: 'image/webp', category: 'image', accepts: ['image'],          supported: true  },
+  { key: 'bmp',  label: 'BMP',  ext: 'bmp',  mime: 'image/bmp',  category: 'image', accepts: ['image'],          supported: false },
+  { key: 'tiff', label: 'TIFF', ext: 'tiff', mime: 'image/tiff', category: 'image', accepts: ['image'],          supported: false },
+  { key: 'gif',  label: 'GIF',  ext: 'gif',  mime: 'image/gif',  category: 'image', accepts: ['image', 'video'], supported: false },
+
+  // ── Video (Phase 4 / FFmpeg) ──────────────────────────────────────────
+  { key: 'mp4',  label: 'MP4',  ext: 'mp4',  mime: 'video/mp4',       category: 'video', accepts: ['video'], supported: true },
+  { key: 'webm', label: 'WebM', ext: 'webm', mime: 'video/webm',      category: 'video', accepts: ['video'], supported: true },
+  { key: 'mov',  label: 'MOV',  ext: 'mov',  mime: 'video/quicktime', category: 'video', accepts: ['video'], supported: true },
+  { key: 'mkv',  label: 'MKV',  ext: 'mkv',  mime: 'video/x-matroska', category: 'video', accepts: ['video'], supported: true },
+
+  // ── Audio (Phase 4 / FFmpeg) ──────────────────────────────────────────
+  { key: 'mp3',  label: 'MP3',  ext: 'mp3',  mime: 'audio/mpeg',  category: 'audio', accepts: ['audio', 'video'], supported: true },
+  { key: 'wav',  label: 'WAV',  ext: 'wav',  mime: 'audio/wav',   category: 'audio', accepts: ['audio', 'video'], supported: true },
+  { key: 'flac', label: 'FLAC', ext: 'flac', mime: 'audio/flac',  category: 'audio', accepts: ['audio', 'video'], supported: true },
+  { key: 'ogg',  label: 'OGG',  ext: 'ogg',  mime: 'audio/ogg',   category: 'audio', accepts: ['audio', 'video'], supported: true },
+  { key: 'opus', label: 'Opus', ext: 'opus', mime: 'audio/opus',  category: 'audio', accepts: ['audio', 'video'], supported: true },
+  { key: 'm4a',  label: 'M4A',  ext: 'm4a',  mime: 'audio/mp4',   category: 'audio', accepts: ['audio', 'video'], supported: true },
 ];
 
 export function mediaTypeFromMime(mime: string | null | undefined): MediaType {

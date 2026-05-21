@@ -5,31 +5,39 @@
  * switching tabs (and unmounting the Convert view) does not abort the
  * in-flight work.
  *
- * Each session is identified by a string sessionId. Cancellation flips
- * an in-memory flag. The runner checks the flag between files so cancel
- * is best-effort but quick (we can't interrupt an individual
- * expo-image-manipulator call).
+ * Phase 4: dispatches three paths depending on media type:
+ *   - image → expo-image-manipulator (existing src/lib/image.ts path)
+ *   - video → FFmpeg via convert-x-ffmpeg native module
+ *   - audio → FFmpeg via convert-x-ffmpeg native module
  *
- * Phase 4 will swap out the underlying converter for FFmpeg-backed
- * sessions — the queue API stays the same.
+ * Each session is identified by a string sessionId. Cancellation flips an
+ * in-memory flag AND signals the native FFmpeg session to abort.
  */
 
+import * as FileSystem from 'expo-file-system/legacy';
+
+import { addProgressListener, cancel as ffmpegCancel, executeAsync, getMediaInfo } from '../../modules/convert-x-ffmpeg/src';
+import { buildArgs } from './ffmpegArgs';
 import { FORMATS } from './formats';
 import { convertImage, ResizeSpec } from './image';
 import type { FileEntry } from '../state/types';
 
 const cancelled = new Set<string>();
 
-/** Cancel a session. Idempotent. */
 export function cancelSession(sessionId: string): void {
   cancelled.add(sessionId);
+  // Best effort: also tell FFmpeg to abort the underlying native session.
+  try {
+    ffmpegCancel(sessionId);
+  } catch {
+    // not yet running, that's fine
+  }
 }
 
 export function isCancelled(sessionId: string): boolean {
   return cancelled.has(sessionId);
 }
 
-/** Drop the cancellation flag once the session is fully drained. */
 function clearSession(sessionId: string): void {
   cancelled.delete(sessionId);
 }
@@ -48,9 +56,8 @@ export type ConvertRunOpts = {
 };
 
 /**
- * Run the queue. Returns when all files are processed or the session is
- * cancelled. Callers should NOT await this from a component that may
- * unmount mid-run; just fire it and rely on the callbacks.
+ * Run a Convert session — fan-files-out, dispatching each to the right
+ * underlying engine (image vs FFmpeg).
  */
 export async function runConvertSession(opts: ConvertRunOpts): Promise<void> {
   const fmt = FORMATS.find((f) => f.key === opts.targetFormatKey);
@@ -69,26 +76,32 @@ export async function runConvertSession(opts: ConvertRunOpts): Promise<void> {
         continue;
       }
       if (!fmt.supported) {
-        opts.onFileError(file.id, `${fmt.label} not supported on mobile yet — Phase 4`);
+        opts.onFileError(file.id, `${fmt.label} not supported on mobile yet`);
         continue;
       }
 
       opts.onFileStart(file.id);
-      // expo-image-manipulator doesn't expose progress so we report 50% halfway
-      // (visual progress feedback only; Phase 4 will get real progress).
-      opts.onFileProgress(file.id, 25);
 
       try {
-        const result = await convertImage({
-          sourceUri: file.uri,
-          sourceName: file.name,
-          targetFormat: fmt,
-          quality: opts.quality,
-          resize: opts.resize ?? { kind: 'none' },
-        });
-
-        if (isCancelled(opts.sessionId)) break;
-        opts.onFileDone(file.id, result.outputUri, result.outputName, result.bytes);
+        if (file.mediaType === 'image' && fmt.category === 'image') {
+          // expo-image-manipulator path (no FFmpeg). No real progress here —
+          // emit a halfway tick so the bar moves.
+          opts.onFileProgress(file.id, 25);
+          const result = await convertImage({
+            sourceUri: file.uri,
+            sourceName: file.name,
+            targetFormat: fmt,
+            quality: opts.quality,
+            resize: opts.resize ?? { kind: 'none' },
+          });
+          if (isCancelled(opts.sessionId)) break;
+          opts.onFileDone(file.id, result.outputUri, result.outputName, result.bytes);
+        } else {
+          // FFmpeg path — applies to video, audio, and any image format the
+          // manipulator can't handle (BMP/TIFF/etc).
+          await runFfmpegFile({ ...opts, file, fmt });
+          if (isCancelled(opts.sessionId)) break;
+        }
       } catch (e) {
         if (isCancelled(opts.sessionId)) break;
         opts.onFileError(file.id, e instanceof Error ? e.message : String(e));
@@ -96,5 +109,65 @@ export async function runConvertSession(opts: ConvertRunOpts): Promise<void> {
     }
   } finally {
     clearSession(opts.sessionId);
+  }
+}
+
+async function runFfmpegFile(opts: ConvertRunOpts & { file: FileEntry; fmt: import('./formats').FormatDef }): Promise<void> {
+  const { file, fmt } = opts;
+
+  // Probe the input so we can compute progress percent.
+  let durationMs = 0;
+  try {
+    const info = await getMediaInfo(file.uri);
+    durationMs = info.durationMs;
+  } catch {
+    // Best effort — if probe fails we'll still run, but progress stays at 0.
+  }
+
+  // Output path — app cache dir, randomized name to avoid collisions.
+  const outputDir = `${FileSystem.documentDirectory}exports`;
+  await FileSystem.makeDirectoryAsync(outputDir, { intermediates: true }).catch(() => {});
+  const stem = file.name.replace(/\.[^.]+$/, '') || 'output';
+  const outputName = `${stem}.${fmt.ext}`;
+  const outputPath = `${outputDir}/${Date.now()}-${outputName}`;
+  // FFmpeg needs filesystem paths, not file:// URIs, so strip the scheme.
+  const inputPath = file.uri.replace(/^file:\/\//, '');
+  const cleanOutput = outputPath.replace(/^file:\/\//, '');
+
+  // Resize spec (image-flow's ResizeSpec) — Phase 5 routes resize-mode files
+  // through resizeQueue, so for convert mode here we only act on `pixels`.
+  const r = opts.resize;
+  const resizeWidth = r?.kind === 'pixels' ? r.width ?? null : null;
+  const resizeHeight = r?.kind === 'pixels' ? r.height ?? null : null;
+
+  const args = buildArgs({
+    inputPath,
+    outputPath: cleanOutput,
+    target: fmt,
+    quality: opts.quality,
+    stripAudio: false,
+    resizeWidth,
+    resizeHeight,
+  });
+
+  // Subscribe progress for this session only.
+  const sub = addProgressListener((evt) => {
+    if (evt.sessionId !== opts.sessionId) return;
+    opts.onFileProgress(file.id, Math.round(evt.percent));
+  });
+
+  try {
+    const result = await executeAsync(opts.sessionId, args, durationMs);
+    if (isCancelled(opts.sessionId)) return;
+    if (result.returnCode !== 0) {
+      opts.onFileError(file.id, `FFmpeg exited ${result.returnCode}`);
+      return;
+    }
+    // Read output size for the result panel.
+    const info = await FileSystem.getInfoAsync(outputPath);
+    const bytes = info.exists && 'size' in info ? info.size ?? 0 : 0;
+    opts.onFileDone(file.id, outputPath, outputName, bytes);
+  } finally {
+    sub.remove();
   }
 }

@@ -1,0 +1,55 @@
+apply plugin: 'com.android.library'
+
+group = 'expo.modules.convertxffmpeg'
+version = '0.1.0'
+
+def expoModulesCorePlugin = new File(project(":expo-modules-core").projectDir.absolutePath, "ExpoModulesCorePlugin.gradle")
+apply from: expoModulesCorePlugin
+applyKotlinExpoModulesCorePlugin()
+useCoreDependencies()
+useExpoPublishing()
+
+buildscript {
+  ext.safeExtGet = { prop, fallback ->
+    rootProject.ext.has(prop) ? rootProject.ext.get(prop) : fallback
+  }
+}
+
+project.android {
+  compileSdkVersion safeExtGet("compileSdkVersion", 36)
+  defaultConfig {
+    minSdkVersion safeExtGet("minSdkVersion", 24)
+    targetSdkVersion safeExtGet("targetSdkVersion", 36)
+  }
+}
+
+android {
+  namespace "expo.modules.convertxffmpeg"
+  defaultConfig {
+    versionCode 1
+    versionName "0.1.0"
+  }
+  lintOptions {
+    abortOnError false
+  }
+}
+
+// Pulls the 16KB-page-aligned, full-gpl variant of FFmpeg Kit from Maven
+// Central. This is a community fork of arthenica/ffmpeg-kit (archived
+// April 2025) — see PLAN.md Phase 4 for the rationale.
+//
+// The artifact ID is intentionally a `repositories { maven { url ... } }`
+// candidate too — if Maven Central resolution fails we can pin to JitPack
+// here.
+repositories {
+  mavenCentral()
+}
+
+dependencies {
+  // JamaisMagic's 16KB-aligned full-gpl fork of arthenica/ffmpeg-kit
+  // (archived April 2025). Built with NDK r27d, published Feb 2026 on
+  // Maven Central. Includes x264 / x265 / libvpx / opus / vorbis / lame.
+  // GPL-3.0 — Convert-X is open source so this is fine.
+  // Package namespace preserved as `com.arthenica.ffmpegkit.*`.
+  implementation 'io.github.jamaismagic.ffmpeg:ffmpeg-kit-main-full-gpl-16kb:6.1.4'
+}

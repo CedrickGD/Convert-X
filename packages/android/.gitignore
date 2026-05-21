@@ -38,7 +38,23 @@ yarn-error.*
 
 # generated native folders
 /ios
-/android
+
+# Android prebuild output IS tracked (we have Phase 8 customizations in
+# android/app/build.gradle + proguard-rules.pro that must survive
+# `expo prebuild`). Only ignore the build outputs / per-machine config:
+/android/.gradle/
+/android/.cxx/
+/android/.kotlin/
+/android/build/
+/android/app/.cxx/
+/android/app/build/
+/android/local.properties
+/android/captures/
+
+# Local Expo module build outputs
+modules/*/android/build/
+modules/*/android/.gradle/
+modules/*/android/.cxx/
 
 # IDE
 .idea/
@@ -46,3 +62,9 @@ yarn-error.*
 # Local screenshots used for visual verification during development
 .claude/*.png
 .claude/*.xml
+
+# Release pipeline outputs (built APKs)
+release/
+
+# Local gradle properties — release signing config (see android/gradle.properties.example)
+android/gradle.properties.local

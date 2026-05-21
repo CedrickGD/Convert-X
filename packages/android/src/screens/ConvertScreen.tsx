@@ -37,7 +37,8 @@ export function ConvertScreen() {
   const handlePickFiles = useCallback(async () => {
     try {
       const result = await DocumentPicker.getDocumentAsync({
-        type: ['image/*'],
+        // Phase 4 unlocks video + audio via FFmpeg.
+        type: ['image/*', 'video/*', 'audio/*'],
         copyToCacheDirectory: true,
         multiple: true,
       });
@@ -65,23 +66,26 @@ export function ConvertScreen() {
       return;
     }
     const result = await ImagePicker.launchImageLibraryAsync({
-      mediaTypes: ImagePicker.MediaTypeOptions.Images,
+      mediaTypes: ImagePicker.MediaTypeOptions.All,
       allowsMultipleSelection: true,
       quality: 1,
       exif: false,
     });
     if (result.canceled || !result.assets?.length) return;
-    const entries: FileEntry[] = result.assets.map((a, i) => ({
-      id: `${Date.now()}-${i}-${a.fileName ?? 'image'}`,
-      uri: a.uri,
-      name: a.fileName ?? `image-${i}.jpg`,
-      bytes: a.fileSize ?? 0,
-      mediaType: 'image' as MediaType,
-      width: a.width,
-      height: a.height,
-      status: 'ready',
-      progress: 0,
-    }));
+    const entries: FileEntry[] = result.assets.map((a, i) => {
+      const isVideo = a.type === 'video';
+      return {
+        id: `${Date.now()}-${i}-${a.fileName ?? 'media'}`,
+        uri: a.uri,
+        name: a.fileName ?? `media-${i}.${isVideo ? 'mp4' : 'jpg'}`,
+        bytes: a.fileSize ?? 0,
+        mediaType: (isVideo ? 'video' : 'image') as MediaType,
+        width: a.width,
+        height: a.height,
+        status: 'ready',
+        progress: 0,
+      };
+    });
     convert.addFiles(entries);
   }, [convert]);
 

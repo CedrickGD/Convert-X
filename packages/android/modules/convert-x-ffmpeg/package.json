@@ -1,0 +1,7 @@
+{
+  "name": "convert-x-ffmpeg",
+  "version": "0.1.0",
+  "description": "Convert-X Android — FFmpeg native bridge",
+  "main": "src/index.ts",
+  "private": true
+}

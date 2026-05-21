@@ -10,16 +10,16 @@ Active development. See [PLAN.md](PLAN.md) for the 10-phase plan and current pro
 
 | Phase | What | State |
 |---|---|---|
-| 0 | Rename + metadata | in progress |
-| 1 | Design system rebuild (Inter, `#0a0a0a` + `#10b981`) | pending |
-| 2 | 4-tab navigation (Convert / Resize / Download / Credits & App) | pending |
-| 3 | Port Convert mode UI from desktop Svelte | pending |
-| 4 | FFmpeg on Android (community fork or NDK bundle) | pending |
-| 5 | Resize mode | pending |
+| 0 | Rename + metadata | done |
+| 1 | Design system rebuild (Inter, `#0a0a0a` + `#10b981`) | done |
+| 2 | 4-tab navigation (Convert / Resize / Download / Credits) | done |
+| 3 | Port Convert mode UI from desktop Svelte | done |
+| 4 | FFmpeg on Android (JamaisMagic full-gpl-16kb fork) | done |
+| 5 | Resize mode (image today, video w/ Phase 4) | done |
 | 6 | Downloader (yt-dlp via youtubedl-android native module) | pending |
-| 7 | Credits & App tab | pending |
-| 8 | Local Gradle release APK pipeline | pending |
-| 9 | Real-device verification + polish | pending |
+| 7 | Credits & App tab | done (Phase 2 wiring; release-fetch polish pending) |
+| 8 | Local Gradle release APK pipeline | done (keystore: user-action) |
+| 9 | Real-device verification + polish | ongoing |
 
 ## Dev
 
@@ -42,8 +42,9 @@ Requires a release keystore configured per [PLAN.md](PLAN.md#phase-8) — Phase 
 ## Stack
 
 - **Frontend:** Expo SDK 54, React Native 0.81, TypeScript
-- **Video / audio / image conversion:** FFmpeg (community fork of `arthenica/ffmpeg-kit`)
-- **Multi-source download:** `yausername/youtubedl-android` (Kotlin) via a custom Expo native module — supports YouTube, Spotify, Instagram (incl. multi-asset carousels), Twitter/X, and ~1000 other sites that yt-dlp supports
+- **Image conversion:** `expo-image-manipulator` (PNG / JPG / WebP)
+- **Video + audio conversion:** FFmpeg via `io.github.jamaismagic.ffmpeg:ffmpeg-kit-main-full-gpl-16kb:6.1.4` (Android 15+ 16KB-aligned community fork of `arthenica/ffmpeg-kit`), wrapped in the in-repo `convert-x-ffmpeg` Expo Module under `modules/`
+- **Multi-source download (Phase 6, not yet shipped):** `yausername/youtubedl-android` (Kotlin) via a custom Expo native module — supports YouTube, Spotify, Instagram (incl. multi-asset carousels), Twitter/X, and ~1000 other sites that yt-dlp supports
 
 ## Relationship to desktop Convert-X
 

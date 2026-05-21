@@ -1,0 +1,21 @@
+# Template for android/gradle.properties.local (gitignored).
+# Copy or merge into android/gradle.properties before `./gradlew assembleRelease`
+# when you want a real signed release APK.
+#
+# Generate the keystore once (outside the repo!) with:
+#   keytool -genkey -v -keystore C:\Users\<you>\keys\convert-x-android-release.jks \
+#     -alias convert-x-release -keyalg RSA -keysize 2048 -validity 10950 \
+#     -dname "CN=<your name>,O=Personal,L=,ST=,C=US"
+
+# Absolute path to the .jks keystore — keep OUTSIDE this repo.
+CONVERT_X_KEYSTORE_FILE=C:/Users/cedri/keys/convert-x-android-release.jks
+
+# Store + key passwords. Use the same value for both unless you set
+# different ones during `keytool -genkey`.
+CONVERT_X_KEYSTORE_PASSWORD=replace-me
+CONVERT_X_KEY_PASSWORD=replace-me
+CONVERT_X_KEY_ALIAS=convert-x-release
+
+# Enable R8 + resource shrinking in release builds (recommended).
+android.enableMinifyInReleaseBuilds=true
+android.enableShrinkResourcesInReleaseBuilds=true
