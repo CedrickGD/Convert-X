@@ -70,6 +70,10 @@ jobs:
           KEY_ALIAS: ${{ secrets.RELEASE_KEY_ALIAS }}
           KEY_PASSWORD: ${{ secrets.RELEASE_KEY_PASSWORD }}
         run: |
+          # R8 minify is OFF until proguard keep-rules cover all the
+          # reflectively-loaded Expo Modules + FFmpegKit / yt-dlp paths.
+          # Without that, the release loads a black screen at runtime.
+          # Trade APK size now, audit later.
           ./gradlew assembleRelease \
             --no-daemon \
             --stacktrace \
@@ -77,22 +81,18 @@ jobs:
             -PCONVERT_X_KEYSTORE_PASSWORD="${KS_PASSWORD}" \
             -PCONVERT_X_KEY_ALIAS="${KEY_ALIAS}" \
             -PCONVERT_X_KEY_PASSWORD="${KEY_PASSWORD}" \
-            -Pandroid.enableMinifyInReleaseBuilds=true \
-            -Pandroid.enableShrinkResourcesInReleaseBuilds=true
+            -Pandroid.enableMinifyInReleaseBuilds=false \
+            -Pandroid.enableShrinkResourcesInReleaseBuilds=false
 
       - name: Gradle assembleRelease (debug-signed fallback)
         if: steps.keystore.outputs.have_keystore == 'false'
         working-directory: android
         run: |
-          # No release keystore secret — build.gradle falls back to debug
-          # signing automatically. APK is sideload-able but NOT Play Store
-          # ready. Set RELEASE_KEYSTORE_* secrets to switch to a real signed
-          # build on the next tag.
           ./gradlew assembleRelease \
             --no-daemon \
             --stacktrace \
-            -Pandroid.enableMinifyInReleaseBuilds=true \
-            -Pandroid.enableShrinkResourcesInReleaseBuilds=true
+            -Pandroid.enableMinifyInReleaseBuilds=false \
+            -Pandroid.enableShrinkResourcesInReleaseBuilds=false
 
       - name: List generated APKs
         run: |
