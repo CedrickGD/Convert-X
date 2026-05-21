@@ -2,32 +2,12 @@
  * Convert-X Android color tokens.
  *
  * 1:1 mirror of the desktop Convert-X palette
- * (Convert-X/packages/shared/src/assets/styles.css). Dark = near-black bg with
- * an emerald accent. Light = bone-white with deep emerald. When changing here,
+ * (Convert-X/packages/shared/src/assets/styles.css). Dark = near-black with
+ * emerald accent. Light = bone-white with deep emerald. When changing here,
  * change the desktop CSS in lockstep.
- *
- * The desktop app has a single accent; the multi-palette / custom-hue UI in
- * the pre-redesign Android scaffold is on its way out (Phase 3). The legacy
- * `Palette`, `PRESET_PALETTES`, `paletteFromKey`, `buildTheme` exports at the
- * bottom of this file are shims so the pre-redesign screens compile until
- * they are replaced.
  */
 
 export type ColorScheme = 'light' | 'dark' | 'system';
-
-/**
- * Kept as a wider union for source-compat with the pre-redesign UI
- * (multi-accent picker). Desktop has a single emerald accent; the other
- * keys are accepted but resolve to emerald. Removed in Phase 3.
- */
-export type AccentKey =
-  | 'emerald'
-  | 'purple'
-  | 'ocean'
-  | 'amber'
-  | 'rose'
-  | 'slate'
-  | 'custom';
 
 export type Theme = {
   isDark: boolean;
@@ -45,14 +25,17 @@ export type Theme = {
     glow: string;
     subtle: string;
     onPrimary: string;
+    /** Slider track + small gradient touches — kept for the Slider component. */
+    gradient: [string, string];
+    // Legacy aliases preserved for the Slider component (Phase 1/2 holdover).
     primarySoft: string;
     primaryGlow: string;
-    gradient: [string, string];
   };
   text: {
     primary: string;
     secondary: string;
     muted: string;
+    /** Alias for muted — older code paths still reference it. */
     tertiary: string;
     onAccent: string;
   };
@@ -70,7 +53,8 @@ export type Theme = {
   };
   overlay: {
     scrim: string;
-    glass: string;
+    /** Low-alpha tint for any future BlurView; not used in flat-styling layout. */
+    blurTint: string;
   };
 };
 
@@ -90,9 +74,9 @@ export const DARK_THEME: Theme = {
     glow: 'rgba(16, 185, 129, 0.12)',
     subtle: 'rgba(16, 185, 129, 0.06)',
     onPrimary: '#000000',
+    gradient: ['#10b981', '#34d399'],
     primarySoft: '#059669',
     primaryGlow: '#34d399',
-    gradient: ['#10b981', '#34d399'],
   },
   text: {
     primary: '#f0f0f0',
@@ -115,7 +99,7 @@ export const DARK_THEME: Theme = {
   },
   overlay: {
     scrim: 'rgba(0, 0, 0, 0.55)',
-    glass: 'rgba(23, 23, 23, 0.6)',
+    blurTint: 'rgba(23, 23, 23, 0.6)',
   },
 };
 
@@ -135,9 +119,9 @@ export const LIGHT_THEME: Theme = {
     glow: 'rgba(5, 150, 105, 0.15)',
     subtle: 'rgba(5, 150, 105, 0.05)',
     onPrimary: '#ffffff',
+    gradient: ['#059669', '#047857'],
     primarySoft: '#10b981',
     primaryGlow: '#10b981',
-    gradient: ['#059669', '#047857'],
   },
   text: {
     primary: '#111111',
@@ -160,35 +144,10 @@ export const LIGHT_THEME: Theme = {
   },
   overlay: {
     scrim: 'rgba(0, 0, 0, 0.35)',
-    glass: 'rgba(255, 255, 255, 0.72)',
+    blurTint: 'rgba(255, 255, 255, 0.72)',
   },
 };
 
 export function resolveTheme(isDark: boolean): Theme {
   return isDark ? DARK_THEME : LIGHT_THEME;
-}
-
-// ── Legacy compatibility shims (removed in Phase 3) ───────────────────────
-//
-// The pre-redesign Settings screen offered multi-accent + custom-hue picking.
-// Desktop has a single emerald accent, so those features go away. These
-// exports let the existing screens compile until they are replaced.
-
-export type Palette = {
-  key: AccentKey;
-  label: string;
-  hue: number;
-  saturation: number;
-};
-
-export const PRESET_PALETTES: Palette[] = [
-  { key: 'emerald', label: 'Emerald', hue: 160, saturation: 82 },
-];
-
-export function paletteFromKey(_key: AccentKey, _h?: number, _s?: number): Palette {
-  return PRESET_PALETTES[0];
-}
-
-export function buildTheme(_palette: Palette, isDark: boolean): Theme {
-  return resolveTheme(isDark);
 }

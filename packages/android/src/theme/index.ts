@@ -1,18 +1,6 @@
 export { ThemeProvider, useTheme } from './ThemeProvider';
-export {
-  DARK_THEME,
-  LIGHT_THEME,
-  PRESET_PALETTES,
-  buildTheme,
-  paletteFromKey,
-  resolveTheme,
-} from './palettes';
-export type {
-  AccentKey,
-  ColorScheme,
-  Palette,
-  Theme,
-} from './palettes';
+export { DARK_THEME, LIGHT_THEME, resolveTheme } from './palettes';
+export type { ColorScheme, Theme } from './palettes';
 export {
   elevation,
   fontFamily,

@@ -9,42 +9,21 @@ import React, {
 } from 'react';
 import { useColorScheme } from 'react-native';
 
-import {
-  AccentKey,
-  ColorScheme,
-  Palette,
-  PRESET_PALETTES,
-  resolveTheme,
-  Theme,
-} from './palettes';
+import { ColorScheme, resolveTheme, Theme } from './palettes';
 
 const STORAGE_KEY = '@convertx/settings.v1';
 
 type PersistedSettings = {
-  /** Pre-redesign multi-accent picker; kept for storage compat, ignored. */
-  accent: AccentKey;
-  customHue: number;
-  customSaturation: number;
   colorScheme: ColorScheme;
 };
 
 const DEFAULT_SETTINGS: PersistedSettings = {
-  accent: 'emerald',
-  customHue: 160,
-  customSaturation: 82,
   colorScheme: 'dark',
 };
 
 type ThemeContextValue = {
   theme: Theme;
-  palette: Palette;
   settings: PersistedSettings;
-  /** No-op — desktop has a single accent. Kept for source-compat. */
-  setAccent: (key: AccentKey) => void;
-  /** No-op — kept for source-compat. */
-  setCustomHue: (hue: number) => void;
-  /** No-op — kept for source-compat. */
-  setCustomSaturation: (saturation: number) => void;
   setColorScheme: (scheme: ColorScheme) => void;
   hydrated: boolean;
 };
@@ -98,14 +77,8 @@ export function ThemeProvider({ children }: { children: React.ReactNode }) {
   const value = useMemo<ThemeContextValue>(
     () => ({
       theme,
-      palette: PRESET_PALETTES[0],
       settings,
       hydrated,
-      setAccent: () => {
-        // intentional no-op — only one accent on desktop
-      },
-      setCustomHue: () => {},
-      setCustomSaturation: () => {},
       setColorScheme: (scheme) => update({ colorScheme: scheme }),
     }),
     [theme, settings, hydrated, update]
