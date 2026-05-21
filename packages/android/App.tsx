@@ -8,7 +8,7 @@ import { useFonts } from 'expo-font';
 import * as SplashScreen from 'expo-splash-screen';
 import { StatusBar } from 'expo-status-bar';
 import * as SystemUI from 'expo-system-ui';
-import React, { useEffect, useMemo } from 'react';
+import React, { useEffect, useMemo, useState } from 'react';
 import { StyleSheet, View } from 'react-native';
 import { GestureHandlerRootView } from 'react-native-gesture-handler';
 import { SafeAreaProvider } from 'react-native-safe-area-context';
@@ -27,13 +27,22 @@ SplashScreen.preventAutoHideAsync().catch(() => {
 });
 
 export default function App() {
-  // Inter is the desktop typeface. Splash holds until fonts resolve.
+  // Inter is the desktop typeface. Splash held until fonts resolved — but
+  // in release we saw useFonts hang silently, leaving the splash up forever.
+  // 2-second timeout caps the wait; if Inter doesn't load by then the app
+  // renders with the system default and the typography looks slightly off
+  // — better than a black screen forever.
   const [fontsLoaded, fontError] = useFonts({
     'Inter-Regular': require('./assets/fonts/Inter-Regular.ttf'),
     'Inter-Medium': require('./assets/fonts/Inter-Medium.ttf'),
     'Inter-SemiBold': require('./assets/fonts/Inter-SemiBold.ttf'),
     'Inter-Bold': require('./assets/fonts/Inter-Bold.ttf'),
   });
+  const [fontsTimedOut, setFontsTimedOut] = useState(false);
+  useEffect(() => {
+    const id = setTimeout(() => setFontsTimedOut(true), 2000);
+    return () => clearTimeout(id);
+  }, []);
 
   return (
     <GestureHandlerRootView style={styles.root}>
@@ -43,7 +52,7 @@ export default function App() {
             <ConvertProvider>
               <ResizeProvider>
                 <DownloadProvider>
-                  <Root fontsReady={fontsLoaded || !!fontError} />
+                  <Root fontsReady={fontsLoaded || !!fontError || fontsTimedOut} />
                 </DownloadProvider>
               </ResizeProvider>
             </ConvertProvider>
