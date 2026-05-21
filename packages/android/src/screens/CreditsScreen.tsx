@@ -24,7 +24,7 @@ import { radius, spacing, typography, useTheme } from '../theme';
 type Nav = NativeStackNavigationProp<RootStackParamList>;
 
 const REPO_DESKTOP = 'https://github.com/CedrickGD/Convert-X';
-const REPO_ANDROID = 'https://github.com/CedrickGD/Convert-X-Android';
+const REPO_ANDROID = 'https://github.com/CedrickGD/Convert-X-Android-APK';
 const AUTHOR = 'https://github.com/CedrickGD';
 
 const OSS = [

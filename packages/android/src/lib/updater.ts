@@ -18,7 +18,7 @@ import { getSupportedAbis, installApk } from '../../modules/convert-x-ffmpeg/src
 import pkg from '../../package.json';
 
 const RELEASES_API =
-  'https://api.github.com/repos/CedrickGD/Convert-X-Android/releases/latest';
+  'https://api.github.com/repos/CedrickGD/Convert-X-Android-APK/releases/latest';
 
 export type UpdateInfo = {
   version: string;

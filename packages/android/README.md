@@ -58,7 +58,7 @@ Pushing a `v*` tag (e.g. `git tag v0.2.0 && git push origin v0.2.0`) triggers `.
 - Signs them with the keystore from the repo secrets.
 - Attaches `app-arm64-v8a-release.apk` + `app-armeabi-v7a-release.apk` to the GitHub Release.
 
-The in-app updater (Credits tab) polls `https://api.github.com/repos/CedrickGD/Convert-X-Android/releases/latest`, picks the APK matching the device's ABI, downloads to cache, and hands it to Android's system installer.
+The in-app updater (Credits tab) polls `https://api.github.com/repos/CedrickGD/Convert-X-Android-APK/releases/latest`, picks the APK matching the device's ABI, downloads to cache, and hands it to Android's system installer.
 
 One-time secret setup in the GitHub repo (Settings → Secrets and variables → Actions):
 
