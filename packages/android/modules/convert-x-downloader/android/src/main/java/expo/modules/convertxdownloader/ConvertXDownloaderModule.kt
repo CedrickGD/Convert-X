@@ -53,51 +53,37 @@ class ConvertXDownloaderModule : Module() {
         try {
           ensureInitializedSync()
           val request = YoutubeDLRequest(url)
+          request.addOption("--dump-json")
           request.addOption("--no-warnings")
           request.addOption("--flat-playlist")
           applyAuthOpts(request, opts)
-          // `getInfo` runs yt-dlp with --dump-json and parses out into a
-          // VideoInfo. Re-serialize so we can hand it to JS without dragging
-          // Jackson types across the bridge.
-          val info = YoutubeDL.getInstance().getInfo(request)
-          val json = JSONObject()
-          json.put("id", info.id)
-          json.put("title", info.title)
-          json.put("description", info.description ?: "")
-          json.put("thumbnail", info.thumbnail ?: "")
-          json.put("duration", info.duration)
-          json.put("uploader", info.uploader ?: "")
-          json.put("extractor", info.extractor ?: "")
-          json.put("url", info.webpageUrl ?: url)
-          // Formats (when available — single-video URLs)
-          val formats = org.json.JSONArray()
-          info.formats?.forEach { f ->
-            val o = JSONObject()
-            o.put("formatId", f.formatId)
-            o.put("ext", f.ext)
-            o.put("note", f.formatNote ?: "")
-            o.put("width", f.width)
-            o.put("height", f.height)
-            o.put("filesize", f.filesize ?: 0)
-            o.put("acodec", f.acodec ?: "")
-            o.put("vcodec", f.vcodec ?: "")
-            formats.put(o)
+          // Use raw --dump-json + parse stdout ourselves. The library's
+          // typed VideoInfo class field names are not stable across the
+          // 0.18.x line, so we avoid it.
+          val response = YoutubeDL.getInstance().execute(request)
+          val out = response.out.trim()
+          val lines = out.lines().filter { it.isNotBlank() && it.startsWith("{") }
+          val result = if (lines.size > 1) {
+            // Playlist: yt-dlp emits one JSON object per entry on stdout.
+            val arr = org.json.JSONArray()
+            for (line in lines) arr.put(JSONObject(line))
+            JSONObject().apply {
+              put("isPlaylist", true)
+              put("entries", arr)
+              put("url", url)
+            }
+          } else if (lines.size == 1) {
+            val info = JSONObject(lines[0])
+            info.put("isPlaylist", false)
+            info
+          } else {
+            JSONObject().apply {
+              put("isPlaylist", false)
+              put("error", "yt-dlp returned no JSON")
+              put("stderr", response.err)
+            }
           }
-          json.put("formats", formats)
-          // Playlist entries (multi-asset)
-          val entries = org.json.JSONArray()
-          info.entries?.forEach { e ->
-            val o = JSONObject()
-            o.put("id", e.id)
-            o.put("title", e.title)
-            o.put("url", e.url ?: e.webpageUrl ?: "")
-            o.put("thumbnail", e.thumbnail ?: "")
-            o.put("duration", e.duration)
-            entries.put(o)
-          }
-          json.put("entries", entries)
-          json.put("isPlaylist", entries.length() > 0)
-          promise.resolve(json.toString())
+          promise.resolve(result.toString())
         } catch (e: Throwable) {
           promise.reject(CodedException("PROBE_FAILED", e.message ?: "yt-dlp probe error", e))
         }
