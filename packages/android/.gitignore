@@ -45,3 +45,4 @@ yarn-error.*
 
 # Local screenshots used for visual verification during development
 .claude/*.png
+.claude/*.xml

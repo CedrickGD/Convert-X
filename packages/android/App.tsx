@@ -14,15 +14,20 @@ import { GestureHandlerRootView } from 'react-native-gesture-handler';
 import { SafeAreaProvider } from 'react-native-safe-area-context';
 
 import { RootNavigator } from './src/navigation/RootNavigator';
+import {
+  ConvertProvider,
+  DownloadProvider,
+  ResizeProvider,
+  SharedProvider,
+} from './src/state';
 import { ThemeProvider, useTheme } from './src/theme';
 
 SplashScreen.preventAutoHideAsync().catch(() => {
-  // If preventing fails (e.g. already hidden), that's fine — we continue.
+  // already hidden — fine, continue
 });
 
 export default function App() {
-  // Inter is the desktop typeface. Loaded here so the splash holds until
-  // fonts resolve and we never flash a system font on first paint.
+  // Inter is the desktop typeface. Splash holds until fonts resolve.
   const [fontsLoaded, fontError] = useFonts({
     'Inter-Regular': require('./assets/fonts/Inter-Regular.ttf'),
     'Inter-Medium': require('./assets/fonts/Inter-Medium.ttf'),
@@ -34,7 +39,15 @@ export default function App() {
     <GestureHandlerRootView style={styles.root}>
       <SafeAreaProvider>
         <ThemeProvider>
-          <Root fontsReady={fontsLoaded || !!fontError} />
+          <SharedProvider>
+            <ConvertProvider>
+              <ResizeProvider>
+                <DownloadProvider>
+                  <Root fontsReady={fontsLoaded || !!fontError} />
+                </DownloadProvider>
+              </ResizeProvider>
+            </ConvertProvider>
+          </SharedProvider>
         </ThemeProvider>
       </SafeAreaProvider>
     </GestureHandlerRootView>
@@ -45,20 +58,12 @@ function Root({ fontsReady }: { fontsReady: boolean }) {
   const { theme, hydrated } = useTheme();
   const ready = hydrated && fontsReady;
 
-  // Sync the native root bg with the theme so edges match during navigation /
-  // orientation changes / keyboard avoidance.
   useEffect(() => {
-    SystemUI.setBackgroundColorAsync(theme.bg.base).catch(() => {
-      // non-fatal
-    });
+    SystemUI.setBackgroundColorAsync(theme.bg.base).catch(() => {});
   }, [theme.bg.base]);
 
   useEffect(() => {
-    if (ready) {
-      SplashScreen.hideAsync().catch(() => {
-        // non-fatal
-      });
-    }
+    if (ready) SplashScreen.hideAsync().catch(() => {});
   }, [ready]);
 
   const navTheme = useMemo<NavTheme>(() => {
@@ -79,7 +84,6 @@ function Root({ fontsReady }: { fontsReady: boolean }) {
   }, [theme]);
 
   if (!ready) {
-    // Keep the splash up until settings hydrate and fonts load.
     return <View style={[styles.root, { backgroundColor: theme.bg.base }]} />;
   }
 

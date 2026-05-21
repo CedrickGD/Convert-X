@@ -1,44 +1,24 @@
-import { createBottomTabNavigator } from '@react-navigation/bottom-tabs';
 import { createNativeStackNavigator } from '@react-navigation/native-stack';
 import React from 'react';
 
-import { HistoryScreen } from '../screens/HistoryScreen';
-import { HomeScreen } from '../screens/HomeScreen';
-import { SettingsScreen } from '../screens/SettingsScreen';
 import { ColorPickerModal } from '../screens/ColorPickerModal';
 import { StyleGuideScreen } from '../screens/dev/StyleGuideScreen';
-import { TabBar } from './TabBar';
-import { RootStackParamList, TabParamList } from './types';
+import { ModeRouter } from './ModeRouter';
+import { RootStackParamList } from './types';
 
-const Tab = createBottomTabNavigator<TabParamList>();
 const Stack = createNativeStackNavigator<RootStackParamList>();
 
-function Tabs() {
-  return (
-    <Tab.Navigator
-      screenOptions={{
-        headerShown: false,
-      }}
-      tabBar={(props) => <TabBar {...props} />}
-    >
-      <Tab.Screen name="Home" component={HomeScreen} />
-      <Tab.Screen name="History" component={HistoryScreen} />
-      <Tab.Screen name="Settings" component={SettingsScreen} />
-    </Tab.Navigator>
-  );
-}
-
+/**
+ * Phase 2: the root is a single ModeRouter screen + modal-presented dev
+ * routes. The pre-redesign bottom tabs (Home / History / Settings) are gone.
+ */
 export function RootNavigator() {
   return (
-    <Stack.Navigator
-      screenOptions={{
-        headerShown: false,
-      }}
-    >
-      <Stack.Screen name="Tabs" component={Tabs} />
+    <Stack.Navigator screenOptions={{ headerShown: false }}>
+      <Stack.Screen name="Root" component={ModeRouter} />
       <Stack.Screen
-        name="ColorPicker"
-        component={ColorPickerModal}
+        name="StyleGuide"
+        component={StyleGuideScreen}
         options={{
           presentation: 'modal',
           animation: 'slide_from_bottom',
@@ -46,8 +26,8 @@ export function RootNavigator() {
         }}
       />
       <Stack.Screen
-        name="StyleGuide"
-        component={StyleGuideScreen}
+        name="ColorPicker"
+        component={ColorPickerModal}
         options={{
           presentation: 'modal',
           animation: 'slide_from_bottom',
