@@ -92,8 +92,8 @@ android {
         applicationId 'com.cedrickgd.convertx'
         minSdkVersion rootProject.ext.minSdkVersion
         targetSdkVersion rootProject.ext.targetSdkVersion
-        versionCode 2
-        versionName "0.2.0"
+        versionCode 3
+        versionName "0.2.1"
 
         buildConfigField "String", "REACT_NATIVE_RELEASE_LEVEL", "\"${findProperty('reactNativeReleaseLevel') ?: 'stable'}\""
     }
@@ -134,6 +134,11 @@ android {
     }
     buildTypes {
         debug {
+            // Suffix the dev/debug package id so dev + release can coexist
+            // on the same device. Useful when the release is the everyday
+            // install but you still want to run Metro builds occasionally.
+            applicationIdSuffix '.dev'
+            versionNameSuffix '-dev'
             signingConfig signingConfigs.debug
         }
         release {
