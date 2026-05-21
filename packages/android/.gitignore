@@ -59,9 +59,10 @@ modules/*/android/.cxx/
 # IDE
 .idea/
 
-# Local screenshots used for visual verification during development
+# Local screenshots / APK builds used for visual verification during dev
 .claude/*.png
 .claude/*.xml
+.claude/*.apk
 
 # Release pipeline outputs (built APKs)
 release/
