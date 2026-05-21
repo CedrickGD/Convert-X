@@ -1,0 +1,7 @@
+{
+  "name": "convert-x-downloader",
+  "version": "0.1.0",
+  "description": "Convert-X Android — yt-dlp downloader native bridge",
+  "main": "src/index.ts",
+  "private": true
+}

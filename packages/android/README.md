@@ -16,10 +16,12 @@ Active development. See [PLAN.md](PLAN.md) for the 10-phase plan and current pro
 | 3 | Port Convert mode UI from desktop Svelte | done |
 | 4 | FFmpeg on Android (JamaisMagic full-gpl-16kb fork) | done |
 | 5 | Resize mode (image today, video w/ Phase 4) | done |
-| 6 | Downloader (yt-dlp via youtubedl-android native module) | pending |
-| 7 | Credits & App tab | done (Phase 2 wiring; release-fetch polish pending) |
-| 8 | Local Gradle release APK pipeline | done (keystore: user-action) |
+| 6 | Downloader (yt-dlp via youtubedl-android native module) | done |
+| 7 | Credits & App tab | done |
+| 8 | Local Gradle release APK pipeline | done |
 | 9 | Real-device verification + polish | ongoing |
+| CI | GitHub Actions release workflow on `v*` tags | done |
+| Updater | In-app APK self-update from GitHub Releases | done |
 
 ## Dev
 
@@ -37,7 +39,35 @@ npm run android          # dev build to a connected device/emulator
 npm run build:apk        # cleans, builds signed release APK, copies to release/
 ```
 
-Requires a release keystore configured per [PLAN.md](PLAN.md#phase-8) — Phase 8 puts this in place.
+Requires a release keystore configured per [PLAN.md](PLAN.md#phase-8). Generate once:
+
+```bash
+keytool -genkey -v \
+  -keystore C:\Users\<you>\keys\convert-x-android-release.jks \
+  -alias convert-x-release \
+  -keyalg RSA -keysize 2048 -validity 10950 \
+  -dname "CN=<your name>,O=Personal,L=,ST=,C=US"
+```
+
+Then copy `android/gradle.properties.example` to `android/gradle.properties.local` (gitignored) and fill in the keystore path + passwords.
+
+## Auto-release on tag push
+
+Pushing a `v*` tag (e.g. `git tag v0.2.0 && git push origin v0.2.0`) triggers `.github/workflows/release.yml`:
+- Builds the per-ABI release APKs on ubuntu-latest.
+- Signs them with the keystore from the repo secrets.
+- Attaches `app-arm64-v8a-release.apk` + `app-armeabi-v7a-release.apk` to the GitHub Release.
+
+The in-app updater (Credits tab) polls `https://api.github.com/repos/CedrickGD/Convert-X-Android/releases/latest`, picks the APK matching the device's ABI, downloads to cache, and hands it to Android's system installer.
+
+One-time secret setup in the GitHub repo (Settings → Secrets and variables → Actions):
+
+| Secret | Value |
+|---|---|
+| `RELEASE_KEYSTORE_BASE64` | `base64 -w 0 your-release.jks` (single line, no wrap) |
+| `RELEASE_KEYSTORE_PASSWORD` | store password |
+| `RELEASE_KEY_ALIAS` | key alias (default `convert-x-release`) |
+| `RELEASE_KEY_PASSWORD` | key password |
 
 ## Stack
 

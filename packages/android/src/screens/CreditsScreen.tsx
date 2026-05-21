@@ -1,13 +1,23 @@
-import { Code, Heart, Package, SwatchBook } from 'lucide-react-native';
-// expo-constants would let us read the version live — Phase 7 wires it.
-// For Phase 2 we surface the package.json value via a static import.
+import { Code, Download, Heart, Package, SwatchBook } from 'lucide-react-native';
+// Phase 2 used a static import for the version; the in-app updater (Phase 9)
+// uses the same source of truth.
 import pkg from '../../package.json';
 import { useNavigation } from '@react-navigation/native';
 import { NativeStackNavigationProp } from '@react-navigation/native-stack';
-import React from 'react';
-import { Linking, Pressable, ScrollView, StyleSheet, Text, View } from 'react-native';
+import React, { useCallback, useEffect, useState } from 'react';
+import {
+  ActivityIndicator,
+  Linking,
+  Pressable,
+  ScrollView,
+  StyleSheet,
+  Text,
+  View,
+} from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 
+import { checkForUpdate, downloadAndInstall, UpdateInfo } from '../lib/updater';
+import { prettyBytes } from '../lib/formats';
 import { RootStackParamList } from '../navigation/types';
 import { radius, spacing, typography, useTheme } from '../theme';
 
@@ -83,6 +93,9 @@ export function CreditsScreen() {
           </View>
         </View>
       </View>
+
+      {/* Updates — sideload self-update from GitHub Releases */}
+      <UpdateCard />
 
       {/* Source */}
       <View
@@ -161,6 +174,133 @@ export function CreditsScreen() {
         </Pressable>
       ) : null}
     </ScrollView>
+  );
+}
+
+// ── Update card ─────────────────────────────────────────────────────────
+// Auto-checks GitHub Releases on mount; lets the user tap to re-check or
+// install. State machine keeps the UI debounced.
+
+type UpdateState =
+  | { kind: 'idle' }
+  | { kind: 'checking' }
+  | { kind: 'available'; info: UpdateInfo }
+  | { kind: 'downloading'; pct: number; info: UpdateInfo }
+  | { kind: 'up-to-date' }
+  | { kind: 'error' };
+
+function UpdateCard() {
+  const { theme } = useTheme();
+  const [state, setState] = useState<UpdateState>({ kind: 'idle' });
+
+  // Auto-check once on mount. Silent on failure.
+  useEffect(() => {
+    let cancelled = false;
+    (async () => {
+      setState({ kind: 'checking' });
+      const info = await checkForUpdate();
+      if (cancelled) return;
+      setState(info ? { kind: 'available', info } : { kind: 'up-to-date' });
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
+  const onCheck = useCallback(async () => {
+    if (state.kind === 'downloading' || state.kind === 'checking') return;
+    setState({ kind: 'checking' });
+    try {
+      const info = await checkForUpdate();
+      setState(info ? { kind: 'available', info } : { kind: 'up-to-date' });
+    } catch {
+      setState({ kind: 'error' });
+    }
+  }, [state.kind]);
+
+  const onInstall = useCallback(async () => {
+    if (state.kind !== 'available') return;
+    const info = state.info;
+    setState({ kind: 'downloading', pct: 0, info });
+    try {
+      await downloadAndInstall(info, (pct) =>
+        setState({ kind: 'downloading', pct, info })
+      );
+      // After the install sheet appears, Android takes over.
+      setState({ kind: 'available', info });
+    } catch {
+      setState({ kind: 'error' });
+    }
+  }, [state]);
+
+  const subline =
+    state.kind === 'checking' ? 'Checking GitHub…' :
+    state.kind === 'up-to-date' ? 'You have the latest version.' :
+    state.kind === 'available' ? `v${state.info.version} · ${prettyBytes(state.info.apkSize)}` :
+    state.kind === 'downloading' ? `Downloading… ${state.pct}%` :
+    state.kind === 'error' ? 'Could not check for updates.' :
+    'Tap to check for updates.';
+
+  const cta =
+    state.kind === 'available' ? 'Install' :
+    state.kind === 'downloading' ? null :
+    'Check';
+
+  const busy = state.kind === 'checking' || state.kind === 'downloading';
+
+  return (
+    <View
+      style={[
+        styles.card,
+        { backgroundColor: theme.bg.surface, borderColor: theme.border.subtle },
+      ]}
+    >
+      <Text style={[styles.cardLabel, { color: theme.text.muted }]}>UPDATES</Text>
+      <View style={styles.row}>
+        <View style={[styles.iconBox, { backgroundColor: theme.accent.subtle }]}>
+          {busy ? (
+            <ActivityIndicator size="small" color={theme.accent.primary} />
+          ) : (
+            <Download size={18} strokeWidth={1.8} color={theme.accent.primary} />
+          )}
+        </View>
+        <View style={{ flex: 1 }}>
+          <Text style={[styles.rowTitle, { color: theme.text.primary }]}>
+            {state.kind === 'available' ? 'Update available' : 'App update'}
+          </Text>
+          <Text style={[styles.rowSub, { color: theme.text.secondary }]}>{subline}</Text>
+        </View>
+        {cta ? (
+          <Pressable
+            disabled={busy}
+            onPress={state.kind === 'available' ? onInstall : onCheck}
+            style={({ pressed }) => ({
+              paddingHorizontal: spacing.xl,
+              paddingVertical: spacing.md,
+              borderRadius: radius.xs,
+              backgroundColor:
+                state.kind === 'available' ? theme.accent.primary : theme.bg.surfaceSunken,
+              borderWidth: state.kind === 'available' ? 0 : StyleSheet.hairlineWidth,
+              borderColor: theme.border.subtle,
+              opacity: pressed ? 0.8 : 1,
+            })}
+          >
+            <Text
+              style={[
+                typography.bodyEmph,
+                {
+                  color:
+                    state.kind === 'available' ? theme.accent.onPrimary : theme.text.secondary,
+                  fontWeight: '600',
+                },
+              ]}
+            >
+              {cta}
+            </Text>
+          </Pressable>
+        ) : null}
+      </View>
+    </View>
   );
 }
 

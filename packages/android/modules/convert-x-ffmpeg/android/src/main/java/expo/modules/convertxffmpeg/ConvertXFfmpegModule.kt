@@ -1,5 +1,9 @@
 package expo.modules.convertxffmpeg
 
+import android.content.Intent
+import android.net.Uri
+import android.os.Build
+import androidx.core.content.FileProvider
 import com.arthenica.ffmpegkit.FFmpegKit
 import com.arthenica.ffmpegkit.FFmpegSession
 import com.arthenica.ffmpegkit.FFprobeKit
@@ -8,6 +12,7 @@ import com.arthenica.ffmpegkit.Statistics
 import expo.modules.kotlin.exception.CodedException
 import expo.modules.kotlin.modules.Module
 import expo.modules.kotlin.modules.ModuleDefinition
+import java.io.File
 import java.util.concurrent.ConcurrentHashMap
 
 /**
@@ -83,6 +88,48 @@ class ConvertXFfmpegModule : Module() {
       val ffSessionId = sessions.remove(sessionId)
       if (ffSessionId != null) {
         FFmpegKit.cancel(ffSessionId)
+      }
+    }
+
+    // ── Self-update support ──────────────────────────────────────────
+    // The convert-x-ffmpeg module also hosts the small native helpers
+    // the in-app updater needs — we already wire its react context here,
+    // so adding two more functions avoids a second native module.
+
+    Function("getSupportedAbis") {
+      Build.SUPPORTED_ABIS.toList()
+    }
+
+    AsyncFunction("installApk") { uriString: String, promise: expo.modules.kotlin.Promise ->
+      try {
+        val ctx = appContext.reactContext
+          ?: throw CodedException("NO_CONTEXT", "React context unavailable", null)
+
+        // expo-file-system hands back file:// URIs; strip the scheme so
+        // we can pass a File to FileProvider.
+        val path = if (uriString.startsWith("file://")) {
+          Uri.parse(uriString).path
+        } else {
+          uriString
+        } ?: throw CodedException("BAD_URI", "Cannot resolve $uriString", null)
+
+        val apk = File(path)
+        if (!apk.exists()) {
+          throw CodedException("NO_APK", "APK not found at $path", null)
+        }
+
+        val authority = "${ctx.packageName}.fileprovider"
+        val contentUri: Uri = FileProvider.getUriForFile(ctx, authority, apk)
+        val intent = Intent(Intent.ACTION_VIEW).apply {
+          setDataAndType(contentUri, "application/vnd.android.package-archive")
+          flags = Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_GRANT_READ_URI_PERMISSION
+        }
+        ctx.startActivity(intent)
+        promise.resolve(null)
+      } catch (e: CodedException) {
+        promise.reject(e)
+      } catch (e: Throwable) {
+        promise.reject(CodedException("INSTALL_FAILED", e.message ?: "install error", e))
       }
     }
 

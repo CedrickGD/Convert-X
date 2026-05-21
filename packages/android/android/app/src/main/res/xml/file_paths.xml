@@ -1,0 +1,10 @@
+<?xml version="1.0" encoding="utf-8"?>
+<paths xmlns:android="http://schemas.android.com/apk/res/android">
+  <!-- expo-file-system cacheDirectory resolves to context.cacheDir.
+       The updater writes the downloaded APK there before installing. -->
+  <cache-path name="cache" path="."/>
+  <!-- Fallback path for files-dir downloads if cacheDirectory is ever unavailable. -->
+  <files-path name="files" path="."/>
+  <!-- Also expose exports/ so users can share Convert outputs via system share. -->
+  <files-path name="exports" path="exports/"/>
+</paths>

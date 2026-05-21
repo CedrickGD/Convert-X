@@ -92,10 +92,24 @@ android {
         applicationId 'com.cedrickgd.convertx'
         minSdkVersion rootProject.ext.minSdkVersion
         targetSdkVersion rootProject.ext.targetSdkVersion
-        versionCode 1
-        versionName "0.1.0"
+        versionCode 2
+        versionName "0.2.0"
 
         buildConfigField "String", "REACT_NATIVE_RELEASE_LEVEL", "\"${findProperty('reactNativeReleaseLevel') ?: 'stable'}\""
+    }
+
+    // Split the FFmpeg-bearing release APK by ABI. Without this, every
+    // installable APK carries libffmpegkit.so for all 4 ABIs (~350 MB).
+    // arm64-v8a covers all modern phones (Pixel, S20+, etc).
+    splits {
+        abi {
+            enable true
+            reset()
+            // Keep arm64-v8a for modern devices; add armeabi-v7a for older
+            // ones if needed. x86_64 is for emulators (debug only).
+            include 'arm64-v8a', 'armeabi-v7a'
+            universalApk false
+        }
     }
     // Pull release-signing details from gradle.properties (gitignored — see
     // PLAN.md Phase 8). When they're absent, fall back to the debug

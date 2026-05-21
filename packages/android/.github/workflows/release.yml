@@ -1,0 +1,93 @@
+# Builds a signed Android release and publishes the APKs to a GitHub Release
+# whenever a `v*` tag is pushed (e.g. v0.2.0).
+#
+# Required repository secrets (Settings -> Secrets and variables -> Actions):
+#   RELEASE_KEYSTORE_BASE64    base64-encoded release keystore (.jks)
+#   RELEASE_KEYSTORE_PASSWORD  store password
+#   RELEASE_KEY_ALIAS          key alias inside the keystore
+#   RELEASE_KEY_PASSWORD       key password
+#
+# See android/app/build.gradle: the release signingConfig only activates when
+# CONVERT_X_KEYSTORE_FILE is present in gradle properties, which we write
+# into android/gradle.properties.local at job time.
+
+name: Release Android APKs
+
+on:
+  push:
+    tags:
+      - 'v*'
+
+# Needed so softprops/action-gh-release can create/update the Release.
+permissions:
+  contents: write
+
+jobs:
+  build-android-release:
+    name: Build & publish signed APKs
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 1
+
+      - name: Set up JDK 21 (Temurin)
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '21'
+
+      - name: Set up Node 20
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: npm
+
+      - name: Install npm dependencies
+        run: npm ci
+
+      - name: Decode release keystore
+        env:
+          KEYSTORE_BASE64: ${{ secrets.RELEASE_KEYSTORE_BASE64 }}
+        run: |
+          if [ -z "${KEYSTORE_BASE64}" ]; then
+            echo "::error::RELEASE_KEYSTORE_BASE64 secret is empty or unset."
+            exit 1
+          fi
+          printf '%s' "${KEYSTORE_BASE64}" | base64 -d > android/app/release.keystore
+          # Sanity-check the decode produced a non-empty JKS/PKCS12 file.
+          test -s android/app/release.keystore
+
+      - name: Gradle assembleRelease
+        working-directory: android
+        env:
+          KS_PASSWORD: ${{ secrets.RELEASE_KEYSTORE_PASSWORD }}
+          KEY_ALIAS: ${{ secrets.RELEASE_KEY_ALIAS }}
+          KEY_PASSWORD: ${{ secrets.RELEASE_KEY_PASSWORD }}
+        run: |
+          ./gradlew assembleRelease \
+            --no-daemon \
+            --stacktrace \
+            -PCONVERT_X_KEYSTORE_FILE=release.keystore \
+            -PCONVERT_X_KEYSTORE_PASSWORD="${KS_PASSWORD}" \
+            -PCONVERT_X_KEY_ALIAS="${KEY_ALIAS}" \
+            -PCONVERT_X_KEY_PASSWORD="${KEY_PASSWORD}" \
+            -Pandroid.enableMinifyInReleaseBuilds=true \
+            -Pandroid.enableShrinkResourcesInReleaseBuilds=true
+
+      - name: List generated APKs
+        run: |
+          ls -lh android/app/build/outputs/apk/release/
+          # Fail fast if either per-ABI APK is missing.
+          test -f android/app/build/outputs/apk/release/app-arm64-v8a-release.apk
+          test -f android/app/build/outputs/apk/release/app-armeabi-v7a-release.apk
+
+      - name: Publish GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          # The tag that triggered the workflow is used by default.
+          generate_release_notes: true
+          fail_on_unmatched_files: true
+          files: android/app/build/outputs/apk/release/*.apk

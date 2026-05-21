@@ -33,6 +33,10 @@ interface NativeModule {
   executeAsync(sessionId: string, args: string[], durationMs: number): Promise<{ returnCode: number; logs: string }>;
   cancel(sessionId: string): void;
   getMediaInfo(uri: string): Promise<MediaInfo>;
+  /** Device ABI preference list — used by the updater to pick a matching APK asset. */
+  getSupportedAbis(): Promise<string[]>;
+  /** Triggers Android's "Install this app?" sheet for a downloaded APK file URI. */
+  installApk(uri: string): Promise<void>;
   addListener(eventName: keyof ConvertXFfmpegEvents): void;
   removeListeners(count: number): void;
 }
@@ -53,6 +57,14 @@ export function cancel(sessionId: string): void {
 
 export function getMediaInfo(uri: string): Promise<MediaInfo> {
   return native.getMediaInfo(uri);
+}
+
+export function getSupportedAbis(): Promise<string[]> {
+  return native.getSupportedAbis();
+}
+
+export function installApk(uri: string): Promise<void> {
+  return native.installApk(uri);
 }
 
 export function addProgressListener(
