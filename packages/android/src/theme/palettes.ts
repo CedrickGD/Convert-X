@@ -1,202 +1,194 @@
 /**
- * Convert-X palette system.
+ * Convert-X Android color tokens.
  *
- * Each accent is built from a single HSL seed. Dark and light schemes
- * derive neutrals from that seed so every palette feels cohesive, not pasted.
+ * 1:1 mirror of the desktop Convert-X palette
+ * (Convert-X/packages/shared/src/assets/styles.css). Dark = near-black bg with
+ * an emerald accent. Light = bone-white with deep emerald. When changing here,
+ * change the desktop CSS in lockstep.
+ *
+ * The desktop app has a single accent; the multi-palette / custom-hue UI in
+ * the pre-redesign Android scaffold is on its way out (Phase 3). The legacy
+ * `Palette`, `PRESET_PALETTES`, `paletteFromKey`, `buildTheme` exports at the
+ * bottom of this file are shims so the pre-redesign screens compile until
+ * they are replaced.
  */
 
+export type ColorScheme = 'light' | 'dark' | 'system';
+
+/**
+ * Kept as a wider union for source-compat with the pre-redesign UI
+ * (multi-accent picker). Desktop has a single emerald accent; the other
+ * keys are accepted but resolve to emerald. Removed in Phase 3.
+ */
 export type AccentKey =
+  | 'emerald'
   | 'purple'
   | 'ocean'
-  | 'emerald'
   | 'amber'
   | 'rose'
   | 'slate'
   | 'custom';
 
-export type ColorScheme = 'light' | 'dark' | 'system';
-
-export type Palette = {
-  key: AccentKey;
-  label: string;
-  hue: number; // 0-360
-  saturation: number; // 0-100
-};
-
-export const PRESET_PALETTES: Palette[] = [
-  { key: 'purple', label: 'Amethyst', hue: 271, saturation: 91 },
-  { key: 'ocean', label: 'Ocean', hue: 201, saturation: 92 },
-  { key: 'emerald', label: 'Emerald', hue: 160, saturation: 82 },
-  { key: 'amber', label: 'Amber', hue: 38, saturation: 92 },
-  { key: 'rose', label: 'Rose', hue: 346, saturation: 78 },
-  { key: 'slate', label: 'Graphite', hue: 215, saturation: 18 },
-];
-
-/** A resolved theme: every color needed to render the app. */
 export type Theme = {
   isDark: boolean;
+  bg: {
+    base: string;
+    secondary: string;
+    surface: string;
+    surfaceHigh: string;
+    surfaceSunken: string;
+  };
   accent: {
-    // brand
     primary: string;
+    hover: string;
+    dim: string;
+    glow: string;
+    subtle: string;
+    onPrimary: string;
     primarySoft: string;
     primaryGlow: string;
-    onPrimary: string;
     gradient: [string, string];
-  };
-  bg: {
-    base: string; // page background
-    surface: string; // cards, sheets
-    surfaceHigh: string; // elevated cards / hovered
-    surfaceSunken: string; // input fields
   };
   text: {
     primary: string;
     secondary: string;
+    muted: string;
     tertiary: string;
     onAccent: string;
   };
   border: {
     subtle: string;
     strong: string;
+    hover: string;
     accent: string;
   };
   status: {
     success: string;
     warning: string;
     error: string;
+    errorDim: string;
   };
   overlay: {
     scrim: string;
-    glass: string; // tint for BlurView
+    glass: string;
   };
 };
 
-// ────────────────────────────────────────────────────────────
-// HSL → hex helpers
-// ────────────────────────────────────────────────────────────
+export const DARK_THEME: Theme = {
+  isDark: true,
+  bg: {
+    base: '#0a0a0a',
+    secondary: '#111111',
+    surface: '#171717',
+    surfaceHigh: '#222222',
+    surfaceSunken: '#0e0e0e',
+  },
+  accent: {
+    primary: '#10b981',
+    hover: '#34d399',
+    dim: '#059669',
+    glow: 'rgba(16, 185, 129, 0.12)',
+    subtle: 'rgba(16, 185, 129, 0.06)',
+    onPrimary: '#000000',
+    primarySoft: '#059669',
+    primaryGlow: '#34d399',
+    gradient: ['#10b981', '#34d399'],
+  },
+  text: {
+    primary: '#f0f0f0',
+    secondary: '#999999',
+    muted: '#4a4a4a',
+    tertiary: '#4a4a4a',
+    onAccent: '#000000',
+  },
+  border: {
+    subtle: '#222222',
+    strong: '#333333',
+    hover: '#333333',
+    accent: 'rgba(16, 185, 129, 0.4)',
+  },
+  status: {
+    success: '#22c55e',
+    warning: '#f59e0b',
+    error: '#ef4444',
+    errorDim: 'rgba(239, 68, 68, 0.1)',
+  },
+  overlay: {
+    scrim: 'rgba(0, 0, 0, 0.55)',
+    glass: 'rgba(23, 23, 23, 0.6)',
+  },
+};
 
-function clamp(n: number, min = 0, max = 100) {
-  return Math.max(min, Math.min(max, n));
+export const LIGHT_THEME: Theme = {
+  isDark: false,
+  bg: {
+    base: '#f5f5f5',
+    secondary: '#ebebeb',
+    surface: '#ffffff',
+    surfaceHigh: '#e2e2e2',
+    surfaceSunken: '#f0f0f0',
+  },
+  accent: {
+    primary: '#059669',
+    hover: '#047857',
+    dim: '#10b981',
+    glow: 'rgba(5, 150, 105, 0.15)',
+    subtle: 'rgba(5, 150, 105, 0.05)',
+    onPrimary: '#ffffff',
+    primarySoft: '#10b981',
+    primaryGlow: '#10b981',
+    gradient: ['#059669', '#047857'],
+  },
+  text: {
+    primary: '#111111',
+    secondary: '#555555',
+    muted: '#999999',
+    tertiary: '#999999',
+    onAccent: '#ffffff',
+  },
+  border: {
+    subtle: '#dcdcdc',
+    strong: '#c4c4c4',
+    hover: '#c4c4c4',
+    accent: 'rgba(5, 150, 105, 0.35)',
+  },
+  status: {
+    success: '#16a34a',
+    warning: '#d97706',
+    error: '#dc2626',
+    errorDim: 'rgba(220, 38, 38, 0.08)',
+  },
+  overlay: {
+    scrim: 'rgba(0, 0, 0, 0.35)',
+    glass: 'rgba(255, 255, 255, 0.72)',
+  },
+};
+
+export function resolveTheme(isDark: boolean): Theme {
+  return isDark ? DARK_THEME : LIGHT_THEME;
 }
 
-function hslToHex(h: number, s: number, l: number): string {
-  const sPct = clamp(s) / 100;
-  const lPct = clamp(l) / 100;
-  const c = (1 - Math.abs(2 * lPct - 1)) * sPct;
-  const x = c * (1 - Math.abs(((h / 60) % 2) - 1));
-  const m = lPct - c / 2;
-  let r = 0,
-    g = 0,
-    b = 0;
-  if (h < 60) [r, g, b] = [c, x, 0];
-  else if (h < 120) [r, g, b] = [x, c, 0];
-  else if (h < 180) [r, g, b] = [0, c, x];
-  else if (h < 240) [r, g, b] = [0, x, c];
-  else if (h < 300) [r, g, b] = [x, 0, c];
-  else [r, g, b] = [c, 0, x];
-  const toHex = (n: number) =>
-    Math.round((n + m) * 255)
-      .toString(16)
-      .padStart(2, '0');
-  return `#${toHex(r)}${toHex(g)}${toHex(b)}`.toUpperCase();
+// ── Legacy compatibility shims (removed in Phase 3) ───────────────────────
+//
+// The pre-redesign Settings screen offered multi-accent + custom-hue picking.
+// Desktop has a single emerald accent, so those features go away. These
+// exports let the existing screens compile until they are replaced.
+
+export type Palette = {
+  key: AccentKey;
+  label: string;
+  hue: number;
+  saturation: number;
+};
+
+export const PRESET_PALETTES: Palette[] = [
+  { key: 'emerald', label: 'Emerald', hue: 160, saturation: 82 },
+];
+
+export function paletteFromKey(_key: AccentKey, _h?: number, _s?: number): Palette {
+  return PRESET_PALETTES[0];
 }
 
-function hsla(h: number, s: number, l: number, a: number): string {
-  return `hsla(${Math.round(h)}, ${Math.round(s)}%, ${Math.round(l)}%, ${a})`;
-}
-
-// ────────────────────────────────────────────────────────────
-// Theme derivation
-// ────────────────────────────────────────────────────────────
-
-export function buildTheme(palette: Palette, isDark: boolean): Theme {
-  const h = palette.hue;
-  const s = palette.saturation;
-
-  if (isDark) {
-    // Neutrals lean cool-dark, tinted by the accent hue
-    const neutralS = Math.min(s * 0.15, 14);
-    return {
-      isDark: true,
-      accent: {
-        primary: hslToHex(h, s, 65),
-        primarySoft: hslToHex(h, clamp(s - 10), 32),
-        primaryGlow: hslToHex(h, s, 72),
-        onPrimary: '#FFFFFF',
-        gradient: [hslToHex(h, s, 70), hslToHex((h + 22) % 360, clamp(s - 4), 58)],
-      },
-      bg: {
-        base: hslToHex(h, neutralS, 6),
-        surface: hslToHex(h, neutralS, 10),
-        surfaceHigh: hslToHex(h, neutralS, 14),
-        surfaceSunken: hslToHex(h, neutralS, 8),
-      },
-      text: {
-        primary: hslToHex(h, 12, 96),
-        secondary: hslToHex(h, 10, 74),
-        tertiary: hslToHex(h, 10, 54),
-        onAccent: '#FFFFFF',
-      },
-      border: {
-        subtle: hsla(h, 18, 60, 0.08),
-        strong: hsla(h, 18, 60, 0.16),
-        accent: hsla(h, s, 65, 0.4),
-      },
-      status: {
-        success: hslToHex(152, 68, 52),
-        warning: hslToHex(38, 92, 62),
-        error: hslToHex(0, 78, 62),
-      },
-      overlay: {
-        scrim: 'rgba(0,0,0,0.55)',
-        glass: hsla(h, neutralS, 12, 0.6),
-      },
-    };
-  }
-
-  // Light
-  const neutralS = Math.min(s * 0.12, 10);
-  return {
-    isDark: false,
-    accent: {
-      primary: hslToHex(h, clamp(s - 4), 52),
-      primarySoft: hslToHex(h, clamp(s - 8), 92),
-      primaryGlow: hslToHex(h, s, 58),
-      onPrimary: '#FFFFFF',
-      gradient: [hslToHex(h, s, 56), hslToHex((h + 18) % 360, clamp(s - 2), 50)],
-    },
-    bg: {
-      base: hslToHex(h, neutralS, 98),
-      surface: '#FFFFFF',
-      surfaceHigh: hslToHex(h, neutralS, 99),
-      surfaceSunken: hslToHex(h, neutralS, 95),
-    },
-    text: {
-      primary: hslToHex(h, 30, 8),
-      secondary: hslToHex(h, 14, 30),
-      tertiary: hslToHex(h, 12, 52),
-      onAccent: '#FFFFFF',
-    },
-    border: {
-      subtle: hsla(h, 18, 30, 0.08),
-      strong: hsla(h, 18, 30, 0.18),
-      accent: hsla(h, s, 52, 0.35),
-    },
-    status: {
-      success: hslToHex(152, 64, 38),
-      warning: hslToHex(38, 92, 46),
-      error: hslToHex(0, 70, 48),
-    },
-    overlay: {
-      scrim: 'rgba(10,4,22,0.35)',
-      glass: hsla(h, neutralS, 99, 0.72),
-    },
-  };
-}
-
-export function paletteFromKey(key: AccentKey, customHue = 271, customSat = 90): Palette {
-  if (key === 'custom') {
-    return { key: 'custom', label: 'Custom', hue: customHue, saturation: customSat };
-  }
-  return PRESET_PALETTES.find((p) => p.key === key) ?? PRESET_PALETTES[0];
+export function buildTheme(_palette: Palette, isDark: boolean): Theme {
+  return resolveTheme(isDark);
 }

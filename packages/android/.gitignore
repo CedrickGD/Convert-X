@@ -42,3 +42,6 @@ yarn-error.*
 
 # IDE
 .idea/
+
+# Local screenshots used for visual verification during development
+.claude/*.png

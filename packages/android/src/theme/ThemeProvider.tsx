@@ -11,17 +11,17 @@ import { useColorScheme } from 'react-native';
 
 import {
   AccentKey,
-  buildTheme,
   ColorScheme,
   Palette,
-  paletteFromKey,
   PRESET_PALETTES,
+  resolveTheme,
   Theme,
 } from './palettes';
 
 const STORAGE_KEY = '@convertx/settings.v1';
 
 type PersistedSettings = {
+  /** Pre-redesign multi-accent picker; kept for storage compat, ignored. */
   accent: AccentKey;
   customHue: number;
   customSaturation: number;
@@ -29,9 +29,9 @@ type PersistedSettings = {
 };
 
 const DEFAULT_SETTINGS: PersistedSettings = {
-  accent: 'purple',
-  customHue: 271,
-  customSaturation: 91,
+  accent: 'emerald',
+  customHue: 160,
+  customSaturation: 82,
   colorScheme: 'dark',
 };
 
@@ -39,8 +39,11 @@ type ThemeContextValue = {
   theme: Theme;
   palette: Palette;
   settings: PersistedSettings;
+  /** No-op — desktop has a single accent. Kept for source-compat. */
   setAccent: (key: AccentKey) => void;
+  /** No-op — kept for source-compat. */
   setCustomHue: (hue: number) => void;
+  /** No-op — kept for source-compat. */
   setCustomSaturation: (saturation: number) => void;
   setColorScheme: (scheme: ColorScheme) => void;
   hydrated: boolean;
@@ -87,33 +90,25 @@ export function ThemeProvider({ children }: { children: React.ReactNode }) {
     });
   }, []);
 
-  const palette = useMemo(
-    () => paletteFromKey(settings.accent, settings.customHue, settings.customSaturation),
-    [settings.accent, settings.customHue, settings.customSaturation]
-  );
-
   const isDark =
     settings.colorScheme === 'system' ? systemScheme !== 'light' : settings.colorScheme === 'dark';
 
-  const theme = useMemo(() => buildTheme(palette, isDark), [palette, isDark]);
+  const theme = useMemo(() => resolveTheme(isDark), [isDark]);
 
   const value = useMemo<ThemeContextValue>(
     () => ({
       theme,
-      palette,
+      palette: PRESET_PALETTES[0],
       settings,
       hydrated,
-      setAccent: (key) => update({ accent: key }),
-      setCustomHue: (hue) =>
-        update({ customHue: Math.max(0, Math.min(360, Math.round(hue))), accent: 'custom' }),
-      setCustomSaturation: (saturation) =>
-        update({
-          customSaturation: Math.max(20, Math.min(100, Math.round(saturation))),
-          accent: 'custom',
-        }),
+      setAccent: () => {
+        // intentional no-op — only one accent on desktop
+      },
+      setCustomHue: () => {},
+      setCustomSaturation: () => {},
       setColorScheme: (scheme) => update({ colorScheme: scheme }),
     }),
-    [theme, palette, settings, hydrated, update]
+    [theme, settings, hydrated, update]
   );
 
   return <ThemeContext.Provider value={value}>{children}</ThemeContext.Provider>;
@@ -124,5 +119,3 @@ export function useTheme(): ThemeContextValue {
   if (!ctx) throw new Error('useTheme must be used inside <ThemeProvider>');
   return ctx;
 }
-
-export { PRESET_PALETTES };

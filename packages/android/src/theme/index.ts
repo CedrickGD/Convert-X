@@ -1,4 +1,25 @@
-export { ThemeProvider, useTheme, PRESET_PALETTES } from './ThemeProvider';
-export type { Theme, Palette, AccentKey, ColorScheme } from './palettes';
-export { buildTheme, paletteFromKey } from './palettes';
-export { spacing, radius, typography, motion, elevation } from './tokens';
+export { ThemeProvider, useTheme } from './ThemeProvider';
+export {
+  DARK_THEME,
+  LIGHT_THEME,
+  PRESET_PALETTES,
+  buildTheme,
+  paletteFromKey,
+  resolveTheme,
+} from './palettes';
+export type {
+  AccentKey,
+  ColorScheme,
+  Palette,
+  Theme,
+} from './palettes';
+export {
+  elevation,
+  fontFamily,
+  fontSizes,
+  fontWeights,
+  motion,
+  radius,
+  spacing,
+  typography,
+} from './tokens';

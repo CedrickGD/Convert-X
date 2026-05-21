@@ -10,6 +10,7 @@ import {
   Moon,
   Palette,
   RotateCcw,
+  SwatchBook,
   Sun,
 } from 'lucide-react-native';
 import React, { useEffect } from 'react';
@@ -200,6 +201,35 @@ export function SettingsScreen() {
             />
           </GlassCard>
         </View>
+
+        {/* Developer tools — only in dev builds */}
+        {__DEV__ ? (
+          <View style={styles.section}>
+            <SectionLabel>Developer</SectionLabel>
+            <PressableScale
+              onPress={() => navigation.navigate('StyleGuide')}
+              hapticType="pick"
+              style={[styles.devRow, { backgroundColor: theme.bg.surface, borderColor: theme.border.subtle }]}
+            >
+              <View
+                style={[
+                  styles.aboutIcon,
+                  { backgroundColor: theme.bg.surfaceSunken, borderColor: theme.border.subtle },
+                ]}
+              >
+                <SwatchBook size={18} strokeWidth={1.8} color={theme.text.primary} />
+              </View>
+              <View style={styles.aboutBody}>
+                <Text style={[styles.rowTitle, { color: theme.text.primary }]}>
+                  Open style guide
+                </Text>
+                <Text style={[styles.rowCaption, { color: theme.text.tertiary }]}>
+                  Visual reference for the desktop-matched design tokens.
+                </Text>
+              </View>
+            </PressableScale>
+          </View>
+        ) : null}
 
         {/* Reset */}
         <View style={styles.section}>
@@ -446,5 +476,13 @@ const styles = StyleSheet.create({
   },
   resetText: {
     ...typography.bodyEmph,
+  },
+  devRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: spacing.md,
+    padding: spacing.lg,
+    borderRadius: radius.md,
+    borderWidth: StyleSheet.hairlineWidth,
   },
 });

@@ -4,6 +4,7 @@ import {
   NavigationContainer,
   Theme as NavTheme,
 } from '@react-navigation/native';
+import { useFonts } from 'expo-font';
 import * as SplashScreen from 'expo-splash-screen';
 import { StatusBar } from 'expo-status-bar';
 import * as SystemUI from 'expo-system-ui';
@@ -20,19 +21,29 @@ SplashScreen.preventAutoHideAsync().catch(() => {
 });
 
 export default function App() {
+  // Inter is the desktop typeface. Loaded here so the splash holds until
+  // fonts resolve and we never flash a system font on first paint.
+  const [fontsLoaded, fontError] = useFonts({
+    'Inter-Regular': require('./assets/fonts/Inter-Regular.ttf'),
+    'Inter-Medium': require('./assets/fonts/Inter-Medium.ttf'),
+    'Inter-SemiBold': require('./assets/fonts/Inter-SemiBold.ttf'),
+    'Inter-Bold': require('./assets/fonts/Inter-Bold.ttf'),
+  });
+
   return (
     <GestureHandlerRootView style={styles.root}>
       <SafeAreaProvider>
         <ThemeProvider>
-          <Root />
+          <Root fontsReady={fontsLoaded || !!fontError} />
         </ThemeProvider>
       </SafeAreaProvider>
     </GestureHandlerRootView>
   );
 }
 
-function Root() {
+function Root({ fontsReady }: { fontsReady: boolean }) {
   const { theme, hydrated } = useTheme();
+  const ready = hydrated && fontsReady;
 
   // Sync the native root bg with the theme so edges match during navigation /
   // orientation changes / keyboard avoidance.
@@ -43,12 +54,12 @@ function Root() {
   }, [theme.bg.base]);
 
   useEffect(() => {
-    if (hydrated) {
+    if (ready) {
       SplashScreen.hideAsync().catch(() => {
         // non-fatal
       });
     }
-  }, [hydrated]);
+  }, [ready]);
 
   const navTheme = useMemo<NavTheme>(() => {
     const base = theme.isDark ? DarkTheme : DefaultTheme;
@@ -67,8 +78,8 @@ function Root() {
     };
   }, [theme]);
 
-  if (!hydrated) {
-    // Keep the splash up until settings hydrate — no flash of wrong theme.
+  if (!ready) {
+    // Keep the splash up until settings hydrate and fonts load.
     return <View style={[styles.root, { backgroundColor: theme.bg.base }]} />;
   }
 

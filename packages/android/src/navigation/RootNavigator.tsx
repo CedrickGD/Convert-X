@@ -6,6 +6,7 @@ import { HistoryScreen } from '../screens/HistoryScreen';
 import { HomeScreen } from '../screens/HomeScreen';
 import { SettingsScreen } from '../screens/SettingsScreen';
 import { ColorPickerModal } from '../screens/ColorPickerModal';
+import { StyleGuideScreen } from '../screens/dev/StyleGuideScreen';
 import { TabBar } from './TabBar';
 import { RootStackParamList, TabParamList } from './types';
 
@@ -38,6 +39,15 @@ export function RootNavigator() {
       <Stack.Screen
         name="ColorPicker"
         component={ColorPickerModal}
+        options={{
+          presentation: 'modal',
+          animation: 'slide_from_bottom',
+          gestureEnabled: true,
+        }}
+      />
+      <Stack.Screen
+        name="StyleGuide"
+        component={StyleGuideScreen}
         options={{
           presentation: 'modal',
           animation: 'slide_from_bottom',

@@ -9,4 +9,5 @@ export type TabParamList = {
 export type RootStackParamList = {
   Tabs: NavigatorScreenParams<TabParamList>;
   ColorPicker: undefined;
+  StyleGuide: undefined;
 };
