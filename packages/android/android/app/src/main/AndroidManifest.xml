@@ -44,7 +44,7 @@
          must match the JS-side updater (com.cedrickgd.convertx.fileprovider). -->
     <provider
       android:name="androidx.core.content.FileProvider"
-      android:authorities="com.cedrickgd.convertx.fileprovider"
+      android:authorities="${applicationId}.fileprovider"
       android:exported="false"
       android:grantUriPermissions="true">
       <meta-data
