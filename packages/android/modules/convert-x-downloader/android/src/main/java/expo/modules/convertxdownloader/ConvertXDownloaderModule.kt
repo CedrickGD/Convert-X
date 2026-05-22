@@ -170,6 +170,13 @@ class ConvertXDownloaderModule : Module() {
           val request = YoutubeDLRequest(url)
           request.addOption("-o", outputPath)
           request.addOption("--no-warnings")
+          // Tell yt-dlp to print the resolved final filepath after all
+          // post-processing / moves. We need this because outputPath
+          // contains the %(title)s.%(ext)s template — the actual file
+          // is only known once the title is sanitized and the extension
+          // is chosen by the downloader. The JS side uses this real path
+          // for MediaLibrary.createAssetAsync.
+          request.addOption("--print", "after_move:filepath")
 
           if (audioOnly) {
             request.addOption("-x")
@@ -220,9 +227,21 @@ class ConvertXDownloaderModule : Module() {
           }
           sessions.remove(sessionId)
 
+          // Pull the resolved final filepath out of stdout — yt-dlp's
+          // `--print after_move:filepath` writes one line per item with
+          // the canonical post-processing path. Pick the last absolute
+          // path that points at the downloads dir we asked it to use.
+          val outDirHint = outputPath.substringBeforeLast('/')
+          val resolvedPath = response.out
+            .lineSequence()
+            .map { it.trim() }
+            .filter { it.startsWith("/") && it.contains(outDirHint) }
+            .lastOrNull()
+            ?: outputPath
+
           promise.resolve(
             mapOf(
-              "outputPath" to outputPath,
+              "outputPath" to resolvedPath,
               "exitCode" to response.exitCode,
               "stdout" to response.out,
               "stderr" to response.err
