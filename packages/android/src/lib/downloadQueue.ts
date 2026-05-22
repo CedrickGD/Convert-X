@@ -9,10 +9,13 @@
  * relay them to the UI via the registered listener.
  */
 
+import AsyncStorage from '@react-native-async-storage/async-storage';
 import * as FileSystem from 'expo-file-system/legacy';
 import * as MediaLibrary from 'expo-media-library';
 
 import * as Downloader from '../../modules/convert-x-downloader/src';
+
+const YTDLP_FIRST_LAUNCH_KEY = '@convertx/ytdlp-first-launch-updated';
 
 export type DownloadEntry = {
   id: string;
@@ -38,6 +41,41 @@ export function cancelActive(): void {
   if (inflight) {
     Downloader.cancel(inflight.sessionId);
     inflight = null;
+  }
+}
+
+let ytdlpUpdateInflight: Promise<{ ok: boolean; error?: string }> | null = null;
+
+export async function updateYtDlp(): Promise<{ ok: boolean; error?: string }> {
+  if (ytdlpUpdateInflight) return ytdlpUpdateInflight;
+  const run = (async () => {
+    try {
+      await Downloader.init();
+      await Downloader.updateYtDlp();
+      return { ok: true };
+    } catch (e) {
+      return { ok: false, error: e instanceof Error ? e.message : String(e) };
+    }
+  })();
+  ytdlpUpdateInflight = run;
+  try {
+    return await run;
+  } finally {
+    ytdlpUpdateInflight = null;
+  }
+}
+
+export async function runFirstLaunchYtDlpUpdate(): Promise<void> {
+  try {
+    const flag = await AsyncStorage.getItem(YTDLP_FIRST_LAUNCH_KEY);
+    if (flag === '1') return;
+    const result = await updateYtDlp();
+    if (result.ok) {
+      await AsyncStorage.setItem(YTDLP_FIRST_LAUNCH_KEY, '1');
+    }
+  } catch {
+    // Silent — will retry on next launch. Probe-time corruption recovery
+    // already handles a half-applied yt-dlp.zip from a killed update.
   }
 }
 

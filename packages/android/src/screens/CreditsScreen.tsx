@@ -1,4 +1,4 @@
-import { Code, Download, Heart, Package, SwatchBook } from 'lucide-react-native';
+import { Code, Download, Heart, Package, RefreshCw, SwatchBook } from 'lucide-react-native';
 // Phase 2 used a static import for the version; the in-app updater (Phase 9)
 // uses the same source of truth.
 import pkg from '../../package.json';
@@ -16,6 +16,7 @@ import {
 } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 
+import { updateYtDlp } from '../lib/downloadQueue';
 import { checkForUpdate, downloadAndInstall, UpdateInfo } from '../lib/updater';
 import { prettyBytes } from '../lib/formats';
 import { RootStackParamList } from '../navigation/types';
@@ -96,6 +97,9 @@ export function CreditsScreen() {
 
       {/* Updates — sideload self-update from GitHub Releases */}
       <UpdateCard />
+
+      {/* yt-dlp engine refresh — fixes Instagram CSRF errors etc. */}
+      <YtDlpUpdateCard />
 
       {/* Source */}
       <View
@@ -296,6 +300,105 @@ function UpdateCard() {
               ]}
             >
               {cta}
+            </Text>
+          </Pressable>
+        ) : null}
+      </View>
+    </View>
+  );
+}
+
+// ── yt-dlp engine refresh ───────────────────────────────────────────────
+// Pulls the latest yt-dlp from yt-dlp/yt-dlp GitHub releases via the
+// youtubedl-android bundle. Fixes Instagram CSRF, TikTok extractor
+// breakage, etc. The first-ever launch already auto-triggers this; the
+// button is for re-running after a future site breaks.
+
+type YtDlpState =
+  | { kind: 'idle' }
+  | { kind: 'updating' }
+  | { kind: 'success' }
+  | { kind: 'error'; message: string };
+
+function YtDlpUpdateCard() {
+  const { theme } = useTheme();
+  const [state, setState] = useState<YtDlpState>({ kind: 'idle' });
+
+  const onTap = useCallback(async () => {
+    if (state.kind === 'updating') return;
+    setState({ kind: 'updating' });
+    const result = await updateYtDlp();
+    if (result.ok) setState({ kind: 'success' });
+    else setState({ kind: 'error', message: result.error ?? 'Update failed' });
+  }, [state.kind]);
+
+  const subline =
+    state.kind === 'updating' ? 'Fetching latest extractors…' :
+    state.kind === 'success' ? 'Updated. Try the failing URL again.' :
+    state.kind === 'error' ? state.message :
+    'Refresh if a site (Instagram, TikTok…) stopped working.';
+
+  const cta = state.kind === 'updating' ? null : 'Update';
+  const busy = state.kind === 'updating';
+
+  return (
+    <View
+      style={[
+        styles.card,
+        { backgroundColor: theme.bg.surface, borderColor: theme.border.subtle },
+      ]}
+    >
+      <Text style={[styles.cardLabel, { color: theme.text.muted }]}>YT-DLP ENGINE</Text>
+      <View style={styles.row}>
+        <View style={[styles.iconBox, { backgroundColor: theme.accent.subtle }]}>
+          {busy ? (
+            <ActivityIndicator size="small" color={theme.accent.primary} />
+          ) : (
+            <RefreshCw size={18} strokeWidth={1.8} color={theme.accent.primary} />
+          )}
+        </View>
+        <View style={{ flex: 1 }}>
+          <Text style={[styles.rowTitle, { color: theme.text.primary }]}>
+            Download engine
+          </Text>
+          <Text
+            style={[
+              styles.rowSub,
+              {
+                color: state.kind === 'error' ? theme.status.error : theme.text.secondary,
+              },
+            ]}
+            numberOfLines={3}
+          >
+            {subline}
+          </Text>
+        </View>
+        {cta ? (
+          <Pressable
+            disabled={busy}
+            onPress={onTap}
+            style={({ pressed }) => ({
+              paddingHorizontal: spacing.xl,
+              paddingVertical: spacing.md,
+              borderRadius: radius.xs,
+              backgroundColor:
+                state.kind === 'success' ? theme.bg.surfaceSunken : theme.accent.primary,
+              borderWidth: state.kind === 'success' ? StyleSheet.hairlineWidth : 0,
+              borderColor: theme.border.subtle,
+              opacity: pressed ? 0.8 : 1,
+            })}
+          >
+            <Text
+              style={[
+                typography.bodyEmph,
+                {
+                  color:
+                    state.kind === 'success' ? theme.text.secondary : theme.accent.onPrimary,
+                  fontWeight: '600',
+                },
+              ]}
+            >
+              {state.kind === 'success' ? 'Done' : cta}
             </Text>
           </Pressable>
         ) : null}

@@ -13,6 +13,7 @@ import { StyleSheet, View } from 'react-native';
 import { GestureHandlerRootView } from 'react-native-gesture-handler';
 import { SafeAreaProvider } from 'react-native-safe-area-context';
 
+import { runFirstLaunchYtDlpUpdate } from './src/lib/downloadQueue';
 import { RootNavigator } from './src/navigation/RootNavigator';
 import {
   ConvertProvider,
@@ -73,6 +74,16 @@ function Root({ fontsReady }: { fontsReady: boolean }) {
 
   useEffect(() => {
     if (ready) SplashScreen.hideAsync().catch(() => {});
+  }, [ready]);
+
+  // Pull the latest yt-dlp on first launch ever — the bundled extractor
+  // in youtubedl-android 0.18.1 is too old for modern Instagram (no CSRF
+  // token sent, API returns nothing). Fire-and-forget; success is
+  // persisted so this runs at most once. Probe-time corruption recovery
+  // handles a half-applied update if the user kills the app mid-fetch.
+  useEffect(() => {
+    if (!ready) return;
+    void runFirstLaunchYtDlpUpdate();
   }, [ready]);
 
   const navTheme = useMemo<NavTheme>(() => {
