@@ -3,6 +3,7 @@ import React from 'react';
 import { Linking, Pressable, StyleSheet, Text, View } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 
+import pkg from '../../package.json';
 import { radius, spacing, typography, useTheme } from '../theme';
 
 const REPO_URL = 'https://github.com/CedrickGD/Convert-X';
@@ -44,9 +45,14 @@ export function AppHeader() {
         <Code size={18} strokeWidth={1.8} color={theme.text.secondary} />
       </Pressable>
 
-      <Text style={[styles.wordmark, { color: theme.text.primary }]} numberOfLines={1}>
-        Convert-<Text style={{ color: theme.accent.primary }}>X</Text>
-      </Text>
+      <View style={styles.titleStack} pointerEvents="none">
+        <Text style={[styles.wordmark, { color: theme.text.primary }]} numberOfLines={1}>
+          Convert-<Text style={{ color: theme.accent.primary }}>X</Text>
+        </Text>
+        <Text style={[styles.version, { color: theme.text.muted }]} numberOfLines={1}>
+          v{pkg.version}
+        </Text>
+      </View>
 
       <Pressable
         onPress={onToggleTheme}
@@ -88,9 +94,17 @@ const styles = StyleSheet.create({
     alignItems: 'center',
     justifyContent: 'center',
   },
+  titleStack: {
+    flex: 1,
+    alignItems: 'center',
+  },
   wordmark: {
     ...typography.display,
-    flex: 1,
     textAlign: 'center',
+  },
+  version: {
+    ...typography.micro,
+    marginTop: -2,
+    fontVariant: ['tabular-nums'],
   },
 });
