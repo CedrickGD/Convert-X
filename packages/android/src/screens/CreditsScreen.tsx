@@ -424,6 +424,7 @@ const COOKIES_FILENAME = 'cookies.txt';
 
 function CookiesCard() {
   const { theme } = useTheme();
+  const navigation = useNavigation<Nav>();
   const { state, updateSettings } = useDownload();
   const [picking, setPicking] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -474,8 +475,8 @@ function CookiesCard() {
   const subline = error
     ? error
     : hasCookies
-    ? 'Cookies active. Re-pick to refresh, or clear to disable.'
-    : 'Export from your browser ("Get cookies.txt"), then pick it here.';
+    ? 'Cookies active. Tap Login to refresh, or trash to disable.'
+    : 'Required for Instagram. Tap Login to sign in inside the app.';
 
   return (
     <View
@@ -495,7 +496,7 @@ function CookiesCard() {
         </View>
         <View style={{ flex: 1 }}>
           <Text style={[styles.rowTitle, { color: theme.text.primary }]}>
-            cookies.txt for login-walled sites
+            Instagram login
           </Text>
           <Text
             style={[
@@ -522,7 +523,7 @@ function CookiesCard() {
         ) : null}
         <Pressable
           disabled={picking}
-          onPress={onPick}
+          onPress={() => navigation.navigate('InstagramLogin')}
           style={({ pressed }) => ({
             paddingHorizontal: spacing.xl,
             paddingVertical: spacing.md,
@@ -537,10 +538,15 @@ function CookiesCard() {
               { color: theme.accent.onPrimary, fontWeight: '600' },
             ]}
           >
-            {hasCookies ? 'Replace' : 'Pick'}
+            Login
           </Text>
         </Pressable>
       </View>
+      <Pressable onPress={onPick}>
+        <Text style={[styles.rowSub, { color: theme.text.muted, marginTop: spacing.sm }]}>
+          Or import a cookies.txt file from disk →
+        </Text>
+      </Pressable>
     </View>
   );
 }

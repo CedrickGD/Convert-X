@@ -8,4 +8,5 @@
 export type RootStackParamList = {
   Root: undefined;
   StyleGuide: undefined;
+  InstagramLogin: undefined;
 };
