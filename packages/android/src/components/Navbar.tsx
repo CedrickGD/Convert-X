@@ -59,6 +59,8 @@ export function Navbar() {
           >
             <Text
               numberOfLines={1}
+              adjustsFontSizeToFit
+              minimumFontScale={0.7}
               style={[
                 styles.tabLabel,
                 { color: isActive ? theme.text.primary : theme.text.muted },
@@ -90,13 +92,14 @@ const styles = StyleSheet.create({
     flexDirection: 'row',
     alignItems: 'center',
     justifyContent: 'center',
-    gap: spacing.xs,
+    gap: 3,
     paddingVertical: spacing.md,
-    paddingHorizontal: spacing.xs,
+    paddingHorizontal: 2,
     borderRadius: radius.xs + 1,
   },
   tabLabel: {
-    ...typography.base,
+    ...typography.caption,
+    fontWeight: '600',
   },
   busyDot: {
     width: 6,

@@ -45,24 +45,20 @@ export function Dropzone({ mode, onPickFiles, onPickFromGallery }: Props) {
         )}
       </View>
 
-      <Text style={[styles.title, { color: theme.text.primary }]}>
+      <Text style={[styles.title, { color: theme.text.primary }]} numberOfLines={1} adjustsFontSizeToFit>
         {isResize ? 'Drop images to resize' : 'Drop files to convert'}
       </Text>
 
-      <Text style={[styles.sub, { color: theme.text.muted }]}>
-        or tap to browse · PNG · JPG · WebP today
+      <Text style={[styles.sub, { color: theme.text.muted }]} numberOfLines={2}>
+        Images, video, and audio — full FFmpeg pipeline.
       </Text>
 
       <View style={styles.chipRow}>
-        <View style={[styles.chip, { borderColor: theme.border.subtle }]}>
-          <Text style={[styles.chipText, { color: theme.text.muted }]}>PNG</Text>
-        </View>
-        <View style={[styles.chip, { borderColor: theme.border.subtle }]}>
-          <Text style={[styles.chipText, { color: theme.text.muted }]}>JPG</Text>
-        </View>
-        <View style={[styles.chip, { borderColor: theme.border.subtle }]}>
-          <Text style={[styles.chipText, { color: theme.text.muted }]}>WebP</Text>
-        </View>
+        {['PNG', 'JPG', 'WebP', 'MP4', 'MP3'].map((label) => (
+          <View key={label} style={[styles.chip, { borderColor: theme.border.subtle }]}>
+            <Text style={[styles.chipText, { color: theme.text.muted }]}>{label}</Text>
+          </View>
+        ))}
       </View>
 
       <View style={styles.actionsRow}>
