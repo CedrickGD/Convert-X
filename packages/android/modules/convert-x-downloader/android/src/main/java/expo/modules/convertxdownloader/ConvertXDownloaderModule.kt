@@ -68,6 +68,37 @@ class ConvertXDownloaderModule : Module() {
       }
     }
 
+    /** Manually flush youtubedl-android's extracted cache. Useful after
+     *  a failed auto-update or to force a clean reinstall of yt-dlp. */
+    AsyncFunction("resetCache") { promise: Promise ->
+      scope.launch {
+        try {
+          resetCacheSync()
+          ensureInitializedSync()
+          promise.resolve(null)
+        } catch (e: Throwable) {
+          promise.reject(CodedException("RESET_FAILED", describe(e), e))
+        }
+      }
+    }
+
+    /** Pull the latest yt-dlp from GitHub. Explicit, not on-init.
+     *  If the download corrupts the local zip, the next probe will
+     *  detect "bad local file header" and auto-reset. */
+    AsyncFunction("updateYtDlp") { promise: Promise ->
+      scope.launch {
+        try {
+          ensureInitializedSync()
+          val ctx = appContext.reactContext
+            ?: throw CodedException("NO_CONTEXT", "Application context unavailable", null)
+          YoutubeDL.getInstance().updateYoutubeDL(ctx)
+          promise.resolve(null)
+        } catch (e: Throwable) {
+          promise.reject(CodedException("UPDATE_FAILED", describe(e), e))
+        }
+      }
+    }
+
     AsyncFunction("probe") { url: String, opts: Map<String, Any?>?, promise: Promise ->
       scope.launch {
         try {
@@ -80,7 +111,20 @@ class ConvertXDownloaderModule : Module() {
           // Use raw --dump-json + parse stdout ourselves. The library's
           // typed VideoInfo class field names are not stable across the
           // 0.18.x line, so we avoid it.
-          val response = YoutubeDL.getInstance().execute(request)
+          //
+          // One-shot corruption recovery: a previous half-applied
+          // updateYoutubeDL() can leave the yt-dlp.zip in a state that
+          // python's zipimport rejects. Catch the specific error, wipe
+          // the cache so the bundled zip gets re-extracted from the
+          // `.zip.so` payloads in the APK, and retry once.
+          val response = try {
+            YoutubeDL.getInstance().execute(request)
+          } catch (first: Throwable) {
+            if (!looksCorrupted(first)) throw first
+            resetCacheSync()
+            ensureInitializedSync()
+            YoutubeDL.getInstance().execute(request)
+          }
           val out = response.out.trim()
           val lines = out.lines().filter { it.isNotBlank() && it.startsWith("{") }
           val result = if (lines.size > 1) {
@@ -149,7 +193,7 @@ class ConvertXDownloaderModule : Module() {
           val processId = "convert-x-download-$sessionId"
           sessions[sessionId] = processId
 
-          val response = YoutubeDL.getInstance().execute(request, processId) { progress, eta, line ->
+          val progressCb = com.yausername.youtubedl_android.DownloadProgressCallback { progress, eta, line ->
             sendEvent(
               "onProgress",
               mapOf(
@@ -159,6 +203,15 @@ class ConvertXDownloaderModule : Module() {
                 "line" to (line ?: "")
               )
             )
+          }
+
+          val response = try {
+            YoutubeDL.getInstance().execute(request, processId, progressCb)
+          } catch (first: Throwable) {
+            if (!looksCorrupted(first)) throw first
+            resetCacheSync()
+            ensureInitializedSync()
+            YoutubeDL.getInstance().execute(request, processId, progressCb)
           }
           sessions.remove(sessionId)
 
@@ -218,17 +271,43 @@ class ConvertXDownloaderModule : Module() {
     }
     initialized = true
 
-    // Async self-update: yt-dlp's extractors (esp. for YouTube + music.youtube.com)
-    // change weekly. The library ships a months-old yt-dlp by default. Kick off
-    // an update in the background — current downloads use the bundled binary,
-    // next ones get the latest.
-    scope.launch {
-      try {
-        YoutubeDL.getInstance().updateYoutubeDL(ctx)
-      } catch (_: Throwable) {
-        // No network / GitHub rate-limited / etc — fine, we still have the bundled binary.
-      }
+    // No auto-update on init. The previous async updateYoutubeDL() call
+    // was responsible for a "bad local file header" zip corruption on
+    // user devices: the download replaces the bundled yt-dlp.zip in
+    // place, and a partial / interrupted write left a half-baked zip
+    // that python's zipimport refused to load. The bundled yt-dlp in
+    // youtubedl-android 0.18.1 (Feb 2026) is fresh enough; users who
+    // want the latest extractors can tap "Update yt-dlp" in the
+    // download settings, which calls updateYtDlp() below.
+  }
+
+  /**
+   * Nuke youtubedl-android's extracted cache so the next init re-creates
+   * everything from the bundled `.zip.so` payloads. Use this to recover
+   * from a corrupted yt-dlp zip (zipimport "bad local file header") or
+   * a half-applied update.
+   */
+  private fun resetCacheSync() {
+    initialized = false
+    val ctx = appContext.reactContext ?: return
+    val root = java.io.File(ctx.noBackupFilesDir, "youtubedl-android")
+    if (root.exists()) root.deleteRecursively()
+  }
+
+  /** True when the throwable's chain mentions a corrupted yt-dlp zip. */
+  private fun looksCorrupted(t: Throwable): Boolean {
+    var cur: Throwable? = t
+    var depth = 0
+    while (cur != null && depth < 6) {
+      val msg = cur.message ?: ""
+      if (msg.contains("bad local file header", ignoreCase = true) ||
+          msg.contains("BadZipFile", ignoreCase = true) ||
+          msg.contains("ZipImportError", ignoreCase = true)
+      ) return true
+      cur = cur.cause
+      depth += 1
     }
+    return false
   }
 
   private fun applyAuthOpts(request: YoutubeDLRequest, opts: Map<String, Any?>?) {

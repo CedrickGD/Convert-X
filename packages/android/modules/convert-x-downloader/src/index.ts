@@ -51,6 +51,11 @@ export type ProgressEvent = {
 
 interface NativeModule {
   init(): Promise<void>;
+  /** Wipe extracted Python / yt-dlp cache and re-init from the APK
+   *  payload. Use to recover from a corrupted yt-dlp.zip. */
+  resetCache(): Promise<void>;
+  /** Pull the latest yt-dlp from GitHub. Optional, not on-init. */
+  updateYtDlp(): Promise<void>;
   probe(url: string, opts: ProbeOptions | null): Promise<string>;
   download(sessionId: string, opts: DownloadOptions): Promise<{
     outputPath?: string;
@@ -91,6 +96,25 @@ export function download(
 
 export function cancel(sessionId: string): void {
   native.cancel(sessionId);
+}
+
+/**
+ * Nuke the extracted Python + yt-dlp cache and re-init from the bundled
+ * APK payload. Recovery path when a prior auto-update left the zip in a
+ * state python's zipimport refuses to load.
+ */
+export function resetCache(): Promise<void> {
+  return native.resetCache();
+}
+
+/**
+ * Pull the latest yt-dlp from GitHub. Explicit user action — not run on
+ * init, since a partial download corrupted the bundled binary on real
+ * devices. If this throws, the next probe / download auto-recovers via
+ * resetCache.
+ */
+export function updateYtDlp(): Promise<void> {
+  return native.updateYtDlp();
 }
 
 export function addProgressListener(
