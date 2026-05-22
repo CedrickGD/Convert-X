@@ -141,10 +141,19 @@ class ConvertXDownloaderModule : Module() {
             info.put("isPlaylist", false)
             info
           } else {
+            // yt-dlp exited with no JSON output. Stuff everything the
+            // process produced into the error payload so JS can show
+            // the user *what* yt-dlp actually said (login required,
+            // unsupported URL, rate-limited, …) instead of a useless
+            // "yt-dlp returned no JSON".
+            val stderrTail = response.err.takeIf { it.isNotBlank() } ?: "(empty stderr)"
+            val stdoutTail = response.out.takeIf { it.isNotBlank() } ?: "(empty stdout)"
             JSONObject().apply {
               put("isPlaylist", false)
-              put("error", "yt-dlp returned no JSON")
-              put("stderr", response.err)
+              put("error", "yt-dlp exited ${response.exitCode} with no JSON")
+              put("stderr", stderrTail)
+              put("stdout", stdoutTail)
+              put("exitCode", response.exitCode)
             }
           }
           promise.resolve(result.toString())

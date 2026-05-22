@@ -56,9 +56,26 @@ export async function probeUrl(
   // missing extractor) via raw.error. Treat it as a thrown error so the
   // UI shows a real message instead of a phantom "Untitled" entry.
   if (typeof (raw as Record<string, unknown>).error === 'string') {
-    const stderr = (raw as Record<string, unknown>).stderr as string | undefined;
-    const err = (raw as Record<string, unknown>).error as string;
-    throw new Error(stderr ? `${err}\n${stderr.split('\n').slice(-3).join('\n')}` : err);
+    const r = raw as Record<string, unknown>;
+    const err = r.error as string;
+    const stderr = typeof r.stderr === 'string' ? r.stderr : '';
+    const stdout = typeof r.stdout === 'string' ? r.stdout : '';
+    // Last 3 non-empty lines from stderr, or stdout if stderr is empty,
+    // or the bare error string as a last resort.
+    const tail = (text: string) =>
+      text
+        .split('\n')
+        .map((l) => l.trim())
+        .filter((l) => l.length > 0)
+        .slice(-3)
+        .join(' · ');
+    const stderrTail = tail(stderr);
+    const stdoutTail = tail(stdout);
+    const detail =
+      stderrTail && stderrTail !== '(empty stderr)' ? stderrTail :
+      stdoutTail && stdoutTail !== '(empty stdout)' ? stdoutTail :
+      '';
+    throw new Error(detail ? `${err}\n${detail}` : err);
   }
 
   const isPlaylist = Boolean(raw.isPlaylist);
