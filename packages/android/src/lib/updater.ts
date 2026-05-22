@@ -56,7 +56,11 @@ function cmpSemver(a: string, b: string): number {
 }
 
 function pickAssetForAbi(assets: GhAsset[], abis: string[]): GhAsset | null {
-  for (const abi of abis) {
+  // ABI names in our release filenames look like `app-arm64-v8a-release.apk`
+  // — match by lowercased substring, longest first so `arm64-v8a` doesn't
+  // accidentally match the bare `arm64` prefix of something else.
+  const sortedAbis = [...abis].sort((a, b) => b.length - a.length);
+  for (const abi of sortedAbis) {
     const hit = assets.find(
       (a) =>
         a.name.toLowerCase().includes(abi.toLowerCase()) &&
