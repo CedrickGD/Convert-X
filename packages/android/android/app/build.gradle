@@ -92,8 +92,8 @@ android {
         applicationId 'com.cedrickgd.convertx'
         minSdkVersion rootProject.ext.minSdkVersion
         targetSdkVersion rootProject.ext.targetSdkVersion
-        versionCode 10
-        versionName "0.4.2"
+        versionCode 11
+        versionName "0.4.3"
 
         buildConfigField "String", "REACT_NATIVE_RELEASE_LEVEL", "\"${findProperty('reactNativeReleaseLevel') ?: 'stable'}\""
     }
@@ -158,6 +158,17 @@ android {
         jniLibs {
             def enableLegacyPackaging = findProperty('expo.useLegacyPackaging') ?: 'false'
             useLegacyPackaging enableLegacyPackaging.toBoolean()
+
+            // youtubedl-android ships its Python/ffmpeg/aria2c payload as
+            // ZIP archives renamed to .so so they ride along in the APK's
+            // jniLibs path. They're NOT ELF binaries — llvm-strip errors
+            // out trying to strip them. Skip stripping on those files.
+            keepDebugSymbols += [
+                '**/libpython.zip.so',
+                '**/libpython.so',
+                '**/libffmpeg.zip.so',
+                '**/libaria2c.zip.so',
+            ]
         }
     }
     androidResources {

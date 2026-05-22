@@ -2,7 +2,7 @@
   "expo": {
     "name": "Convert-X",
     "slug": "convert-x-android",
-    "version": "0.4.2",
+    "version": "0.4.3",
     "scheme": "convertx",
     "orientation": "portrait",
     "icon": "./assets/icon.png",
@@ -19,7 +19,7 @@
     },
     "android": {
       "package": "com.cedrickgd.convertx",
-      "versionCode": 10,
+      "versionCode": 11,
       "adaptiveIcon": {
         "foregroundImage": "./assets/adaptive-icon.png",
         "backgroundColor": "#0a0a0a"
