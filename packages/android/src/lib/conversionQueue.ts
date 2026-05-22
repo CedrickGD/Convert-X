@@ -20,7 +20,7 @@ import { addProgressListener, cancel as ffmpegCancel, executeAsync, getMediaInfo
 import { buildArgs } from './ffmpegArgs';
 import { FORMATS } from './formats';
 import { convertImage, ResizeSpec } from './image';
-import type { FileEntry } from '../state/types';
+import type { ConvertSettings, FileEntry } from '../state/types';
 
 const cancelled = new Set<string>();
 
@@ -46,7 +46,9 @@ export type ConvertRunOpts = {
   sessionId: string;
   files: FileEntry[];
   targetFormatKey: string;
-  quality: number;
+  /** Full editor settings — trim / strip / speed / volume / rotate / etc.
+   *  conversionQueue handles routing image-fast-path vs FFmpeg. */
+  settings: ConvertSettings;
   resize?: ResizeSpec;
   onFileStart: (id: string) => void;
   onFileProgress: (id: string, percent: number) => void;
@@ -95,7 +97,7 @@ export async function runConvertSession(opts: ConvertRunOpts): Promise<void> {
             sourceUri: file.uri,
             sourceName: file.name,
             targetFormat: fmt,
-            quality: opts.quality,
+            quality: opts.settings.quality,
             resize: opts.resize ?? { kind: 'none' },
           });
           if (isCancelled(opts.sessionId)) break;
@@ -143,14 +145,27 @@ async function runFfmpegFile(opts: ConvertRunOpts & { file: FileEntry; fmt: impo
   const resizeWidth = r?.kind === 'pixels' ? r.width ?? null : null;
   const resizeHeight = r?.kind === 'pixels' ? r.height ?? null : null;
 
+  const s = opts.settings;
   const args = buildArgs({
     inputPath,
     outputPath: cleanOutput,
     target: fmt,
-    quality: opts.quality,
-    stripAudio: false,
+    quality: s.quality,
     resizeWidth,
     resizeHeight,
+    trimStart: s.trimStart,
+    trimEnd: s.trimEnd,
+    stripAudio: s.stripAudio,
+    speed: s.speed,
+    volume: s.volume,
+    rotate: s.rotate,
+    flipH: s.flipH,
+    flipV: s.flipV,
+    crop: s.crop,
+    gifWidth: s.gifWidth,
+    gifFps: s.gifFps,
+    gifColors: s.gifColors,
+    gifDither: s.gifDither,
   });
 
   // Subscribe progress for this session only.

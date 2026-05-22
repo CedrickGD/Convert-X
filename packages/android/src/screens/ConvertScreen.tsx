@@ -12,6 +12,7 @@ import {
   OutputPanel,
   OutputSettings,
   ProgressBar,
+  VideoEditControls,
 } from '../components/convert';
 import { MediaType, mediaTypeFromName } from '../lib/formats';
 import { cancelSession, runConvertSession } from '../lib/conversionQueue';
@@ -101,7 +102,7 @@ export function ConvertScreen() {
       sessionId,
       files: state.files,
       targetFormatKey: fmt,
-      quality: state.settings.quality,
+      settings: state.settings,
       onFileStart: (id) =>
         convert.dispatch({ type: 'fileStatus', sessionId, id, status: 'converting', progress: 0 }),
       onFileProgress: (id, progress) =>
@@ -187,6 +188,14 @@ export function ConvertScreen() {
             selectedFormat={state.settings.format}
             onSelect={(key) => convert.updateSettings({ format: key })}
           />
+
+          {/* Video editor controls — visible when any picked file is video. */}
+          {sourceTypes.has('video') ? (
+            <VideoEditControls
+              settings={state.settings}
+              onUpdate={(patch) => convert.updateSettings(patch)}
+            />
+          ) : null}
 
           <OutputSettings
             singleFileName={!isBatch ? single?.name?.replace(/\.[^.]+$/, '') ?? '' : undefined}
