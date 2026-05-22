@@ -86,22 +86,36 @@ export function DownloadScreen() {
   }, []);
 
   const handleProbe = useCallback(async () => {
-    if (!url.trim()) return;
+    const trimmed = url.trim();
+    if (!trimmed) return;
     setProbing(true);
     setError(null);
     setEntries([]);
     setSelectedIds(new Set());
     setDone(null);
     try {
-      const result = await probeUrl(url.trim(), {
+      // Pluck an Instagram-style hint that asks for a specific carousel
+      // item ("?img_index=9" → item index 9, zero-based). yt-dlp ignores
+      // the param itself, so we keep it on the URL we send but use it
+      // locally to default the selection.
+      const hintMatch = trimmed.match(/[?&]img_index=(\d+)/);
+      const hintIdx = hintMatch ? parseInt(hintMatch[1], 10) : -1;
+
+      const result = await probeUrl(trimmed, {
         spotifyClientId: state.settings.spotifyClientId || undefined,
         spotifyClientSecret: state.settings.spotifyClientSecret || undefined,
         cookies: state.settings.cookiesPath || undefined,
       });
       setEntries(result.entries);
-      // Default: everything selected. User can deselect individuals or
-      // tap "Select none" to clear.
-      setSelectedIds(new Set(result.entries.map((e) => e.id)));
+      // If the URL targeted a specific carousel item (Instagram does
+      // this when you tap a single image in a post), default the
+      // selection to JUST that item. User can tap "Select all" to
+      // promote to the whole post.
+      if (hintIdx >= 0 && hintIdx < result.entries.length) {
+        setSelectedIds(new Set([result.entries[hintIdx].id]));
+      } else {
+        setSelectedIds(new Set(result.entries.map((e) => e.id)));
+      }
     } catch (e) {
       setError(e instanceof Error ? e.message : String(e));
     } finally {
@@ -382,7 +396,7 @@ export function DownloadScreen() {
                 </Pressable>
               ) : null}
             </View>
-            {entries.map((e) => {
+            {entries.map((e, idx) => {
               const isSelected = selectedIds.has(e.id);
               const multi = entries.length > 1;
               return (
@@ -409,26 +423,40 @@ export function DownloadScreen() {
                       ) : null}
                     </View>
                   ) : null}
-                  {e.thumbnail ? (
-                    <Image
-                      source={{ uri: e.thumbnail }}
-                      style={[
-                        styles.thumbnail,
-                        { backgroundColor: theme.bg.surfaceSunken, borderColor: theme.border.subtle },
-                      ]}
-                      resizeMode="cover"
-                    />
-                  ) : (
-                    <View
-                      style={[
-                        styles.thumbnail,
-                        styles.thumbnailFallback,
-                        { backgroundColor: theme.bg.surfaceSunken, borderColor: theme.border.subtle },
-                      ]}
-                    >
-                      <Link2 size={20} strokeWidth={1.8} color={theme.text.muted} />
-                    </View>
-                  )}
+                  <View style={styles.thumbWrap}>
+                    {e.thumbnail ? (
+                      <Image
+                        source={{ uri: e.thumbnail }}
+                        style={[
+                          styles.thumbnail,
+                          { backgroundColor: theme.bg.surfaceSunken, borderColor: theme.border.subtle },
+                        ]}
+                        resizeMode="cover"
+                      />
+                    ) : (
+                      <View
+                        style={[
+                          styles.thumbnail,
+                          styles.thumbnailFallback,
+                          { backgroundColor: theme.bg.surfaceSunken, borderColor: theme.border.subtle },
+                        ]}
+                      >
+                        <Link2 size={20} strokeWidth={1.8} color={theme.text.muted} />
+                      </View>
+                    )}
+                    {multi ? (
+                      <View
+                        style={[
+                          styles.posBadge,
+                          { backgroundColor: 'rgba(0,0,0,0.7)' },
+                        ]}
+                      >
+                        <Text style={styles.posBadgeText}>
+                          {idx + 1}/{entries.length}
+                        </Text>
+                      </View>
+                    ) : null}
+                  </View>
                   <View style={styles.previewBody}>
                     <Text
                       numberOfLines={2}
@@ -764,6 +792,11 @@ const styles = StyleSheet.create({
   doneErrors: { alignSelf: 'stretch', marginTop: spacing.lg, gap: spacing.xs },
   doneErrorsLabel: { ...typography.caption, fontWeight: '600' },
   doneErrorItem: { ...typography.micro },
+  thumbWrap: {
+    width: 96,
+    height: 54,
+    position: 'relative',
+  },
   thumbnail: {
     width: 96,
     height: 54,
@@ -773,6 +806,20 @@ const styles = StyleSheet.create({
   thumbnailFallback: {
     alignItems: 'center',
     justifyContent: 'center',
+  },
+  posBadge: {
+    position: 'absolute',
+    bottom: 3,
+    right: 3,
+    paddingHorizontal: 5,
+    paddingVertical: 1,
+    borderRadius: 4,
+  },
+  posBadgeText: {
+    ...typography.micro,
+    color: '#fff',
+    fontVariant: ['tabular-nums'],
+    fontWeight: '600',
   },
   previewBody: { flex: 1, gap: 2 },
   previewTitle: { ...typography.body },
