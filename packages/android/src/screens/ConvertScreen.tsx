@@ -15,6 +15,7 @@ import {
   ProgressBar,
   VideoEditControls,
 } from '../components/convert';
+import { getFfmpegLoadError } from '../../modules/convert-x-ffmpeg/src';
 import { MediaType, formatKeyFromName, mediaTypeFromName } from '../lib/formats';
 import { cancelSession, runConvertSession } from '../lib/conversionQueue';
 import { useConvert } from '../state';
@@ -161,6 +162,10 @@ export function ConvertScreen() {
   ).length;
 
   const canConvert = !!state.settings.format && compatibleCount > 0 && state.view === 'ready';
+  // Surface FFmpeg native load failures up-front so the user sees the real
+  // reason (16KB pages, missing dep, ABI mismatch) instead of a generic
+  // "1 file failed" after hitting Convert.
+  const ffmpegError = useMemo(() => getFfmpegLoadError(), []);
 
   return (
     <ScrollView
@@ -171,6 +176,29 @@ export function ConvertScreen() {
       keyboardShouldPersistTaps="handled"
       showsVerticalScrollIndicator={false}
     >
+      {ffmpegError ? (
+        <View
+          style={[
+            styles.warnBanner,
+            {
+              backgroundColor: theme.bg.surface,
+              borderColor: theme.status.error,
+            },
+          ]}
+        >
+          <Text style={[styles.warnTitle, { color: theme.status.error }]}>
+            FFmpeg unavailable on this device
+          </Text>
+          <Text style={[styles.warnDetail, { color: theme.text.muted }]}>
+            {ffmpegError}
+          </Text>
+          <Text style={[styles.warnDetail, { color: theme.text.muted }]}>
+            PNG / JPG / WebP still work; video and the other image formats
+            need this library.
+          </Text>
+        </View>
+      ) : null}
+
       {state.view === 'idle' ? (
         <View style={styles.idle}>
           <Dropzone
@@ -305,6 +333,14 @@ const styles = StyleSheet.create({
   },
   idle: { flexGrow: 1, justifyContent: 'center' },
   stack: { gap: spacing.xl },
+  warnBanner: {
+    padding: spacing.lg,
+    borderRadius: radius.sm,
+    borderWidth: StyleSheet.hairlineWidth,
+    gap: spacing.xs,
+  },
+  warnTitle: { ...typography.body, fontWeight: '600' },
+  warnDetail: { ...typography.caption },
   actions: {
     flexDirection: 'row',
     justifyContent: 'center',

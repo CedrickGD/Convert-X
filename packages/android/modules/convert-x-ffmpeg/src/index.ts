@@ -37,6 +37,8 @@ interface NativeModule {
   getSupportedAbis(): Promise<string[]>;
   /** Triggers Android's "Install this app?" sheet for a downloaded APK file URI. */
   installApk(uri: string): Promise<void>;
+  /** null when FFmpeg loaded successfully; otherwise the underlying cause chain. */
+  getFfmpegLoadError(): string | null;
   addListener(eventName: keyof ConvertXFfmpegEvents): void;
   removeListeners(count: number): void;
 }
@@ -65,6 +67,20 @@ export function getSupportedAbis(): Promise<string[]> {
 
 export function installApk(uri: string): Promise<void> {
   return native.installApk(uri);
+}
+
+/**
+ * Returns null when FFmpeg's native library mapped fine. Otherwise the
+ * stringified cause chain (e.g. "UnsatisfiedLinkError: dlopen
+ * libffmpegkit.so failed: …"). Callers can use this for proactive UI
+ * messaging instead of waiting for an executeAsync to fail.
+ */
+export function getFfmpegLoadError(): string | null {
+  try {
+    return native.getFfmpegLoadError();
+  } catch {
+    return null;
+  }
 }
 
 export function addProgressListener(

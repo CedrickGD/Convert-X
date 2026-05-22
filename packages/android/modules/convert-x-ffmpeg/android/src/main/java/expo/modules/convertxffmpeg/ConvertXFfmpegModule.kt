@@ -32,12 +32,56 @@ class ConvertXFfmpegModule : Module() {
 
   private val sessions = ConcurrentHashMap<String, Long>()
 
+  companion object {
+    @Volatile private var loadAttempted: Boolean = false
+    @Volatile private var loadError: Throwable? = null
+  }
+
+  /**
+   * Eager-load the native FFmpegKit libs and surface the underlying
+   * UnsatisfiedLinkError if `libffmpegkit.so` (or any of its deps) won't
+   * map. On the first reference to FFmpegKit / FFmpegKitConfig the class
+   * loader runs `System.loadLibrary("ffmpegkit")`; if that throws, the
+   * class is left in error state and every subsequent access turns into a
+   * bare `NoClassDefFoundError` with no message about *why*. Cache the
+   * original cause so executeAsync / getMediaInfo can return a real
+   * diagnostic instead of "class not found".
+   */
+  private fun ffmpegLoadError(): Throwable? {
+    if (loadAttempted) return loadError
+    synchronized(ConvertXFfmpegModule::class.java) {
+      if (loadAttempted) return loadError
+      loadAttempted = true
+      loadError = try {
+        Class.forName(
+          "com.arthenica.ffmpegkit.FFmpegKitConfig",
+          true,
+          ConvertXFfmpegModule::class.java.classLoader,
+        )
+        null
+      } catch (t: Throwable) {
+        // Unwrap ExceptionInInitializerError to the underlying
+        // UnsatisfiedLinkError / Error("FFmpegKit failed to start on …").
+        t.cause ?: t
+      }
+    }
+    return loadError
+  }
+
+  private fun rejectIfFfmpegMissing(promise: expo.modules.kotlin.Promise): Boolean {
+    val err = ffmpegLoadError() ?: return false
+    val msg = err.message ?: err.javaClass.simpleName
+    promise.reject(CodedException("FFMPEG_UNAVAILABLE", "FFmpeg native library failed to load: $msg", err))
+    return true
+  }
+
   override fun definition() = ModuleDefinition {
     Name("ConvertXFfmpeg")
 
     Events("onProgress")
 
     AsyncFunction("executeAsync") { sessionId: String, args: List<String>, durationMs: Double, promise: expo.modules.kotlin.Promise ->
+      if (rejectIfFfmpegMissing(promise)) return@AsyncFunction
       val totalMs = durationMs.toLong()
       val logBuffer = StringBuilder()
 
@@ -100,6 +144,22 @@ class ConvertXFfmpegModule : Module() {
       Build.SUPPORTED_ABIS.toList()
     }
 
+    /** Returns null if FFmpeg loaded fine, otherwise a human-readable
+     *  diagnostic of why the native library would not map (16KB pages,
+     *  missing dep, ABI mismatch, …). Useful for proactive UI warnings. */
+    Function("getFfmpegLoadError") {
+      val err = ffmpegLoadError() ?: return@Function null as String?
+      val parts = mutableListOf<String>()
+      var cur: Throwable? = err
+      var depth = 0
+      while (cur != null && depth < 4) {
+        parts.add("${cur.javaClass.simpleName}: ${cur.message ?: "(no message)"}")
+        cur = cur.cause
+        depth += 1
+      }
+      parts.joinToString(" → ")
+    }
+
     AsyncFunction("installApk") { uriString: String, promise: expo.modules.kotlin.Promise ->
       try {
         val ctx = appContext.reactContext
@@ -134,6 +194,7 @@ class ConvertXFfmpegModule : Module() {
     }
 
     AsyncFunction("getMediaInfo") { uri: String, promise: expo.modules.kotlin.Promise ->
+      if (rejectIfFfmpegMissing(promise)) return@AsyncFunction
       try {
         val probeSession = FFprobeKit.getMediaInformation(uri)
         val info = probeSession.mediaInformation
