@@ -105,7 +105,12 @@ class ConvertXDownloaderModule : Module() {
           ensureInitializedSync()
           val request = YoutubeDLRequest(url)
           request.addOption("--dump-json")
-          request.addOption("--no-warnings")
+          // No --no-warnings: when an extractor (Instagram especially)
+          // can't find anything but doesn't raise — yt-dlp exits 0 with
+          // empty stdout AND empty stderr because warnings were
+          // suppressed. Keeping warnings on stderr means the
+          // exited-0-no-JSON error path can surface the actual reason
+          // ("Restricted Video: login required", "Empty media response"…).
           // No --flat-playlist: it collapses Instagram / TikTok / Reddit
           // carousels into a single entry (or nothing at all), defeating
           // the whole "pick image 6 of 10" UX. For multi-thousand-item

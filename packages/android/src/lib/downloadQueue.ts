@@ -157,14 +157,17 @@ export async function ensureMediaPermission(): Promise<boolean> {
  *   - "<height>": best ≤ N px, prefer pre-merged mp4
  */
 function buildVideoFormat(quality: string | null): string {
+  // CRITICAL: every term in the fallback chain must require a video codec
+  // (`vcodec!=none` or `bv*`). The previous chain had a bare `best`
+  // fallback which on modern YouTube resolves to an audio-only m4a track
+  // (because that's the highest-bitrate single stream available once the
+  // pre-merged 720p mp4 stops being served). With this chain, the user
+  // who picked "Video" can never get an audio-only file.
   if (!quality || quality === 'best') {
-    // bv*+ba/b — yt-dlp's recommended "best video + best audio with merge,
-    // fall back to single best" expression. Works without ffmpeg as long
-    // as a pre-merged stream is available.
-    return 'best[ext=mp4][acodec!=none][vcodec!=none]/best/bv*+ba';
+    return 'best[ext=mp4][acodec!=none][vcodec!=none]/best[acodec!=none][vcodec!=none]/bv*[ext=mp4]+ba[ext=m4a]/bv*+ba';
   }
   const h = quality;
-  return `best[height<=${h}][ext=mp4][acodec!=none][vcodec!=none]/best[height<=${h}]/bv*[height<=${h}]+ba`;
+  return `best[height<=${h}][ext=mp4][acodec!=none][vcodec!=none]/best[height<=${h}][acodec!=none][vcodec!=none]/bv*[height<=${h}][ext=mp4]+ba[ext=m4a]/bv*[height<=${h}]+ba`;
 }
 
 export async function downloadEntry(opts: {
