@@ -1,4 +1,6 @@
-import { Code, Download, Heart, Package, RefreshCw, SwatchBook } from 'lucide-react-native';
+import * as DocumentPicker from 'expo-document-picker';
+import * as FileSystem from 'expo-file-system/legacy';
+import { Code, Cookie, Download, Heart, Package, RefreshCw, SwatchBook, Trash2 } from 'lucide-react-native';
 // Phase 2 used a static import for the version; the in-app updater (Phase 9)
 // uses the same source of truth.
 import pkg from '../../package.json';
@@ -17,6 +19,7 @@ import {
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 
 import { updateYtDlp } from '../lib/downloadQueue';
+import { useDownload } from '../state';
 import { checkForUpdate, downloadAndInstall, UpdateInfo } from '../lib/updater';
 import { prettyBytes } from '../lib/formats';
 import { RootStackParamList } from '../navigation/types';
@@ -100,6 +103,9 @@ export function CreditsScreen() {
 
       {/* yt-dlp engine refresh — fixes Instagram CSRF errors etc. */}
       <YtDlpUpdateCard />
+
+      {/* Cookies — required for Instagram and other login-walled sites */}
+      <CookiesCard />
 
       {/* Source */}
       <View
@@ -402,6 +408,138 @@ function YtDlpUpdateCard() {
             </Text>
           </Pressable>
         ) : null}
+      </View>
+    </View>
+  );
+}
+
+// ── Cookies ─────────────────────────────────────────────────────────────
+// Instagram + paywalled YouTube + private Reddit/Twitter require an
+// authenticated session. yt-dlp accepts a Netscape-format cookies.txt
+// file (exported from the user's desktop browser via "Get cookies.txt"
+// or similar extensions). We copy the picked file into app-private
+// storage on import so yt-dlp can read it after the picker URI expires.
+
+const COOKIES_FILENAME = 'cookies.txt';
+
+function CookiesCard() {
+  const { theme } = useTheme();
+  const { state, updateSettings } = useDownload();
+  const [picking, setPicking] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  const hasCookies = !!state.settings.cookiesPath;
+
+  const onPick = useCallback(async () => {
+    if (picking) return;
+    setError(null);
+    setPicking(true);
+    try {
+      const result = await DocumentPicker.getDocumentAsync({
+        type: ['text/plain', 'application/octet-stream', '*/*'],
+        copyToCacheDirectory: true,
+      });
+      if (result.canceled || !result.assets?.length) {
+        setPicking(false);
+        return;
+      }
+      const src = result.assets[0].uri;
+      const dest = `${FileSystem.documentDirectory}${COOKIES_FILENAME}`;
+      const destPath = dest.replace(/^file:\/\//, '');
+      try {
+        await FileSystem.deleteAsync(dest, { idempotent: true });
+      } catch {
+        // ignore — file may not exist
+      }
+      await FileSystem.copyAsync({ from: src, to: dest });
+      updateSettings({ cookiesPath: destPath });
+    } catch (e) {
+      setError(e instanceof Error ? e.message : String(e));
+    } finally {
+      setPicking(false);
+    }
+  }, [picking, updateSettings]);
+
+  const onClear = useCallback(async () => {
+    const path = state.settings.cookiesPath;
+    if (!path) return;
+    try {
+      await FileSystem.deleteAsync(`file://${path}`, { idempotent: true });
+    } catch {
+      // best-effort
+    }
+    updateSettings({ cookiesPath: '' });
+  }, [state.settings.cookiesPath, updateSettings]);
+
+  const subline = error
+    ? error
+    : hasCookies
+    ? 'Cookies active. Re-pick to refresh, or clear to disable.'
+    : 'Export from your browser ("Get cookies.txt"), then pick it here.';
+
+  return (
+    <View
+      style={[
+        styles.card,
+        { backgroundColor: theme.bg.surface, borderColor: theme.border.subtle },
+      ]}
+    >
+      <Text style={[styles.cardLabel, { color: theme.text.muted }]}>COOKIES</Text>
+      <View style={styles.row}>
+        <View style={[styles.iconBox, { backgroundColor: theme.accent.subtle }]}>
+          {picking ? (
+            <ActivityIndicator size="small" color={theme.accent.primary} />
+          ) : (
+            <Cookie size={18} strokeWidth={1.8} color={theme.accent.primary} />
+          )}
+        </View>
+        <View style={{ flex: 1 }}>
+          <Text style={[styles.rowTitle, { color: theme.text.primary }]}>
+            cookies.txt for login-walled sites
+          </Text>
+          <Text
+            style={[
+              styles.rowSub,
+              { color: error ? theme.status.error : theme.text.secondary },
+            ]}
+            numberOfLines={3}
+          >
+            {subline}
+          </Text>
+        </View>
+        {hasCookies ? (
+          <Pressable
+            onPress={onClear}
+            style={({ pressed }) => ({
+              paddingHorizontal: spacing.md,
+              paddingVertical: spacing.md,
+              borderRadius: radius.xs,
+              opacity: pressed ? 0.6 : 1,
+            })}
+          >
+            <Trash2 size={18} strokeWidth={1.8} color={theme.text.secondary} />
+          </Pressable>
+        ) : null}
+        <Pressable
+          disabled={picking}
+          onPress={onPick}
+          style={({ pressed }) => ({
+            paddingHorizontal: spacing.xl,
+            paddingVertical: spacing.md,
+            borderRadius: radius.xs,
+            backgroundColor: theme.accent.primary,
+            opacity: pressed ? 0.8 : 1,
+          })}
+        >
+          <Text
+            style={[
+              typography.bodyEmph,
+              { color: theme.accent.onPrimary, fontWeight: '600' },
+            ]}
+          >
+            {hasCookies ? 'Replace' : 'Pick'}
+          </Text>
+        </Pressable>
       </View>
     </View>
   );
