@@ -6,3 +6,4 @@ export { OutputPanel } from './OutputPanel';
 export { OutputSettings } from './OutputSettings';
 export { ProgressBar } from './ProgressBar';
 export { VideoEditControls } from './VideoEditControls';
+export { ClipEditor } from './clip/ClipEditor';

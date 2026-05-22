@@ -5,6 +5,7 @@ import { Alert, Pressable, ScrollView, StyleSheet, Text, View } from 'react-nati
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 
 import {
+  ClipEditor,
   Dropzone,
   FileList,
   FilePreview,
@@ -189,7 +190,17 @@ export function ConvertScreen() {
             onSelect={(key) => convert.updateSettings({ format: key })}
           />
 
-          {/* Video editor controls — visible when any picked file is video. */}
+          {/* Clip editor — preview + timeline trim — for video sources. */}
+          {sourceTypes.has('video') && single ? (
+            <ClipEditor
+              file={single}
+              settings={state.settings}
+              isGifTarget={state.settings.format === 'gif'}
+              onChange={(patch) => convert.updateSettings(patch)}
+            />
+          ) : null}
+
+          {/* Video edit controls — sound / speed / volume / rotate / flip. */}
           {sourceTypes.has('video') ? (
             <VideoEditControls
               settings={state.settings}
