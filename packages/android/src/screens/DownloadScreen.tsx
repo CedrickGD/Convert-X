@@ -1,6 +1,6 @@
 import * as Clipboard from 'expo-clipboard';
-import { Download as DownloadIcon, Link2 } from 'lucide-react-native';
-import React, { useCallback, useEffect, useRef, useState } from 'react';
+import { Check, Download as DownloadIcon, Link2 } from 'lucide-react-native';
+import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
   Alert,
   Image,
@@ -16,9 +16,9 @@ import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { ProgressBar } from '../components/convert';
 import { detectSite } from '../../modules/convert-x-downloader/src';
 import {
-  cancelActive,
+  cancelBatch,
   DownloadEntry,
-  downloadEntry,
+  downloadBatch,
   ensureMediaPermission,
   probeUrl,
 } from '../lib/downloadQueue';
@@ -45,8 +45,16 @@ export function DownloadScreen() {
   const [url, setUrl] = useState('');
   const [probing, setProbing] = useState(false);
   const [entries, setEntries] = useState<DownloadEntry[]>([]);
+  const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
   const [progress, setProgress] = useState(0);
-  const [done, setDone] = useState<{ outputPath?: string; publicPath?: string } | null>(null);
+  const [currentItemIdx, setCurrentItemIdx] = useState(0);
+  const [currentItemTitle, setCurrentItemTitle] = useState<string | null>(null);
+  const [done, setDone] = useState<{
+    publicPath?: string;
+    completed: number;
+    total: number;
+    errors: Array<{ title: string; message: string }>;
+  } | null>(null);
   const [error, setError] = useState<string | null>(null);
 
   const site = detectSite(url);
@@ -82,6 +90,7 @@ export function DownloadScreen() {
     setProbing(true);
     setError(null);
     setEntries([]);
+    setSelectedIds(new Set());
     setDone(null);
     try {
       const result = await probeUrl(url.trim(), {
@@ -90,6 +99,9 @@ export function DownloadScreen() {
         cookies: state.settings.cookiesPath || undefined,
       });
       setEntries(result.entries);
+      // Default: everything selected. User can deselect individuals or
+      // tap "Select none" to clear.
+      setSelectedIds(new Set(result.entries.map((e) => e.id)));
     } catch (e) {
       setError(e instanceof Error ? e.message : String(e));
     } finally {
@@ -97,11 +109,29 @@ export function DownloadScreen() {
     }
   }, [url, state.settings]);
 
+  const toggleSelected = useCallback((id: string) => {
+    setSelectedIds((cur) => {
+      const next = new Set(cur);
+      if (next.has(id)) next.delete(id);
+      else next.add(id);
+      return next;
+    });
+  }, []);
+
+  const selectedEntries = useMemo(
+    () => entries.filter((e) => selectedIds.has(e.id)),
+    [entries, selectedIds]
+  );
+
+  const allSelected = entries.length > 0 && selectedIds.size === entries.length;
+
   const handleDownload = useCallback(async () => {
-    if (entries.length === 0) return;
+    if (selectedEntries.length === 0) return;
     setError(null);
     setDone(null);
     setProgress(0);
+    setCurrentItemIdx(0);
+    setCurrentItemTitle(selectedEntries[0]?.title ?? null);
 
     // Ask for permission up-front. If the user denies, we still download
     // to app-private storage — but we tell them so they're not surprised
@@ -125,41 +155,56 @@ export function DownloadScreen() {
     const sessionId = `dl-${Date.now()}`;
     download.dispatch({ type: 'beginSession', sessionId });
     try {
-      const result = await downloadEntry({
+      const result = await downloadBatch({
         sessionId,
-        entry: entries[0],
+        entries: selectedEntries,
         audioOnly: state.settings.category === 'audio',
         format: state.settings.format,
         quality: state.settings.quality,
         spotifyClientId: state.settings.spotifyClientId || undefined,
         spotifyClientSecret: state.settings.spotifyClientSecret || undefined,
         cookies: state.settings.cookiesPath || undefined,
-        onProgress: setProgress,
         saveToGallery: granted,
+        onProgress: (overall, idx) => {
+          setProgress(overall);
+          setCurrentItemIdx(idx);
+        },
+        onItemStart: (idx, entry) => {
+          setCurrentItemIdx(idx);
+          setCurrentItemTitle(entry.title);
+        },
       });
       if (result.cancelled) {
         download.dispatch({ type: 'cancelSession' });
       } else {
-        setDone({ outputPath: result.outputPath, publicPath: result.publicPath });
+        setDone({
+          publicPath: result.lastPublicPath,
+          completed: result.done,
+          total: selectedEntries.length,
+          errors: result.errors,
+        });
         download.dispatch({ type: 'finishSession', sessionId });
       }
     } catch (e) {
       setError(e instanceof Error ? e.message : String(e));
       download.dispatch({ type: 'cancelSession' });
     }
-  }, [download, entries, state.settings]);
+  }, [download, selectedEntries, state.settings]);
 
   const handleCancel = useCallback(() => {
-    cancelActive();
+    cancelBatch();
     download.dispatch({ type: 'cancelSession' });
   }, [download]);
 
   const handleReset = useCallback(() => {
     setUrl('');
     setEntries([]);
+    setSelectedIds(new Set());
     setDone(null);
     setError(null);
     setProgress(0);
+    setCurrentItemIdx(0);
+    setCurrentItemTitle(null);
     download.reset();
   }, [download]);
 
@@ -316,51 +361,90 @@ export function DownloadScreen() {
               { backgroundColor: theme.bg.surface, borderColor: theme.border.subtle },
             ]}
           >
-            <Text style={[styles.cardLabel, { color: theme.text.muted }]}>
-              {entries.length > 1 ? `${entries.length} ITEMS` : 'PREVIEW'}
-            </Text>
-            {entries.slice(0, 5).map((e) => (
-              <View key={e.id} style={styles.previewRow}>
-                {e.thumbnail ? (
-                  <Image
-                    source={{ uri: e.thumbnail }}
-                    style={[
-                      styles.thumbnail,
-                      { backgroundColor: theme.bg.surfaceSunken, borderColor: theme.border.subtle },
-                    ]}
-                    resizeMode="cover"
-                  />
-                ) : (
-                  <View
-                    style={[
-                      styles.thumbnail,
-                      styles.thumbnailFallback,
-                      { backgroundColor: theme.bg.surfaceSunken, borderColor: theme.border.subtle },
-                    ]}
-                  >
-                    <Link2 size={20} strokeWidth={1.8} color={theme.text.muted} />
-                  </View>
-                )}
-                <View style={styles.previewBody}>
-                  <Text
-                    numberOfLines={2}
-                    style={[styles.previewTitle, { color: theme.text.primary }]}
-                  >
-                    {e.title}
-                  </Text>
-                  {e.duration ? (
-                    <Text style={[styles.previewMeta, { color: theme.text.muted }]}>
-                      {formatDuration(e.duration)}
-                    </Text>
-                  ) : null}
-                </View>
-              </View>
-            ))}
-            {entries.length > 5 ? (
-              <Text style={[styles.moreText, { color: theme.text.muted }]}>
-                +{entries.length - 5} more
+            <View style={styles.previewHeader}>
+              <Text style={[styles.cardLabel, { color: theme.text.muted }]}>
+                {entries.length > 1
+                  ? `${selectedIds.size} of ${entries.length} selected`
+                  : 'PREVIEW'}
               </Text>
-            ) : null}
+              {entries.length > 1 ? (
+                <Pressable
+                  onPress={() =>
+                    setSelectedIds(
+                      allSelected ? new Set() : new Set(entries.map((e) => e.id))
+                    )
+                  }
+                  hitSlop={6}
+                >
+                  <Text style={[styles.selectAllText, { color: theme.accent.primary }]}>
+                    {allSelected ? 'Select none' : 'Select all'}
+                  </Text>
+                </Pressable>
+              ) : null}
+            </View>
+            {entries.map((e) => {
+              const isSelected = selectedIds.has(e.id);
+              const multi = entries.length > 1;
+              return (
+                <Pressable
+                  key={e.id}
+                  onPress={multi ? () => toggleSelected(e.id) : undefined}
+                  style={({ pressed }) => [
+                    styles.previewRow,
+                    { opacity: multi && !isSelected ? 0.45 : pressed ? 0.85 : 1 },
+                  ]}
+                >
+                  {multi ? (
+                    <View
+                      style={[
+                        styles.checkbox,
+                        {
+                          backgroundColor: isSelected ? theme.accent.primary : 'transparent',
+                          borderColor: isSelected ? theme.accent.primary : theme.border.subtle,
+                        },
+                      ]}
+                    >
+                      {isSelected ? (
+                        <Check size={14} strokeWidth={3} color={theme.accent.onPrimary} />
+                      ) : null}
+                    </View>
+                  ) : null}
+                  {e.thumbnail ? (
+                    <Image
+                      source={{ uri: e.thumbnail }}
+                      style={[
+                        styles.thumbnail,
+                        { backgroundColor: theme.bg.surfaceSunken, borderColor: theme.border.subtle },
+                      ]}
+                      resizeMode="cover"
+                    />
+                  ) : (
+                    <View
+                      style={[
+                        styles.thumbnail,
+                        styles.thumbnailFallback,
+                        { backgroundColor: theme.bg.surfaceSunken, borderColor: theme.border.subtle },
+                      ]}
+                    >
+                      <Link2 size={20} strokeWidth={1.8} color={theme.text.muted} />
+                    </View>
+                  )}
+                  <View style={styles.previewBody}>
+                    <Text
+                      numberOfLines={2}
+                      style={[styles.previewTitle, { color: theme.text.primary }]}
+                    >
+                      {e.title}
+                    </Text>
+                    {e.duration ? (
+                      <Text style={[styles.previewMeta, { color: theme.text.muted }]}>
+                        {formatDuration(e.duration)}
+                      </Text>
+                    ) : null}
+                  </View>
+                </Pressable>
+              );
+            })}
           </View>
 
           <View style={styles.actions}>
@@ -375,14 +459,20 @@ export function DownloadScreen() {
             </Pressable>
             <Pressable
               onPress={handleDownload}
+              disabled={selectedEntries.length === 0}
               style={({ pressed }) => [
                 styles.primaryBtn,
-                { backgroundColor: theme.accent.primary, opacity: pressed ? 0.85 : 1 },
+                {
+                  backgroundColor: theme.accent.primary,
+                  opacity: selectedEntries.length === 0 ? 0.3 : pressed ? 0.85 : 1,
+                },
               ]}
             >
               <DownloadIcon size={14} strokeWidth={2} color={theme.accent.onPrimary} />
               <Text style={[styles.primaryBtnText, { color: theme.accent.onPrimary }]}>
-                Download
+                {selectedEntries.length > 1
+                  ? `Download ${selectedEntries.length}`
+                  : 'Download'}
               </Text>
             </Pressable>
           </View>
@@ -391,7 +481,22 @@ export function DownloadScreen() {
 
       {showProgress ? (
         <View style={styles.stack}>
-          <ProgressBar progress={progress} label="Downloading…" />
+          <ProgressBar
+            progress={progress}
+            label={
+              selectedEntries.length > 1
+                ? `Item ${currentItemIdx + 1} of ${selectedEntries.length}`
+                : 'Downloading…'
+            }
+          />
+          {currentItemTitle ? (
+            <Text
+              numberOfLines={1}
+              style={[styles.currentItem, { color: theme.text.muted }]}
+            >
+              {currentItemTitle}
+            </Text>
+          ) : null}
           <View style={styles.actions}>
             <Pressable
               onPress={handleCancel}
@@ -417,12 +522,32 @@ export function DownloadScreen() {
             <View style={[styles.iconRing, { backgroundColor: theme.accent.subtle }]}>
               <DownloadIcon size={28} strokeWidth={2.2} color={theme.accent.primary} />
             </View>
-            <Text style={[styles.doneTitle, { color: theme.text.primary }]}>Downloaded</Text>
+            <Text style={[styles.doneTitle, { color: theme.text.primary }]}>
+              {done?.total && done.total > 1
+                ? `${done.completed} of ${done.total} downloaded`
+                : 'Downloaded'}
+            </Text>
             <Text style={[styles.doneSub, { color: theme.text.muted }]} numberOfLines={2}>
               {done?.publicPath
                 ? 'Saved to Gallery · Convert-X album'
-                : done?.outputPath ?? ''}
+                : 'Saved inside Convert-X'}
             </Text>
+            {done?.errors && done.errors.length > 0 ? (
+              <View style={styles.doneErrors}>
+                <Text style={[styles.doneErrorsLabel, { color: theme.status.error }]}>
+                  {done.errors.length} failed
+                </Text>
+                {done.errors.slice(0, 3).map((err, i) => (
+                  <Text
+                    key={i}
+                    numberOfLines={2}
+                    style={[styles.doneErrorItem, { color: theme.text.muted }]}
+                  >
+                    {err.title}: {err.message}
+                  </Text>
+                ))}
+              </View>
+            ) : null}
           </View>
           <View style={styles.actions}>
             <Pressable
@@ -611,12 +736,34 @@ const styles = StyleSheet.create({
   },
   ghostBtnText: { ...typography.body, fontWeight: '600' },
 
+  previewHeader: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+  },
+  selectAllText: { ...typography.caption, fontWeight: '600' },
   previewRow: {
     flexDirection: 'row',
     gap: spacing.md,
     alignItems: 'center',
     paddingVertical: spacing.xs,
   },
+  checkbox: {
+    width: 22,
+    height: 22,
+    borderRadius: 6,
+    borderWidth: 1.5,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  currentItem: {
+    ...typography.caption,
+    textAlign: 'center',
+    paddingHorizontal: spacing.lg,
+  },
+  doneErrors: { alignSelf: 'stretch', marginTop: spacing.lg, gap: spacing.xs },
+  doneErrorsLabel: { ...typography.caption, fontWeight: '600' },
+  doneErrorItem: { ...typography.micro },
   thumbnail: {
     width: 96,
     height: 54,

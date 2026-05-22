@@ -170,6 +170,13 @@ class ConvertXDownloaderModule : Module() {
           val request = YoutubeDLRequest(url)
           request.addOption("-o", outputPath)
           request.addOption("--no-warnings")
+          // Sanitize titles so the resolved path is always safe to write
+          // and to hand to MediaLibrary (Android File API rejects slashes,
+          // colons, NUL bytes, etc. in filenames).
+          request.addOption("--restrict-filenames")
+          // No mtime — yt-dlp by default rewrites the file mtime to the
+          // upload time, which makes the gallery sort the file as old.
+          request.addOption("--no-mtime")
           // Tell yt-dlp to print the resolved final filepath after all
           // post-processing / moves. We need this because outputPath
           // contains the %(title)s.%(ext)s template — the actual file
@@ -177,6 +184,10 @@ class ConvertXDownloaderModule : Module() {
           // is chosen by the downloader. The JS side uses this real path
           // for MediaLibrary.createAssetAsync.
           request.addOption("--print", "after_move:filepath")
+          // Single connection / fail-soft on transient network issues
+          // instead of giving up at the first hiccup.
+          request.addOption("--retries", "10")
+          request.addOption("--fragment-retries", "10")
 
           if (audioOnly) {
             request.addOption("-x")

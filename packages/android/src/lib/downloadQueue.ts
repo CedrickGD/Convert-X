@@ -103,6 +103,14 @@ export type DownloadResult = {
   cancelled?: boolean;
 };
 
+export type BatchDownloadResult = {
+  done: number;
+  failed: number;
+  cancelled: boolean;
+  lastPublicPath?: string;
+  errors: Array<{ title: string; message: string }>;
+};
+
 /**
  * Ask for MediaLibrary permission. Returns true if granted. Cached at
  * module scope so we only ask once per session — Android remembers the
@@ -119,6 +127,27 @@ export async function ensureMediaPermission(): Promise<boolean> {
   const req = await MediaLibrary.requestPermissionsAsync();
   mediaPermissionGranted = req.granted;
   return req.granted;
+}
+
+/**
+ * Build a yt-dlp format selector that prefers pre-merged streams (no
+ * ffmpeg merge step required) and falls back to merging only when that
+ * fails. This is what makes downloads work on every site uniformly —
+ * YouTube serves separate video+audio streams above 720p, but for most
+ * other sites (and YouTube up to 720p) a single pre-merged mp4 exists.
+ *
+ *   - "best": best video+audio in any container, prefer pre-merged
+ *   - "<height>": best ≤ N px, prefer pre-merged mp4
+ */
+function buildVideoFormat(quality: string | null): string {
+  if (!quality || quality === 'best') {
+    // bv*+ba/b — yt-dlp's recommended "best video + best audio with merge,
+    // fall back to single best" expression. Works without ffmpeg as long
+    // as a pre-merged stream is available.
+    return 'best[ext=mp4][acodec!=none][vcodec!=none]/best/bv*+ba';
+  }
+  const h = quality;
+  return `best[height<=${h}][ext=mp4][acodec!=none][vcodec!=none]/best[height<=${h}]/bv*[height<=${h}]+ba`;
 }
 
 export async function downloadEntry(opts: {
@@ -140,7 +169,9 @@ export async function downloadEntry(opts: {
   const outDir = `${FileSystem.documentDirectory}downloads`;
   await FileSystem.makeDirectoryAsync(outDir, { intermediates: true }).catch(() => {});
 
-  // yt-dlp template — let yt-dlp pick the final extension.
+  // yt-dlp template — let yt-dlp pick the final extension. Native side
+  // passes --restrict-filenames so the resolved path can't contain
+  // characters that break the filesystem (slashes in titles, etc.).
   const outputTemplate = `${outDir.replace(/^file:\/\//, '')}/%(title)s.%(ext)s`;
 
   const sub = Downloader.addProgressListener((evt) => {
@@ -150,13 +181,24 @@ export async function downloadEntry(opts: {
   inflight = { sessionId: opts.sessionId, cancel: () => Downloader.cancel(opts.sessionId) };
 
   try {
+    // Resolve the format selector here so the same logic produces the
+    // string we send to yt-dlp regardless of audio/video routing. The
+    // native side just forwards `format` as the literal `-f` argument.
+    const formatString = opts.audioOnly
+      ? null
+      : opts.format && opts.format !== 'best'
+      ? opts.format
+      : buildVideoFormat(opts.quality);
+
     const result = await Downloader.download(opts.sessionId, {
       url: opts.entry.webpageUrl,
       outputPath: outputTemplate,
       audioOnly: opts.audioOnly,
       audioFormat: opts.audioOnly ? opts.format ?? 'mp3' : undefined,
-      format: opts.audioOnly ? undefined : opts.format ?? undefined,
-      quality: opts.quality ?? undefined,
+      format: formatString ?? undefined,
+      // Quality is now folded into formatString above — keep it for the
+      // native side's audio-quality option but otherwise unused.
+      quality: opts.audioOnly ? opts.quality ?? undefined : undefined,
       cookies: opts.cookies,
       spotifyClientId: opts.spotifyClientId,
       spotifyClientSecret: opts.spotifyClientSecret,
@@ -193,4 +235,83 @@ export async function downloadEntry(opts: {
     sub.remove();
     inflight = null;
   }
+}
+
+/**
+ * Run multiple downloads sequentially. Reports overall progress
+ * (0..100 across the whole batch) so the UI can show a single bar.
+ * Errors per item are collected and returned — one failure doesn't
+ * abort the rest of the batch.
+ */
+export async function downloadBatch(opts: {
+  sessionId: string;
+  entries: DownloadEntry[];
+  audioOnly: boolean;
+  format: string | null;
+  quality: string | null;
+  spotifyClientId?: string;
+  spotifyClientSecret?: string;
+  cookies?: string;
+  saveToGallery?: boolean;
+  /** Called with overall batch percent (0..100) and current item index. */
+  onProgress: (overallPct: number, currentIndex: number) => void;
+  /** Called when each item starts so the UI can show its title. */
+  onItemStart?: (index: number, entry: DownloadEntry) => void;
+}): Promise<BatchDownloadResult> {
+  const total = opts.entries.length;
+  if (total === 0) {
+    return { done: 0, failed: 0, cancelled: false, errors: [] };
+  }
+  let done = 0;
+  let failed = 0;
+  let lastPublicPath: string | undefined;
+  const errors: BatchDownloadResult['errors'] = [];
+
+  for (let i = 0; i < total; i++) {
+    if (cancelRequested) {
+      cancelRequested = false;
+      return { done, failed, cancelled: true, lastPublicPath, errors };
+    }
+    const entry = opts.entries[i];
+    opts.onItemStart?.(i, entry);
+    try {
+      const r = await downloadEntry({
+        sessionId: `${opts.sessionId}-${i}`,
+        entry,
+        audioOnly: opts.audioOnly,
+        format: opts.format,
+        quality: opts.quality,
+        spotifyClientId: opts.spotifyClientId,
+        spotifyClientSecret: opts.spotifyClientSecret,
+        cookies: opts.cookies,
+        saveToGallery: opts.saveToGallery,
+        onProgress: (pct) => {
+          // Project the per-item 0..100 into the batch 0..100 band so a
+          // 50%-complete item 2 of 4 reads as ((1 * 100) + 50) / 4 = 37.5%.
+          const overall = ((i * 100) + pct) / total;
+          opts.onProgress(Math.round(overall), i);
+        },
+      });
+      if (r.cancelled) {
+        return { done, failed, cancelled: true, lastPublicPath, errors };
+      }
+      done += 1;
+      if (r.publicPath) lastPublicPath = r.publicPath;
+    } catch (e) {
+      failed += 1;
+      errors.push({
+        title: entry.title,
+        message: e instanceof Error ? e.message : String(e),
+      });
+      // Keep going — a single bad item shouldn't kill a 30-track playlist.
+    }
+  }
+  return { done, failed, cancelled: false, lastPublicPath, errors };
+}
+
+// Batch-level cancel: cancel the active item AND skip the rest.
+let cancelRequested = false;
+export function cancelBatch(): void {
+  cancelRequested = true;
+  cancelActive();
 }
