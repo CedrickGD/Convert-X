@@ -50,6 +50,16 @@ export async function probeUrl(
 ): Promise<ProbeResult> {
   const site = Downloader.detectSite(url);
   const raw = await Downloader.probe(url, opts);
+
+  // The Kotlin probe surfaces yt-dlp's own error (e.g. "Unsupported URL",
+  // missing extractor) via raw.error. Treat it as a thrown error so the
+  // UI shows a real message instead of a phantom "Untitled" entry.
+  if (typeof (raw as Record<string, unknown>).error === 'string') {
+    const stderr = (raw as Record<string, unknown>).stderr as string | undefined;
+    const err = (raw as Record<string, unknown>).error as string;
+    throw new Error(stderr ? `${err}\n${stderr.split('\n').slice(-3).join('\n')}` : err);
+  }
+
   const isPlaylist = Boolean(raw.isPlaylist);
   const entries: DownloadEntry[] = [];
 
@@ -77,6 +87,9 @@ export async function probeUrl(
     });
   }
 
+  if (entries.length === 0) {
+    throw new Error('yt-dlp returned no playable items for this URL.');
+  }
   return { site, isPlaylist, entries };
 }
 

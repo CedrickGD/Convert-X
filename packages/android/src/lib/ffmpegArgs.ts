@@ -36,8 +36,15 @@ export type FfmpegBuildOpts = {
 
 export function buildArgs(opts: FfmpegBuildOpts): string[] {
   const { target, inputPath, outputPath } = opts;
-  const base = ['-y', '-i', inputPath, '-hide_banner'];
 
+  // GIF target is special: needs a palette-aware encoder regardless of
+  // whether the source is image or video. Single-pass with the bundled
+  // palette filter — quality is good enough for the common case.
+  if (target.key === 'gif') {
+    return buildGifArgs(opts);
+  }
+
+  const base = ['-y', '-i', inputPath, '-hide_banner'];
   if (target.category === 'video') {
     return [...base, ...buildVideoArgs(opts), outputPath];
   }
@@ -46,6 +53,22 @@ export function buildArgs(opts: FfmpegBuildOpts): string[] {
   }
   // Image-via-FFmpeg (BMP/TIFF/etc) — Phase 9 polish.
   return [...base, ...buildImageArgs(opts), outputPath];
+}
+
+function buildGifArgs(opts: FfmpegBuildOpts): string[] {
+  const { inputPath, outputPath, resizeWidth } = opts;
+  // Sensible defaults — desktop's GifSettings exposes these as user knobs;
+  // Phase 7b ports the full panel.
+  const width = resizeWidth ?? 480;
+  const fps = 15;
+  // Single-pass with split+palettegen/paletteuse — best quality without
+  // a second invocation. `split` duplicates the stream so the palettegen
+  // can see the whole input.
+  const filter =
+    `fps=${fps},scale=${width}:-2:flags=lanczos,split[s0][s1];` +
+    `[s0]palettegen=max_colors=256:reserve_transparent=0[p];` +
+    `[s1][p]paletteuse=dither=sierra2_4a`;
+  return ['-y', '-i', inputPath, '-hide_banner', '-vf', filter, '-loop', '0', outputPath];
 }
 
 function buildVideoArgs(opts: FfmpegBuildOpts): string[] {

@@ -197,6 +197,18 @@ class ConvertXDownloaderModule : Module() {
     } catch (_: Throwable) {
     }
     initialized = true
+
+    // Async self-update: yt-dlp's extractors (esp. for YouTube + music.youtube.com)
+    // change weekly. The library ships a months-old yt-dlp by default. Kick off
+    // an update in the background — current downloads use the bundled binary,
+    // next ones get the latest.
+    scope.launch {
+      try {
+        YoutubeDL.getInstance().updateYoutubeDL(ctx)
+      } catch (_: Throwable) {
+        // No network / GitHub rate-limited / etc — fine, we still have the bundled binary.
+      }
+    }
   }
 
   private fun applyAuthOpts(request: YoutubeDLRequest, opts: Map<String, Any?>?) {

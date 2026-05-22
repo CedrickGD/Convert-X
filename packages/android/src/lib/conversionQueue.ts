@@ -83,9 +83,13 @@ export async function runConvertSession(opts: ConvertRunOpts): Promise<void> {
       opts.onFileStart(file.id);
 
       try {
-        if (file.mediaType === 'image' && fmt.category === 'image') {
-          // expo-image-manipulator path (no FFmpeg). No real progress here —
-          // emit a halfway tick so the bar moves.
+        // expo-image-manipulator handles PNG / JPG / WebP only. Everything
+        // else — including GIF (animated palette work) — goes through FFmpeg.
+        const useManipulator =
+          file.mediaType === 'image' &&
+          fmt.category === 'image' &&
+          (fmt.key === 'png' || fmt.key === 'jpg' || fmt.key === 'webp');
+        if (useManipulator) {
           opts.onFileProgress(file.id, 25);
           const result = await convertImage({
             sourceUri: file.uri,
@@ -97,8 +101,7 @@ export async function runConvertSession(opts: ConvertRunOpts): Promise<void> {
           if (isCancelled(opts.sessionId)) break;
           opts.onFileDone(file.id, result.outputUri, result.outputName, result.bytes);
         } else {
-          // FFmpeg path — applies to video, audio, and any image format the
-          // manipulator can't handle (BMP/TIFF/etc).
+          // FFmpeg path — video, audio, GIF, BMP/TIFF, etc.
           await runFfmpegFile({ ...opts, file, fmt });
           if (isCancelled(opts.sessionId)) break;
         }

@@ -27,7 +27,7 @@ export const FORMATS: readonly FormatDef[] = [
   { key: 'webp', label: 'WebP', ext: 'webp', mime: 'image/webp', category: 'image', accepts: ['image'],          supported: true  },
   { key: 'bmp',  label: 'BMP',  ext: 'bmp',  mime: 'image/bmp',  category: 'image', accepts: ['image'],          supported: false },
   { key: 'tiff', label: 'TIFF', ext: 'tiff', mime: 'image/tiff', category: 'image', accepts: ['image'],          supported: false },
-  { key: 'gif',  label: 'GIF',  ext: 'gif',  mime: 'image/gif',  category: 'image', accepts: ['image', 'video'], supported: false },
+  { key: 'gif',  label: 'GIF',  ext: 'gif',  mime: 'image/gif',  category: 'image', accepts: ['image', 'video'], supported: true  },
 
   // ── Video (Phase 4 / FFmpeg) ──────────────────────────────────────────
   { key: 'mp4',  label: 'MP4',  ext: 'mp4',  mime: 'video/mp4',       category: 'video', accepts: ['video'], supported: true },
