@@ -106,7 +106,12 @@ class ConvertXDownloaderModule : Module() {
           val request = YoutubeDLRequest(url)
           request.addOption("--dump-json")
           request.addOption("--no-warnings")
-          request.addOption("--flat-playlist")
+          // No --flat-playlist: it collapses Instagram / TikTok / Reddit
+          // carousels into a single entry (or nothing at all), defeating
+          // the whole "pick image 6 of 10" UX. For multi-thousand-item
+          // YouTube playlists this means a slower probe, but those are
+          // an outlier — let yt-dlp expand each post and we'll trim the
+          // entry list in the UI if needed.
           applyAuthOpts(request, opts)
           // Use raw --dump-json + parse stdout ourselves. The library's
           // typed VideoInfo class field names are not stable across the
