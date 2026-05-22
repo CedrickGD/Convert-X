@@ -77,6 +77,10 @@ export function mediaTypeFromName(name: string): MediaType {
  * when the user adds a file — they can still pick a different format,
  * but the picker no longer starts empty.
  *
+ * Skips formats marked unsupported so the auto-pick never lands on a
+ * grey chip (e.g. an .mp3 source falls through to m4a rather than
+ * trapping the user on a disabled target).
+ *
  * Falls back to the category's canonical lossless-ish format if the
  * extension itself is unknown but the media type is detectable (e.g.
  * "image.heic" → "png", "clip.mkv" → "mp4").
@@ -84,17 +88,19 @@ export function mediaTypeFromName(name: string): MediaType {
 export function formatKeyFromName(name: string): string | null {
   const ext = name.split('.').pop()?.toLowerCase() ?? '';
   const exact = FORMATS.find((x) => x.ext === ext);
-  if (exact) return exact.key;
+  if (exact && exact.supported) return exact.key;
   // Common aliases we still want to map to a known target.
   if (ext === 'jpeg') return 'jpg';
   if (ext === 'tif') return 'tiff';
   if (ext === 'm4v' || ext === '3gp') return 'mp4';
   if (ext === 'mka' || ext === 'oga') return 'm4a';
-  // Last resort: pick the safest default for the detected media type.
+  // Last resort: pick the safest supported default for the detected
+  // media type. MP3 isn't here because it's currently unsupported (see
+  // top of file) — audio sources default to M4A instead.
   const cat = mediaTypeFromName(name);
   if (cat === 'image') return 'png';
   if (cat === 'video') return 'mp4';
-  if (cat === 'audio') return 'mp3';
+  if (cat === 'audio') return 'm4a';
   return null;
 }
 

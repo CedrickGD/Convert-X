@@ -174,10 +174,9 @@ function buildVideoArgs(opts: FfmpegBuildOpts): string[] {
   } else {
     // Choose audio codec per container — all built-in in ffmpeg-kit-main-min
     // (no external lame / libopus needed). AAC is the default since it's
-    // the broadest codec compatibility on Android.
+    // the broadest codec compatibility on Android; WMA pairs with WMV
+    // because legacy players expect that combo.
     const audioCodec =
-      target.key === 'avi'  ? ['-c:a', 'mp2', '-b:a', '192k'] :
-      target.key === 'flv'  ? ['-c:a', 'aac', '-b:a', '160k'] :
       target.key === 'wmv'  ? ['-c:a', 'wmav2', '-b:a', '160k'] :
                               ['-c:a', 'aac', '-b:a', '160k'];
     args.push(...audioCodec);
