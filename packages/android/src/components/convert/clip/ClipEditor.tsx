@@ -39,12 +39,8 @@ export function ClipEditor({ file, settings, isGifTarget, onChange }: Props) {
   const handleLoad = useCallback(
     (meta: { duration: number; width: number; height: number }) => {
       setDuration(meta.duration);
-      // Initialize trim window if unset.
-      if (settings.trimStart == null && settings.trimEnd == null && meta.duration > 0) {
-        onChange({ trimStart: null, trimEnd: null }); // explicit null keeps "full clip" semantics
-      }
     },
-    [onChange, settings.trimStart, settings.trimEnd]
+    []
   );
 
   const handleTime = useCallback((t: number) => {

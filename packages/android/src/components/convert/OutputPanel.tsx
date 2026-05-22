@@ -84,9 +84,19 @@ export function OutputPanel({ files, actionLabel = 'converted', onStartOver }: P
       </Text>
 
       {errors.length > 0 ? (
-        <Text style={[styles.errors, { color: theme.status.error }]}>
-          {errors.length} file{errors.length !== 1 ? 's' : ''} failed
-        </Text>
+        <>
+          <Text style={[styles.errors, { color: theme.status.error }]}>
+            {errors.length} file{errors.length !== 1 ? 's' : ''} failed
+          </Text>
+          {errors[0]?.error ? (
+            <Text
+              style={[styles.errorDetail, { color: theme.text.muted }]}
+              numberOfLines={3}
+            >
+              {errors[0].error}
+            </Text>
+          ) : null}
+        </>
       ) : null}
 
       {done.length > 0 ? (
@@ -188,6 +198,12 @@ const styles = StyleSheet.create({
   },
   title: { ...typography.titleAlt },
   errors: { ...typography.body },
+  errorDetail: {
+    ...typography.caption,
+    textAlign: 'center',
+    marginTop: spacing.xs,
+    paddingHorizontal: spacing.lg,
+  },
   totalSize: { ...typography.caption },
   list: {
     alignSelf: 'stretch',
