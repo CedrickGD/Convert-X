@@ -14,6 +14,7 @@ import * as FileSystem from 'expo-file-system/legacy';
 import * as MediaLibrary from 'expo-media-library';
 
 import * as Downloader from '../../modules/convert-x-downloader/src';
+import { isInstagramPostUrl, probeInstagramAnonymous } from './instagramScraper';
 
 const YTDLP_FIRST_LAUNCH_KEY = '@convertx/ytdlp-first-launch-updated';
 
@@ -23,6 +24,11 @@ export type DownloadEntry = {
   thumbnail?: string;
   duration?: number;
   webpageUrl: string;
+  /** Direct CDN URL (set by the anonymous Instagram scraper). When
+   *  present, downloadEntry bypasses yt-dlp and fetches this URL
+   *  directly — necessary because Instagram's API is locked but its
+   *  public CDN media URLs are not. */
+  directUrl?: string;
 };
 
 export type ProbeResult = {
@@ -87,6 +93,19 @@ export async function probeUrl(
     spotifyClientSecret?: string;
   }
 ): Promise<ProbeResult> {
+  // Anonymous Instagram path. Hits the public embed endpoint that
+  // snapinsta.to and similar downloaders use — no auth required for
+  // public posts. Carousels resolve all children. On failure (private
+  // post, embed locked) we fall through to the yt-dlp path which will
+  // use stored cookies if the user has logged in.
+  if (isInstagramPostUrl(url) && !opts?.cookies) {
+    try {
+      return await probeInstagramAnonymous(url);
+    } catch {
+      // Fall through to yt-dlp.
+    }
+  }
+
   const site = Downloader.detectSite(url);
   const raw = await Downloader.probe(url, opts);
 
@@ -232,6 +251,21 @@ export async function downloadEntry(opts: {
   // characters that break the filesystem (slashes in titles, etc.).
   const outputTemplate = `${outDir.replace(/^file:\/\//, '')}/%(title)s.%(ext)s`;
 
+  // Direct-URL fast path. The anonymous Instagram scraper resolves
+  // each carousel child to a CDN URL — we can fetch those over plain
+  // HTTPS without involving yt-dlp at all. Saves a Python + yt-dlp
+  // round trip and works for posts that yt-dlp can't see anonymously.
+  if (opts.entry.directUrl) {
+    return downloadDirect({
+      sessionId: opts.sessionId,
+      entry: opts.entry,
+      directUrl: opts.entry.directUrl,
+      outDir: outDir.replace(/^file:\/\//, ''),
+      onProgress: opts.onProgress,
+      saveToGallery: opts.saveToGallery !== false,
+    });
+  }
+
   const sub = Downloader.addProgressListener((evt) => {
     if (evt.sessionId === opts.sessionId) opts.onProgress(Math.round(evt.percent));
   });
@@ -372,4 +406,74 @@ let cancelRequested = false;
 export function cancelBatch(): void {
   cancelRequested = true;
   cancelActive();
+}
+
+/**
+ * Fetch a media URL directly (used for Instagram CDN URLs from the
+ * anonymous scraper) and run it through the same MediaLibrary
+ * promotion flow as a yt-dlp download.
+ */
+async function downloadDirect(opts: {
+  sessionId: string;
+  entry: DownloadEntry;
+  directUrl: string;
+  outDir: string;
+  onProgress: (pct: number) => void;
+  saveToGallery: boolean;
+}): Promise<DownloadResult> {
+  // Pick an extension by looking at the URL — Instagram CDN URLs
+  // always end with `.jpg` / `.mp4` / `.webp` before the query string.
+  const urlPath = opts.directUrl.split('?')[0];
+  const extMatch = urlPath.match(/\.([a-zA-Z0-9]{2,5})$/);
+  const ext = (extMatch?.[1] ?? 'bin').toLowerCase();
+  const safeName = opts.entry.title.replace(/[^A-Za-z0-9_\-]/g, '_');
+  const outputPath = `${opts.outDir}/${safeName}.${ext}`;
+  const fileUri = `file://${outputPath}`;
+
+  inflight = {
+    sessionId: opts.sessionId,
+    cancel: () => {
+      // expo-file-system's downloadAsync doesn't expose a cancel,
+      // so cancellation only takes effect between items in the batch.
+    },
+  };
+
+  try {
+    const dl = FileSystem.createDownloadResumable(
+      opts.directUrl,
+      fileUri,
+      {},
+      (p) => {
+        const total = p.totalBytesExpectedToWrite || 1;
+        opts.onProgress(Math.round((p.totalBytesWritten / total) * 100));
+      }
+    );
+    const result = await dl.downloadAsync();
+    if (!result?.uri) {
+      throw new Error('Direct download produced no file.');
+    }
+
+    let publicPath: string | undefined;
+    if (opts.saveToGallery) {
+      try {
+        const granted = await ensureMediaPermission();
+        if (granted) {
+          const asset = await MediaLibrary.createAssetAsync(result.uri);
+          const album = await MediaLibrary.getAlbumAsync('Convert-X');
+          if (album == null) {
+            await MediaLibrary.createAlbumAsync('Convert-X', asset, false);
+          } else {
+            await MediaLibrary.addAssetsToAlbumAsync([asset], album, false);
+          }
+          publicPath = asset.uri;
+        }
+      } catch {
+        // Best-effort — keep the app-private file as the fallback.
+      }
+    }
+
+    return { outputPath, publicPath };
+  } finally {
+    inflight = null;
+  }
 }
