@@ -46,10 +46,24 @@ repositories {
 }
 
 dependencies {
-  // JamaisMagic's 16KB-aligned full-gpl fork of arthenica/ffmpeg-kit
-  // (archived April 2025). Built with NDK r27d, published Feb 2026 on
-  // Maven Central. Includes x264 / x265 / libvpx / opus / vorbis / lame.
-  // GPL-3.0 — Convert-X is open source so this is fine.
-  // Package namespace preserved as `com.arthenica.ffmpegkit.*`.
-  implementation 'io.github.jamaismagic.ffmpeg:ffmpeg-kit-main-full-gpl-16kb:6.1.4'
+  // JamaisMagic's 16KB-aligned `main-min` fork of arthenica/ffmpeg-kit
+  // (archived April 2025). Built with NDK r27d on Maven Central.
+  //
+  // We deliberately use `main-min` instead of `main-full-gpl` because the
+  // full/full-gpl libavdevice.so in this fork has unresolved
+  // `PLATFORM_hid_*` symbols (libhidapi was --enable'd at FFmpeg-configure
+  // time but the static lib was not bundled). On real 16KB-page devices
+  // (Samsung S26, Pixel 9+) System.loadLibrary("ffmpegkit") fails with
+  // `dlopen: cannot locate symbol "PLATFORM_hid_write"` and every
+  // FFmpegKit class is left poisoned.
+  //
+  // What `main-min` ships:
+  //   - h264/hevc/av1_mediacodec encoder + decoder (Android hardware codecs)
+  //   - native FFmpeg encoders: aac, flac, opus, vorbis, wmav2, pcm,
+  //     mpeg4, msmpeg4v3, gif, mjpeg, png, tiff, bmp
+  // What's NOT in `main-min`:
+  //   - libx264 / libx265 — substituted with h264_mediacodec / hevc_mediacodec
+  //   - libmp3lame — MP3 output is no longer supported (use M4A/AAC)
+  //   - libvpx-vp9 — WebM video output is no longer supported (use MP4)
+  implementation 'io.github.jamaismagic.ffmpeg:ffmpeg-kit-main-min-16kb:6.1.4'
 }

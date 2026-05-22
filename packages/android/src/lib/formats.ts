@@ -33,7 +33,10 @@ export const FORMATS: readonly FormatDef[] = [
 
   // ── Video (FFmpeg) ────────────────────────────────────────────────────
   { key: 'mp4',  label: 'MP4',  ext: 'mp4',  mime: 'video/mp4',         category: 'video', accepts: ['video'], supported: true },
-  { key: 'webm', label: 'WebM', ext: 'webm', mime: 'video/webm',        category: 'video', accepts: ['video'], supported: true },
+  // WebM/VP9 needs libvpx which isn't in the 16KB-aligned FFmpeg-kit min
+  // build — see modules/convert-x-ffmpeg/android/build.gradle. Grey out
+  // until we find a working full-codec 16KB fork or build NDK from source.
+  { key: 'webm', label: 'WebM', ext: 'webm', mime: 'video/webm',        category: 'video', accepts: ['video'], supported: false },
   { key: 'mov',  label: 'MOV',  ext: 'mov',  mime: 'video/quicktime',   category: 'video', accepts: ['video'], supported: true },
   { key: 'mkv',  label: 'MKV',  ext: 'mkv',  mime: 'video/x-matroska',  category: 'video', accepts: ['video'], supported: true },
   { key: 'avi',  label: 'AVI',  ext: 'avi',  mime: 'video/x-msvideo',   category: 'video', accepts: ['video'], supported: true },
@@ -42,7 +45,9 @@ export const FORMATS: readonly FormatDef[] = [
   { key: 'ts',   label: 'TS',   ext: 'ts',   mime: 'video/mp2t',        category: 'video', accepts: ['video'], supported: true },
 
   // ── Audio (FFmpeg) ────────────────────────────────────────────────────
-  { key: 'mp3',  label: 'MP3',  ext: 'mp3',  mime: 'audio/mpeg',  category: 'audio', accepts: ['audio', 'video'], supported: true },
+  // MP3 needs libmp3lame which isn't in the 16KB FFmpeg-kit min build.
+  // Recommend M4A/AAC for users who want a lossy compressed audio output.
+  { key: 'mp3',  label: 'MP3',  ext: 'mp3',  mime: 'audio/mpeg',  category: 'audio', accepts: ['audio', 'video'], supported: false },
   { key: 'wav',  label: 'WAV',  ext: 'wav',  mime: 'audio/wav',   category: 'audio', accepts: ['audio', 'video'], supported: true },
   { key: 'flac', label: 'FLAC', ext: 'flac', mime: 'audio/flac',  category: 'audio', accepts: ['audio', 'video'], supported: true },
   { key: 'ogg',  label: 'OGG',  ext: 'ogg',  mime: 'audio/ogg',   category: 'audio', accepts: ['audio', 'video'], supported: true },

@@ -116,16 +116,22 @@ function buildVideoArgs(opts: FfmpegBuildOpts): string[] {
   const { target, quality } = opts;
   const args: string[] = [];
 
+  // Hardware H.264 bitrate ladder. h264_mediacodec uses -b:v, not -crf
+  // (mediacodec does NOT support rate-distortion-optimized quality knobs).
+  // We map quality 0..100 to a sensible bitrate band for 1080p sources.
+  // Lower bitrate at quality=0 keeps small clips small; quality=100
+  // produces ~12 Mbps which is visually transparent for most footage.
+  const h264Bitrate = `${Math.round(2_000_000 + (quality / 100) * 10_000_000)}`;
+
   // Video codec
   switch (target.key) {
     case 'mp4':
     case 'mov':
     case 'mkv':
-      args.push('-c:v', 'libx264', '-preset', 'fast', '-crf', String(videoCrf(quality)));
-      args.push('-pix_fmt', 'yuv420p');
-      break;
-    case 'webm':
-      args.push('-c:v', 'libvpx-vp9', '-b:v', '0', '-crf', String(videoCrf(quality)));
+      // h264_mediacodec is Android's hardware H.264 encoder — built into
+      // FFmpeg via the mediacodec wrapper, no libx264 needed. Faster than
+      // libx264 (it's hardware) and produces good quality.
+      args.push('-c:v', 'h264_mediacodec', '-b:v', h264Bitrate);
       break;
     case 'avi':
       args.push('-c:v', 'mpeg4', '-q:v', String(31 - Math.round(quality / 5)));
@@ -137,12 +143,11 @@ function buildVideoArgs(opts: FfmpegBuildOpts): string[] {
       args.push('-c:v', 'msmpeg4v3', '-q:v', String(31 - Math.round(quality / 5)));
       break;
     case 'ts':
-      args.push('-c:v', 'libx264', '-preset', 'fast', '-crf', String(videoCrf(quality)));
-      args.push('-pix_fmt', 'yuv420p');
+      args.push('-c:v', 'h264_mediacodec', '-b:v', h264Bitrate);
       args.push('-f', 'mpegts');
       break;
     default:
-      args.push('-c:v', 'libx264', '-preset', 'fast', '-crf', String(videoCrf(quality)));
+      args.push('-c:v', 'h264_mediacodec', '-b:v', h264Bitrate);
   }
 
   // Video filters — resize, crop, rotate, flip — composed into one -vf chain.
@@ -167,11 +172,12 @@ function buildVideoArgs(opts: FfmpegBuildOpts): string[] {
   if (opts.stripAudio) {
     args.push('-an');
   } else {
-    // Choose audio codec per container.
+    // Choose audio codec per container — all built-in in ffmpeg-kit-main-min
+    // (no external lame / libopus needed). AAC is the default since it's
+    // the broadest codec compatibility on Android.
     const audioCodec =
-      target.key === 'webm' ? ['-c:a', 'libopus', '-b:a', '128k'] :
-      target.key === 'avi'  ? ['-c:a', 'libmp3lame', '-b:a', '192k'] :
-      target.key === 'flv'  ? ['-c:a', 'libmp3lame', '-b:a', '160k'] :
+      target.key === 'avi'  ? ['-c:a', 'mp2', '-b:a', '192k'] :
+      target.key === 'flv'  ? ['-c:a', 'aac', '-b:a', '160k'] :
       target.key === 'wmv'  ? ['-c:a', 'wmav2', '-b:a', '160k'] :
                               ['-c:a', 'aac', '-b:a', '160k'];
     args.push(...audioCodec);
@@ -242,15 +248,18 @@ function buildAudioArgs(opts: FfmpegBuildOpts): string[] {
 
   const br = `${audioBitrate(quality)}k`;
   switch (target.key) {
-    case 'mp3':  args.push('-c:a', 'libmp3lame', '-b:a', br); break;
+    // Built-in FFmpeg encoders only — main-min variant has no lame / libopus /
+    // libvorbis. The native encoders are present under the same codec names
+    // (no `lib` prefix) so we just swap.
     case 'wav':  args.push('-c:a', 'pcm_s16le'); break;
     case 'flac': args.push('-c:a', 'flac'); break;
-    case 'ogg':  args.push('-c:a', 'libvorbis', '-b:a', br); break;
-    case 'opus': args.push('-c:a', 'libopus', '-b:a', br); break;
+    case 'ogg':  args.push('-c:a', 'vorbis', '-strict', 'experimental', '-b:a', br); break;
+    case 'opus': args.push('-c:a', 'opus', '-strict', 'experimental', '-b:a', br); break;
     case 'm4a':  args.push('-c:a', 'aac', '-b:a', br); break;
     case 'aac':  args.push('-c:a', 'aac', '-b:a', br); break;
     case 'wma':  args.push('-c:a', 'wmav2', '-b:a', br); break;
-    default:     args.push('-c:a', 'libmp3lame', '-b:a', br);
+    // mp3 falls through to default — see formats.ts, MP3 is marked unsupported.
+    default:     args.push('-c:a', 'aac', '-b:a', br);
   }
 
   // Audio filters (speed + volume) apply on audio-only outputs too.
