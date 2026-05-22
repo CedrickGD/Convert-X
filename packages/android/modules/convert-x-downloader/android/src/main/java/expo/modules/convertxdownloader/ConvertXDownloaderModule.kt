@@ -33,6 +33,26 @@ class ConvertXDownloaderModule : Module() {
   @Volatile private var initialized = false
   private val scope = CoroutineScope(Dispatchers.IO)
 
+  /**
+   * Walk the Throwable cause chain and produce a one-line diagnostic.
+   * yausername's YoutubeDLException often surfaces only the top-level
+   * "failed to initialize" with the actual reason (libpython unpack
+   * failure, disk-full, missing native dep, …) buried in `cause`. Joining
+   * the chain gives users and bug reports the real explanation.
+   */
+  private fun describe(t: Throwable): String {
+    val parts = mutableListOf<String>()
+    var cur: Throwable? = t
+    var depth = 0
+    while (cur != null && depth < 4) {
+      val msg = cur.message?.takeIf { it.isNotBlank() } ?: "(no message)"
+      parts.add("${cur.javaClass.simpleName}: $msg")
+      cur = cur.cause
+      depth += 1
+    }
+    return parts.joinToString(" → ")
+  }
+
   override fun definition() = ModuleDefinition {
     Name("ConvertXDownloader")
     Events("onProgress", "onStage")
@@ -43,7 +63,7 @@ class ConvertXDownloaderModule : Module() {
           ensureInitializedSync()
           promise.resolve(null)
         } catch (e: Throwable) {
-          promise.reject(CodedException("INIT_FAILED", e.message ?: "youtubedl init error", e))
+          promise.reject(CodedException("INIT_FAILED", describe(e), e))
         }
       }
     }
@@ -85,7 +105,7 @@ class ConvertXDownloaderModule : Module() {
           }
           promise.resolve(result.toString())
         } catch (e: Throwable) {
-          promise.reject(CodedException("PROBE_FAILED", e.message ?: "yt-dlp probe error", e))
+          promise.reject(CodedException("PROBE_FAILED", describe(e), e))
         }
       }
     }
@@ -160,7 +180,7 @@ class ConvertXDownloaderModule : Module() {
           ) {
             promise.resolve(mapOf("cancelled" to true))
           } else {
-            promise.reject(CodedException("DOWNLOAD_FAILED", e.message ?: "yt-dlp download error", e))
+            promise.reject(CodedException("DOWNLOAD_FAILED", describe(e), e))
           }
         }
       }
