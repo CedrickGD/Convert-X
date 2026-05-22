@@ -15,7 +15,7 @@ import {
   ProgressBar,
   VideoEditControls,
 } from '../components/convert';
-import { MediaType, mediaTypeFromName } from '../lib/formats';
+import { MediaType, formatKeyFromName, mediaTypeFromName } from '../lib/formats';
 import { cancelSession, runConvertSession } from '../lib/conversionQueue';
 import { useConvert } from '../state';
 import { FileEntry } from '../state/types';
@@ -56,10 +56,16 @@ export function ConvertScreen() {
         progress: 0,
       }));
       convert.addFiles(entries);
+      // Pre-select target format = source format so the user can hit
+      // Convert without picking. They can still change it.
+      if (!state.settings.format && entries[0]) {
+        const guess = formatKeyFromName(entries[0].name);
+        if (guess) convert.updateSettings({ format: guess });
+      }
     } catch (e) {
       Alert.alert('Pick failed', e instanceof Error ? e.message : String(e));
     }
-  }, [convert]);
+  }, [convert, state.settings.format]);
 
   const handlePickFromGallery = useCallback(async () => {
     const perm = await ImagePicker.requestMediaLibraryPermissionsAsync();
@@ -89,7 +95,11 @@ export function ConvertScreen() {
       };
     });
     convert.addFiles(entries);
-  }, [convert]);
+    if (!state.settings.format && entries[0]) {
+      const guess = formatKeyFromName(entries[0].name);
+      if (guess) convert.updateSettings({ format: guess });
+    }
+  }, [convert, state.settings.format]);
 
   const handleStartConvert = useCallback(() => {
     const fmt = state.settings.format;

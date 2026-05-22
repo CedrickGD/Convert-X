@@ -178,7 +178,17 @@ async function runFfmpegFile(opts: ConvertRunOpts & { file: FileEntry; fmt: impo
     const result = await executeAsync(opts.sessionId, args, durationMs);
     if (isCancelled(opts.sessionId)) return;
     if (result.returnCode !== 0) {
-      opts.onFileError(file.id, `FFmpeg exited ${result.returnCode}`);
+      // Pull the last meaningful stderr lines so the result panel can show
+      // what FFmpeg actually complained about (codec not found, invalid
+      // input, write-permission denied, …) instead of just an exit code.
+      const tail = (result.logs ?? '')
+        .split(/\r?\n/)
+        .map((s) => s.trim())
+        .filter((s) => s.length > 0)
+        .slice(-3)
+        .join(' · ');
+      const detail = tail ? ` — ${tail}` : '';
+      opts.onFileError(file.id, `FFmpeg exited ${result.returnCode}${detail}`);
       return;
     }
     // Read output size for the result panel.

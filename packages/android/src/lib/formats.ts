@@ -66,6 +66,33 @@ export function mediaTypeFromName(name: string): MediaType {
   return f?.category ?? 'unknown';
 }
 
+/**
+ * Resolve a file's format key (the same string FORMATS use, e.g. "jpg")
+ * from its filename. Used to pre-select a sensible default target format
+ * when the user adds a file — they can still pick a different format,
+ * but the picker no longer starts empty.
+ *
+ * Falls back to the category's canonical lossless-ish format if the
+ * extension itself is unknown but the media type is detectable (e.g.
+ * "image.heic" → "png", "clip.mkv" → "mp4").
+ */
+export function formatKeyFromName(name: string): string | null {
+  const ext = name.split('.').pop()?.toLowerCase() ?? '';
+  const exact = FORMATS.find((x) => x.ext === ext);
+  if (exact) return exact.key;
+  // Common aliases we still want to map to a known target.
+  if (ext === 'jpeg') return 'jpg';
+  if (ext === 'tif') return 'tiff';
+  if (ext === 'm4v' || ext === '3gp') return 'mp4';
+  if (ext === 'mka' || ext === 'oga') return 'm4a';
+  // Last resort: pick the safest default for the detected media type.
+  const cat = mediaTypeFromName(name);
+  if (cat === 'image') return 'png';
+  if (cat === 'video') return 'mp4';
+  if (cat === 'audio') return 'mp3';
+  return null;
+}
+
 export function formatsFor(input: MediaType): FormatDef[] {
   return FORMATS.filter((f) => f.accepts.includes(input));
 }
