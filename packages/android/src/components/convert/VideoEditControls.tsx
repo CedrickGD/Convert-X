@@ -8,6 +8,9 @@ import { radius, spacing, typography, useTheme } from '../../theme';
 type Props = {
   settings: ConvertSettings;
   onUpdate: (patch: Partial<ConvertSettings>) => void;
+  /** True when target format has no audio track (e.g. GIF). Forces the
+   *  Sound toggle to a non-interactive "Muted (GIF)" state. */
+  audioForcedOff?: boolean;
 };
 
 const SPEED_PRESETS = [0.5, 1, 1.5, 2];
@@ -20,8 +23,9 @@ const VOLUME_PRESETS = [0, 50, 100, 150, 200];
  * The full ClipEditor (timeline trim + crop overlay + media preview) lands
  * in v0.5 — see `.claude/clip-editor-plan.md`.
  */
-export function VideoEditControls({ settings, onUpdate }: Props) {
+export function VideoEditControls({ settings, onUpdate, audioForcedOff = false }: Props) {
   const { theme } = useTheme();
+  const audioStripped = settings.stripAudio || audioForcedOff;
 
   const rotateNext = () => {
     const next: 0 | 90 | 180 | 270 =
@@ -45,23 +49,32 @@ export function VideoEditControls({ settings, onUpdate }: Props) {
         <View style={{ flex: 1 }}>
           <Text style={[styles.fieldTitle, { color: theme.text.primary }]}>Sound</Text>
           <Text style={[styles.fieldSub, { color: theme.text.muted }]}>
-            {settings.stripAudio ? 'Removed from output' : 'Kept in output'}
+            {audioForcedOff
+              ? 'GIF has no audio'
+              : settings.stripAudio
+              ? 'Removed from output'
+              : 'Kept in output'}
           </Text>
         </View>
         <Pressable
-          onPress={() => onUpdate({ stripAudio: !settings.stripAudio })}
+          onPress={
+            audioForcedOff
+              ? undefined
+              : () => onUpdate({ stripAudio: !settings.stripAudio })
+          }
+          disabled={audioForcedOff}
           style={({ pressed }) => [
             styles.audioBtn,
             {
-              backgroundColor: settings.stripAudio
+              backgroundColor: audioStripped
                 ? theme.status.errorDim
                 : theme.accent.subtle,
-              borderColor: settings.stripAudio ? theme.status.error : theme.accent.dim,
-              opacity: pressed ? 0.7 : 1,
+              borderColor: audioStripped ? theme.status.error : theme.accent.dim,
+              opacity: audioForcedOff ? 0.6 : pressed ? 0.7 : 1,
             },
           ]}
         >
-          {settings.stripAudio ? (
+          {audioStripped ? (
             <VolumeX size={18} strokeWidth={2} color={theme.status.error} />
           ) : (
             <Volume2 size={18} strokeWidth={2} color={theme.accent.primary} />
@@ -69,10 +82,10 @@ export function VideoEditControls({ settings, onUpdate }: Props) {
           <Text
             style={[
               styles.audioBtnText,
-              { color: settings.stripAudio ? theme.status.error : theme.accent.primary },
+              { color: audioStripped ? theme.status.error : theme.accent.primary },
             ]}
           >
-            {settings.stripAudio ? 'Muted' : 'On'}
+            {audioStripped ? 'Muted' : 'On'}
           </Text>
         </Pressable>
       </View>
@@ -97,7 +110,7 @@ export function VideoEditControls({ settings, onUpdate }: Props) {
       </View>
 
       {/* Volume (only meaningful if audio kept) */}
-      {!settings.stripAudio ? (
+      {!audioStripped ? (
         <View style={styles.section}>
           <Text style={[styles.subLabel, { color: theme.text.muted }]}>
             VOLUME · {settings.volume}%

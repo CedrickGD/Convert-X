@@ -225,7 +225,16 @@ export function ConvertScreen() {
           <FormatPicker
             sourceTypes={sourceTypes}
             selectedFormat={state.settings.format}
-            onSelect={(key) => convert.updateSettings({ format: key })}
+            onSelect={(key) => {
+              // GIF has no audio track — auto-strip so the Sound toggle
+              // and the buildArgs path both reflect that. We restore the
+              // previous stripAudio choice if the user switches away.
+              const patch: Partial<typeof state.settings> =
+                key === 'gif'
+                  ? { format: key, stripAudio: true }
+                  : { format: key };
+              convert.updateSettings(patch);
+            }}
           />
 
           {/* Clip editor — preview + timeline trim — for video sources. */}
@@ -243,6 +252,7 @@ export function ConvertScreen() {
             <VideoEditControls
               settings={state.settings}
               onUpdate={(patch) => convert.updateSettings(patch)}
+              audioForcedOff={state.settings.format === 'gif'}
             />
           ) : null}
 

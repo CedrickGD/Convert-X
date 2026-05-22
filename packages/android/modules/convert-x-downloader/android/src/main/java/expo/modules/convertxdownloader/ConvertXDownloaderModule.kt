@@ -117,7 +117,7 @@ class ConvertXDownloaderModule : Module() {
           // python's zipimport rejects. Catch the specific error, wipe
           // the cache so the bundled zip gets re-extracted from the
           // `.zip.so` payloads in the APK, and retry once.
-          val response = try {
+          val response: com.yausername.youtubedl_android.YoutubeDLResponse = try {
             YoutubeDL.getInstance().execute(request)
           } catch (first: Throwable) {
             if (!looksCorrupted(first)) throw first
@@ -193,7 +193,12 @@ class ConvertXDownloaderModule : Module() {
           val processId = "convert-x-download-$sessionId"
           sessions[sessionId] = processId
 
-          val progressCb = com.yausername.youtubedl_android.DownloadProgressCallback { progress, eta, line ->
+          // execute() takes a Kotlin Function3<Float, Long, String?, Unit>
+          // (the SAM-style DownloadProgressCallback class isn't actually
+          // wired into the public API). Keep this as a plain lambda
+          // variable so both the initial attempt and the retry after
+          // resetCacheSync share the same progress wiring.
+          val progressCb: (Float, Long, String?) -> Unit = { progress, eta, line ->
             sendEvent(
               "onProgress",
               mapOf(

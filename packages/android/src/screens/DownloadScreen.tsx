@@ -1,8 +1,9 @@
 import * as Clipboard from 'expo-clipboard';
 import { Download as DownloadIcon, Link2 } from 'lucide-react-native';
-import React, { useCallback, useState } from 'react';
+import React, { useCallback, useEffect, useRef, useState } from 'react';
 import {
   Alert,
+  Image,
   Pressable,
   ScrollView,
   StyleSheet,
@@ -18,9 +19,10 @@ import {
   cancelActive,
   DownloadEntry,
   downloadEntry,
+  ensureMediaPermission,
   probeUrl,
 } from '../lib/downloadQueue';
-import { useDownload } from '../state';
+import { useDownload, useShared } from '../state';
 import { radius, spacing, typography, useTheme } from '../theme';
 
 const VIDEO_QUALITIES = ['best', '1080', '720', '480', '360'];
@@ -44,10 +46,31 @@ export function DownloadScreen() {
   const [probing, setProbing] = useState(false);
   const [entries, setEntries] = useState<DownloadEntry[]>([]);
   const [progress, setProgress] = useState(0);
-  const [done, setDone] = useState<{ outputPath?: string } | null>(null);
+  const [done, setDone] = useState<{ outputPath?: string; publicPath?: string } | null>(null);
   const [error, setError] = useState<string | null>(null);
 
   const site = detectSite(url);
+
+  // Clear the URL search when the user leaves the Download tab — unless a
+  // probe / download / completed session is sitting on screen. Lets them
+  // come back fresh after pasting a one-off link, but preserves real work.
+  const { activeMode } = useShared();
+  const prevModeRef = useRef(activeMode);
+  useEffect(() => {
+    const prev = prevModeRef.current;
+    prevModeRef.current = activeMode;
+    if (prev === 'download' && activeMode !== 'download') {
+      const inProgress =
+        state.view === 'converting' ||
+        entries.length > 0 ||
+        probing ||
+        done !== null;
+      if (!inProgress) {
+        setUrl('');
+        setError(null);
+      }
+    }
+  }, [activeMode, state.view, entries.length, probing, done]);
 
   const handlePaste = useCallback(async () => {
     const txt = await Clipboard.getStringAsync();
@@ -79,6 +102,26 @@ export function DownloadScreen() {
     setError(null);
     setDone(null);
     setProgress(0);
+
+    // Ask for permission up-front. If the user denies, we still download
+    // to app-private storage — but we tell them so they're not surprised
+    // when the file isn't in their Gallery afterwards.
+    const granted = await ensureMediaPermission();
+    if (!granted) {
+      const proceed = await new Promise<boolean>((resolve) => {
+        Alert.alert(
+          'Save to Gallery?',
+          'Without this permission, downloads stay inside Convert-X and won’t show up in your Gallery or Files app. Continue with a private download?',
+          [
+            { text: 'Cancel', style: 'cancel', onPress: () => resolve(false) },
+            { text: 'Continue', onPress: () => resolve(true) },
+          ],
+          { cancelable: true, onDismiss: () => resolve(false) }
+        );
+      });
+      if (!proceed) return;
+    }
+
     const sessionId = `dl-${Date.now()}`;
     download.dispatch({ type: 'beginSession', sessionId });
     try {
@@ -92,11 +135,12 @@ export function DownloadScreen() {
         spotifyClientSecret: state.settings.spotifyClientSecret || undefined,
         cookies: state.settings.cookiesPath || undefined,
         onProgress: setProgress,
+        saveToGallery: granted,
       });
       if (result.cancelled) {
         download.dispatch({ type: 'cancelSession' });
       } else {
-        setDone({ outputPath: result.outputPath });
+        setDone({ outputPath: result.outputPath, publicPath: result.publicPath });
         download.dispatch({ type: 'finishSession', sessionId });
       }
     } catch (e) {
@@ -273,17 +317,43 @@ export function DownloadScreen() {
             ]}
           >
             <Text style={[styles.cardLabel, { color: theme.text.muted }]}>
-              {entries.length > 1 ? `${entries.length} ITEMS` : 'ITEM'}
+              {entries.length > 1 ? `${entries.length} ITEMS` : 'PREVIEW'}
             </Text>
             {entries.slice(0, 5).map((e) => (
-              <View key={e.id} style={styles.entryRow}>
-                <View style={[styles.dot, { backgroundColor: theme.accent.primary }]} />
-                <Text
-                  numberOfLines={2}
-                  style={[styles.entryTitle, { color: theme.text.primary }]}
-                >
-                  {e.title}
-                </Text>
+              <View key={e.id} style={styles.previewRow}>
+                {e.thumbnail ? (
+                  <Image
+                    source={{ uri: e.thumbnail }}
+                    style={[
+                      styles.thumbnail,
+                      { backgroundColor: theme.bg.surfaceSunken, borderColor: theme.border.subtle },
+                    ]}
+                    resizeMode="cover"
+                  />
+                ) : (
+                  <View
+                    style={[
+                      styles.thumbnail,
+                      styles.thumbnailFallback,
+                      { backgroundColor: theme.bg.surfaceSunken, borderColor: theme.border.subtle },
+                    ]}
+                  >
+                    <Link2 size={20} strokeWidth={1.8} color={theme.text.muted} />
+                  </View>
+                )}
+                <View style={styles.previewBody}>
+                  <Text
+                    numberOfLines={2}
+                    style={[styles.previewTitle, { color: theme.text.primary }]}
+                  >
+                    {e.title}
+                  </Text>
+                  {e.duration ? (
+                    <Text style={[styles.previewMeta, { color: theme.text.muted }]}>
+                      {formatDuration(e.duration)}
+                    </Text>
+                  ) : null}
+                </View>
               </View>
             ))}
             {entries.length > 5 ? (
@@ -349,7 +419,9 @@ export function DownloadScreen() {
             </View>
             <Text style={[styles.doneTitle, { color: theme.text.primary }]}>Downloaded</Text>
             <Text style={[styles.doneSub, { color: theme.text.muted }]} numberOfLines={2}>
-              {done?.outputPath ?? ''}
+              {done?.publicPath
+                ? 'Saved to Gallery · Convert-X album'
+                : done?.outputPath ?? ''}
             </Text>
           </View>
           <View style={styles.actions}>
@@ -375,6 +447,16 @@ export function DownloadScreen() {
       ) : null}
     </ScrollView>
   );
+}
+
+/** Format a yt-dlp duration (seconds) into a short clock string. */
+function formatDuration(seconds: number): string {
+  const s = Math.max(0, Math.floor(seconds));
+  const h = Math.floor(s / 3600);
+  const m = Math.floor((s % 3600) / 60);
+  const sec = s % 60;
+  const pad = (n: number) => String(n).padStart(2, '0');
+  return h > 0 ? `${h}:${pad(m)}:${pad(sec)}` : `${m}:${pad(sec)}`;
 }
 
 function ToggleBtn({
@@ -529,6 +611,25 @@ const styles = StyleSheet.create({
   },
   ghostBtnText: { ...typography.body, fontWeight: '600' },
 
+  previewRow: {
+    flexDirection: 'row',
+    gap: spacing.md,
+    alignItems: 'center',
+    paddingVertical: spacing.xs,
+  },
+  thumbnail: {
+    width: 96,
+    height: 54,
+    borderRadius: radius.xs,
+    borderWidth: StyleSheet.hairlineWidth,
+  },
+  thumbnailFallback: {
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  previewBody: { flex: 1, gap: 2 },
+  previewTitle: { ...typography.body },
+  previewMeta: { ...typography.caption, fontVariant: ['tabular-nums'] },
   entryRow: {
     flexDirection: 'row',
     gap: spacing.md,

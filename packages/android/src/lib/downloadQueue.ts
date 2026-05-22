@@ -10,6 +10,7 @@
  */
 
 import * as FileSystem from 'expo-file-system/legacy';
+import * as MediaLibrary from 'expo-media-library';
 
 import * as Downloader from '../../modules/convert-x-downloader/src';
 
@@ -93,6 +94,33 @@ export async function probeUrl(
   return { site, isPlaylist, entries };
 }
 
+export type DownloadResult = {
+  outputPath?: string;
+  /** Public path (e.g. Movies/Convert-X) when the file was promoted to
+   *  the user's gallery via MediaStore. Falls back to outputPath when
+   *  the user denies the permission. */
+  publicPath?: string;
+  cancelled?: boolean;
+};
+
+/**
+ * Ask for MediaLibrary permission. Returns true if granted. Cached at
+ * module scope so we only ask once per session — Android remembers the
+ * decision across launches but checking is free.
+ */
+let mediaPermissionGranted: boolean | null = null;
+export async function ensureMediaPermission(): Promise<boolean> {
+  if (mediaPermissionGranted) return true;
+  const cur = await MediaLibrary.getPermissionsAsync();
+  if (cur.granted) {
+    mediaPermissionGranted = true;
+    return true;
+  }
+  const req = await MediaLibrary.requestPermissionsAsync();
+  mediaPermissionGranted = req.granted;
+  return req.granted;
+}
+
 export async function downloadEntry(opts: {
   sessionId: string;
   entry: DownloadEntry;
@@ -103,7 +131,12 @@ export async function downloadEntry(opts: {
   spotifyClientSecret?: string;
   cookies?: string;
   onProgress: (pct: number) => void;
-}): Promise<{ outputPath?: string; cancelled?: boolean }> {
+  /** When true, promote the finished file to the user's gallery via
+   *  MediaLibrary. When false, leave the file in app-private storage
+   *  only. Default true — most users want the download in their
+   *  Gallery / Files app. */
+  saveToGallery?: boolean;
+}): Promise<DownloadResult> {
   const outDir = `${FileSystem.documentDirectory}downloads`;
   await FileSystem.makeDirectoryAsync(outDir, { intermediates: true }).catch(() => {});
 
@@ -128,7 +161,34 @@ export async function downloadEntry(opts: {
       spotifyClientId: opts.spotifyClientId,
       spotifyClientSecret: opts.spotifyClientSecret,
     });
-    return result;
+
+    if (result.cancelled || !result.outputPath) return result;
+
+    // Promote to user's gallery via MediaStore. Without this the file
+    // sits in app-private storage where users can't easily find it.
+    let publicPath: string | undefined;
+    if (opts.saveToGallery !== false) {
+      try {
+        const granted = await ensureMediaPermission();
+        if (granted) {
+          const uri = result.outputPath.startsWith('file://')
+            ? result.outputPath
+            : `file://${result.outputPath}`;
+          const asset = await MediaLibrary.createAssetAsync(uri);
+          const album = await MediaLibrary.getAlbumAsync('Convert-X');
+          if (album == null) {
+            await MediaLibrary.createAlbumAsync('Convert-X', asset, false);
+          } else {
+            await MediaLibrary.addAssetsToAlbumAsync([asset], album, false);
+          }
+          publicPath = asset.uri;
+        }
+      } catch {
+        // Best-effort — keep the app-private file as the fallback.
+      }
+    }
+
+    return { ...result, publicPath };
   } finally {
     sub.remove();
     inflight = null;
