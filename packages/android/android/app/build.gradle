@@ -98,15 +98,17 @@ android {
         buildConfigField "String", "REACT_NATIVE_RELEASE_LEVEL", "\"${findProperty('reactNativeReleaseLevel') ?: 'stable'}\""
     }
 
-    // Split the FFmpeg-bearing release APK by ABI. Without this, every
-    // installable APK carries libffmpegkit.so for all 4 ABIs (~350 MB).
-    // arm64-v8a covers all modern phones (Pixel, S20+, etc), x86_64 for
-    // emulators, armeabi-v7a for older 32-bit devices.
+    // Split the FFmpeg-bearing release APK by ABI. arm64-v8a covers
+    // every modern phone (Pixel, S20+, etc). x86_64 and armeabi-v7a
+    // used to ride along for emulators / old 32-bit devices, but each
+    // adds ~10 min to CI per build (FFmpeg-kit ships per-arch native
+    // libs that have to be packaged separately). The S26 testbed and
+    // the actual user base are arm64-only, so we drop the others.
     splits {
         abi {
             enable true
             reset()
-            include 'arm64-v8a', 'armeabi-v7a', 'x86_64'
+            include 'arm64-v8a'
             universalApk false
         }
     }

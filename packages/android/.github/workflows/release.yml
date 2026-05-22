@@ -52,6 +52,20 @@ jobs:
           node-version: '20'
           cache: npm
 
+      # Persist Gradle's dependency cache + wrapper between runs. Without
+      # this each tag re-downloads ~500 MB of AndroidX/FFmpeg-kit/etc.
+      # which dominates the cold-build time. Key is bound to lockfile +
+      # gradle wrapper so version bumps invalidate cleanly.
+      - name: Cache Gradle
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.gradle/caches
+            ~/.gradle/wrapper
+          key: gradle-${{ runner.os }}-${{ hashFiles('android/gradle/wrapper/gradle-wrapper.properties', 'android/**/*.gradle', 'android/**/*.gradle.kts', 'package-lock.json') }}
+          restore-keys: |
+            gradle-${{ runner.os }}-
+
       - name: Install npm dependencies
         run: npm ci
 
@@ -104,10 +118,9 @@ jobs:
       - name: List generated APKs
         run: |
           ls -lh android/app/build/outputs/apk/release/
-          # Fail fast if any per-ABI APK is missing.
+          # Fail fast if the arm64 APK is missing — we only build that
+          # ABI now (see splits block in app/build.gradle).
           test -f android/app/build/outputs/apk/release/app-arm64-v8a-release.apk
-          test -f android/app/build/outputs/apk/release/app-armeabi-v7a-release.apk
-          test -f android/app/build/outputs/apk/release/app-x86_64-release.apk
 
       - name: Publish GitHub Release
         uses: softprops/action-gh-release@v2
