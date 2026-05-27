@@ -155,15 +155,18 @@ export const LIGHT_THEME: Theme = {
  * overrides the default emerald with their own. Shades and the on-accent text
  * color are derived so buttons/labels stay legible on any hue.
  */
-function buildAccent(base: string): Theme['accent'] {
-  const hover = lighten(base, 0.18);
-  const dim = darken(base, 0.16);
+function buildAccent(base: string, isDark: boolean): Theme['accent'] {
+  // Mirror the hand-tuned stock palettes per scheme: dark mode lightens for
+  // hover / darkens for dim; light mode does the inverse. Glow/subtle/border
+  // alphas also differ by scheme (see DARK_THEME vs LIGHT_THEME above).
+  const hover = isDark ? lighten(base, 0.18) : darken(base, 0.18);
+  const dim = isDark ? darken(base, 0.16) : lighten(base, 0.16);
   return {
     primary: base,
     hover,
     dim,
-    glow: rgba(base, 0.12),
-    subtle: rgba(base, 0.06),
+    glow: rgba(base, isDark ? 0.12 : 0.15),
+    subtle: rgba(base, isDark ? 0.06 : 0.05),
     onPrimary: readableOn(base),
     gradient: [base, hover],
     primarySoft: dim,
@@ -179,11 +182,11 @@ export function resolveTheme(isDark: boolean, accentColor?: string | null): Them
   const base = isDark ? DARK_THEME : LIGHT_THEME;
   const hex = normalizeHex(accentColor);
   if (!hex) return base;
-  const accent = buildAccent(hex);
+  const accent = buildAccent(hex, isDark);
   return {
     ...base,
     accent,
-    border: { ...base.border, accent: rgba(hex, 0.4) },
+    border: { ...base.border, accent: rgba(hex, isDark ? 0.4 : 0.35) },
     text: { ...base.text, onAccent: accent.onPrimary },
   };
 }

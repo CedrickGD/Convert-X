@@ -219,9 +219,21 @@ function AccentColorCard() {
   const { theme, settings, setAccentColor, previewAccentColor } = useTheme();
   const active = settings.accentColor;
   const isDefault = !active;
-  const [hexInput, setHexInput] = useState('');
+  const current = active ?? DEFAULT_ACCENT;
+
+  // The hex field doubles as a live readout: it mirrors the current color
+  // (updating as the picker is dragged) unless the user is editing it.
+  const [hexInput, setHexInput] = useState(current);
+  const [hexFocused, setHexFocused] = useState(false);
   const [hexError, setHexError] = useState(false);
   const livePreview = normalizeHex(hexInput);
+
+  useEffect(() => {
+    if (!hexFocused) {
+      setHexInput(current);
+      setHexError(false);
+    }
+  }, [current, hexFocused]);
 
   const applyHex = useCallback(() => {
     const norm = normalizeHex(hexInput);
@@ -231,14 +243,17 @@ function AccentColorCard() {
     }
     setHexError(false);
     setAccentColor(norm);
-    setHexInput('');
   }, [hexInput, setAccentColor]);
 
   const reset = useCallback(() => {
     setAccentColor(null);
-    setHexInput('');
     setHexError(false);
   }, [setAccentColor]);
+
+  // Recently-picked custom colors, minus any that are already preset swatches.
+  const recents = (settings.recentAccents ?? []).filter(
+    (c) => !PRESET_ACCENTS.some((p) => p.hex.toLowerCase() === c.toLowerCase())
+  );
 
   return (
     <View
@@ -266,6 +281,37 @@ function AccentColorCard() {
         onPreview={previewAccentColor}
         onCommit={setAccentColor}
       />
+
+      {recents.length > 0 ? (
+        <>
+          <Text style={[styles.cardLabel, { color: theme.text.muted, marginTop: spacing.xs }]}>
+            RECENT
+          </Text>
+          <View style={styles.swatchGrid}>
+            {recents.map((hex) => {
+              const selected = active?.toLowerCase() === hex.toLowerCase();
+              return (
+                <Pressable
+                  key={hex}
+                  accessibilityRole="button"
+                  accessibilityLabel={`Recent color ${hex}`}
+                  onPress={() => setAccentColor(hex)}
+                  style={({ pressed }) => [
+                    styles.swatch,
+                    {
+                      backgroundColor: hex,
+                      borderColor: selected ? theme.text.primary : 'transparent',
+                      opacity: pressed ? 0.8 : 1,
+                    },
+                  ]}
+                >
+                  {selected ? <Check size={16} strokeWidth={3} color={readableOn(hex)} /> : null}
+                </Pressable>
+              );
+            })}
+          </View>
+        </>
+      ) : null}
 
       <Text style={[styles.cardLabel, { color: theme.text.muted, marginTop: spacing.xs }]}>
         QUICK PICKS
@@ -319,7 +365,9 @@ function AccentColorCard() {
             setHexInput(t);
             if (hexError) setHexError(false);
           }}
-          placeholder="Custom hex · #7c3aed"
+          onFocus={() => setHexFocused(true)}
+          onBlur={() => setHexFocused(false)}
+          placeholder="#7c3aed"
           placeholderTextColor={theme.text.muted}
           autoCapitalize="none"
           autoCorrect={false}
