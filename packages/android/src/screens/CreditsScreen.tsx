@@ -1,6 +1,6 @@
 import * as DocumentPicker from 'expo-document-picker';
 import * as FileSystem from 'expo-file-system/legacy';
-import { Code, Cookie, Download, Heart, Package, RefreshCw, SwatchBook, Trash2 } from 'lucide-react-native';
+import { Check, Code, Cookie, Download, Heart, Package, RefreshCw, SwatchBook, Trash2 } from 'lucide-react-native';
 // Phase 2 used a static import for the version; the in-app updater (Phase 9)
 // uses the same source of truth.
 import pkg from '../../package.json';
@@ -14,6 +14,7 @@ import {
   ScrollView,
   StyleSheet,
   Text,
+  TextInput,
   View,
 } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
@@ -24,6 +25,8 @@ import { checkForUpdate, downloadAndInstall, UpdateInfo } from '../lib/updater';
 import { prettyBytes } from '../lib/formats';
 import { RootStackParamList } from '../navigation/types';
 import { radius, spacing, typography, useTheme } from '../theme';
+import { normalizeHex, readableOn } from '../lib/color';
+import { ColorPicker } from '../components/ColorPicker';
 
 type Nav = NativeStackNavigationProp<RootStackParamList>;
 
@@ -32,12 +35,29 @@ const REPO_ANDROID = 'https://github.com/CedrickGD/Convert-X-Android-APK';
 const AUTHOR = 'https://github.com/CedrickGD';
 
 const OSS = [
-  { name: 'FFmpeg', role: 'media engine (Phase 4)', url: 'https://ffmpeg.org' },
-  { name: 'yt-dlp', role: 'downloader (Phase 6)', url: 'https://github.com/yt-dlp/yt-dlp' },
+  { name: 'FFmpeg', role: 'media engine', url: 'https://ffmpeg.org' },
+  { name: 'yt-dlp', role: 'downloader', url: 'https://github.com/yt-dlp/yt-dlp' },
   { name: 'Expo', role: 'native module framework', url: 'https://expo.dev' },
   { name: 'React Native', role: 'UI runtime', url: 'https://reactnative.dev' },
   { name: 'lucide-react-native', role: 'iconography', url: 'https://lucide.dev' },
   { name: 'Inter', role: 'typeface (SIL OFL 1.1)', url: 'https://rsms.me/inter/' },
+];
+
+/** Default accent (dark-mode emerald). Selecting it resets to the stock look. */
+const DEFAULT_ACCENT = '#10b981';
+
+/** Curated accent presets shown as tappable swatches. */
+const PRESET_ACCENTS: { name: string; hex: string }[] = [
+  { name: 'Emerald', hex: DEFAULT_ACCENT },
+  { name: 'Blue', hex: '#3b82f6' },
+  { name: 'Indigo', hex: '#6366f1' },
+  { name: 'Violet', hex: '#8b5cf6' },
+  { name: 'Pink', hex: '#ec4899' },
+  { name: 'Rose', hex: '#f43f5e' },
+  { name: 'Orange', hex: '#f97316' },
+  { name: 'Amber', hex: '#f59e0b' },
+  { name: 'Cyan', hex: '#06b6d4' },
+  { name: 'Lime', hex: '#84cc16' },
 ];
 
 /**
@@ -97,6 +117,9 @@ export function CreditsScreen() {
           </View>
         </View>
       </View>
+
+      {/* Appearance — custom accent color, persisted */}
+      <AccentColorCard />
 
       {/* Updates — sideload self-update from GitHub Releases */}
       <UpdateCard />
@@ -184,6 +207,140 @@ export function CreditsScreen() {
         </Pressable>
       ) : null}
     </ScrollView>
+  );
+}
+
+// ── Accent color ────────────────────────────────────────────────────────
+// User-pickable highlight color. Persisted via ThemeProvider settings; the
+// whole app re-themes live because every component reads theme.accent.*.
+// Presets reset to the default emerald via setAccentColor(null); custom = any hex.
+
+function AccentColorCard() {
+  const { theme, settings, setAccentColor, previewAccentColor } = useTheme();
+  const active = settings.accentColor;
+  const isDefault = !active;
+  const [hexInput, setHexInput] = useState('');
+  const [hexError, setHexError] = useState(false);
+  const livePreview = normalizeHex(hexInput);
+
+  const applyHex = useCallback(() => {
+    const norm = normalizeHex(hexInput);
+    if (!norm) {
+      setHexError(true);
+      return;
+    }
+    setHexError(false);
+    setAccentColor(norm);
+    setHexInput('');
+  }, [hexInput, setAccentColor]);
+
+  const reset = useCallback(() => {
+    setAccentColor(null);
+    setHexInput('');
+    setHexError(false);
+  }, [setAccentColor]);
+
+  return (
+    <View
+      style={[
+        styles.card,
+        { backgroundColor: theme.bg.surface, borderColor: theme.border.subtle },
+      ]}
+    >
+      <View style={styles.cardHeaderRow}>
+        <Text style={[styles.cardLabel, { color: theme.text.muted }]}>ACCENT COLOR</Text>
+        {!isDefault ? (
+          <Pressable onPress={reset} hitSlop={8}>
+            <Text style={[styles.linkText, { color: theme.accent.primary }]}>Reset</Text>
+          </Pressable>
+        ) : null}
+      </View>
+      <Text style={[styles.rowSub, { color: theme.text.secondary }]}>
+        {isDefault
+          ? 'Default emerald — drag the picker, tap a swatch, or enter a hex.'
+          : `Custom · ${active}`}
+      </Text>
+
+      <ColorPicker
+        value={active ?? DEFAULT_ACCENT}
+        onPreview={previewAccentColor}
+        onCommit={setAccentColor}
+      />
+
+      <Text style={[styles.cardLabel, { color: theme.text.muted, marginTop: spacing.xs }]}>
+        QUICK PICKS
+      </Text>
+      <View style={styles.swatchGrid}>
+        {PRESET_ACCENTS.map((p) => {
+          const selected =
+            p.hex === DEFAULT_ACCENT ? isDefault || active === p.hex : active === p.hex;
+          return (
+            <Pressable
+              key={p.hex}
+              accessibilityRole="button"
+              accessibilityLabel={`${p.name} accent`}
+              onPress={() => setAccentColor(p.hex === DEFAULT_ACCENT ? null : p.hex)}
+              style={({ pressed }) => [
+                styles.swatch,
+                {
+                  backgroundColor: p.hex,
+                  borderColor: selected ? theme.text.primary : 'transparent',
+                  opacity: pressed ? 0.8 : 1,
+                },
+              ]}
+            >
+              {selected ? <Check size={16} strokeWidth={3} color={readableOn(p.hex)} /> : null}
+            </Pressable>
+          );
+        })}
+      </View>
+
+      <View
+        style={[
+          styles.hexRow,
+          {
+            backgroundColor: theme.bg.surfaceSunken,
+            borderColor: hexError ? theme.status.error : theme.border.subtle,
+          },
+        ]}
+      >
+        <View
+          style={[
+            styles.hexPreview,
+            {
+              backgroundColor: livePreview ?? active ?? DEFAULT_ACCENT,
+              borderColor: theme.border.subtle,
+            },
+          ]}
+        />
+        <TextInput
+          value={hexInput}
+          onChangeText={(t) => {
+            setHexInput(t);
+            if (hexError) setHexError(false);
+          }}
+          placeholder="Custom hex · #7c3aed"
+          placeholderTextColor={theme.text.muted}
+          autoCapitalize="none"
+          autoCorrect={false}
+          returnKeyType="done"
+          onSubmitEditing={applyHex}
+          style={[styles.hexInput, { color: theme.text.primary }]}
+        />
+        <Pressable
+          onPress={applyHex}
+          hitSlop={6}
+          style={({ pressed }) => ({ opacity: pressed ? 0.6 : 1 })}
+        >
+          <Text style={[styles.linkText, { color: theme.accent.primary }]}>Apply</Text>
+        </Pressable>
+      </View>
+      {hexError ? (
+        <Text style={[styles.rowSub, { color: theme.status.error }]}>
+          Enter a valid hex, e.g. #7c3aed.
+        </Text>
+      ) : null}
+    </View>
   );
 }
 
@@ -575,4 +732,35 @@ const styles = StyleSheet.create({
   rowTitle: { ...typography.bodyEmph },
   rowSub: { ...typography.caption, marginTop: 2 },
   divider: { height: StyleSheet.hairlineWidth },
+  cardHeaderRow: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+  },
+  linkText: { ...typography.caption, fontWeight: '600' },
+  swatchGrid: { flexDirection: 'row', flexWrap: 'wrap', gap: spacing.md },
+  swatch: {
+    width: 38,
+    height: 38,
+    borderRadius: 19,
+    borderWidth: 2,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  hexRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: spacing.sm,
+    paddingHorizontal: spacing.lg,
+    paddingVertical: spacing.md,
+    borderRadius: radius.xs,
+    borderWidth: StyleSheet.hairlineWidth,
+  },
+  hexPreview: {
+    width: 22,
+    height: 22,
+    borderRadius: 6,
+    borderWidth: StyleSheet.hairlineWidth,
+  },
+  hexInput: { flex: 1, ...typography.bodySm, paddingVertical: 0 },
 });

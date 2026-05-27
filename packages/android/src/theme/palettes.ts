@@ -7,6 +7,8 @@
  * change the desktop CSS in lockstep.
  */
 
+import { darken, lighten, normalizeHex, readableOn, rgba } from '../lib/color';
+
 export type ColorScheme = 'light' | 'dark' | 'system';
 
 export type Theme = {
@@ -148,6 +150,40 @@ export const LIGHT_THEME: Theme = {
   },
 };
 
-export function resolveTheme(isDark: boolean): Theme {
-  return isDark ? DARK_THEME : LIGHT_THEME;
+/**
+ * Build the full accent cluster from a single base color — used when the user
+ * overrides the default emerald with their own. Shades and the on-accent text
+ * color are derived so buttons/labels stay legible on any hue.
+ */
+function buildAccent(base: string): Theme['accent'] {
+  const hover = lighten(base, 0.18);
+  const dim = darken(base, 0.16);
+  return {
+    primary: base,
+    hover,
+    dim,
+    glow: rgba(base, 0.12),
+    subtle: rgba(base, 0.06),
+    onPrimary: readableOn(base),
+    gradient: [base, hover],
+    primarySoft: dim,
+    primaryGlow: hover,
+  };
+}
+
+/**
+ * Resolve the active theme. A valid `accentColor` (hex like "#7c3aed") overrides
+ * the default emerald accent everywhere; null/undefined/invalid → stock palette.
+ */
+export function resolveTheme(isDark: boolean, accentColor?: string | null): Theme {
+  const base = isDark ? DARK_THEME : LIGHT_THEME;
+  const hex = normalizeHex(accentColor);
+  if (!hex) return base;
+  const accent = buildAccent(hex);
+  return {
+    ...base,
+    accent,
+    border: { ...base.border, accent: rgba(hex, 0.4) },
+    text: { ...base.text, onAccent: accent.onPrimary },
+  };
 }

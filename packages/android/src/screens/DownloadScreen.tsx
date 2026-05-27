@@ -1,5 +1,5 @@
 import * as Clipboard from 'expo-clipboard';
-import { Check, Download as DownloadIcon, Link2 } from 'lucide-react-native';
+import { Check, Download as DownloadIcon, Link2, Music, Video } from 'lucide-react-native';
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
   Alert,
@@ -296,13 +296,20 @@ export function DownloadScreen() {
             ]}
           >
             <Text style={[styles.cardLabel, { color: theme.text.muted }]}>CATEGORY</Text>
-            <View style={styles.toggle}>
+            <View
+              style={[
+                styles.toggle,
+                { backgroundColor: theme.bg.surfaceSunken, borderColor: theme.border.subtle },
+              ]}
+            >
               <ToggleBtn
+                icon={Video}
                 label="Video"
                 active={state.settings.category === 'video'}
                 onPress={() => download.updateSettings({ category: 'video', format: null })}
               />
               <ToggleBtn
+                icon={Music}
                 label="Audio"
                 active={state.settings.category === 'audio'}
                 onPress={() => download.updateSettings({ category: 'audio', format: null })}
@@ -613,10 +620,12 @@ function formatDuration(seconds: number): string {
 }
 
 function ToggleBtn({
+  icon: Icon,
   label,
   active,
   onPress,
 }: {
+  icon: React.ComponentType<{ size?: number; strokeWidth?: number; color?: string }>;
   label: string;
   active: boolean;
   onPress: () => void;
@@ -628,15 +637,21 @@ function ToggleBtn({
       style={({ pressed }) => [
         styles.toggleBtn,
         {
-          backgroundColor: active ? theme.bg.surface : 'transparent',
+          backgroundColor: active ? theme.accent.primary : 'transparent',
           opacity: pressed && !active ? 0.7 : 1,
+          elevation: active ? 2 : 0,
         },
       ]}
     >
+      <Icon
+        size={15}
+        strokeWidth={2}
+        color={active ? theme.accent.onPrimary : theme.text.secondary}
+      />
       <Text
         style={[
           styles.toggleBtnText,
-          { color: active ? theme.text.primary : theme.text.muted },
+          { color: active ? theme.accent.onPrimary : theme.text.secondary },
         ]}
       >
         {label}
@@ -719,18 +734,21 @@ const styles = StyleSheet.create({
 
   toggle: {
     flexDirection: 'row',
-    gap: 4,
+    gap: spacing.xs,
     padding: 3,
-    borderRadius: radius.xs,
-    backgroundColor: 'transparent',
+    borderRadius: radius.sm,
+    borderWidth: StyleSheet.hairlineWidth,
   },
   toggleBtn: {
     flex: 1,
-    paddingVertical: spacing.md,
-    borderRadius: radius.xs - 2,
+    flexDirection: 'row',
     alignItems: 'center',
+    justifyContent: 'center',
+    gap: spacing.sm,
+    paddingVertical: spacing.lg,
+    borderRadius: radius.xs,
   },
-  toggleBtnText: { ...typography.caption, fontWeight: '600' },
+  toggleBtnText: { ...typography.bodySm, fontWeight: '600' },
 
   chipRow: { flexDirection: 'row', flexWrap: 'wrap', gap: spacing.pico },
   chip: {
