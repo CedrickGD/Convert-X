@@ -1,0 +1,116 @@
+# Builds the Expo *dev client* (debug variant) and publishes it to a rolling
+# `dev` pre-release, so a test phone can install it from one stable URL.
+#
+# The dev client loads its JS from a Metro bundler over the network. After
+# installing this APK once, you iterate by running `npx expo start --tunnel`
+# (see README "Live reload from a Codespace") and JS/TS edits hot-reload on the
+# phone. Re-run this workflow only when NATIVE code changes — the Kotlin modules
+# under modules/, native deps, or android/ + app.json config.
+#
+# Debug builds carry the `.dev` applicationId suffix (android/app/build.gradle)
+# and a debug signature, so this installs ALONGSIDE the production app and never
+# collides with the in-app updater (which ignores pre-releases).
+
+name: Build Android dev client
+
+on:
+  workflow_dispatch:
+
+# Needed so softprops/action-gh-release can create/update the `dev` release.
+permissions:
+  contents: write
+
+# Match release.yml: force the pinned Node-20 actions onto Node 24 to silence
+# the deprecation annotation/emails.
+env:
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
+
+jobs:
+  build-dev-client:
+    name: Build & publish dev-client APK
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 1
+
+      - name: Set up JDK 21 (Temurin)
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '21'
+
+      - name: Set up Node 20
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: npm
+
+      # Same dependency cache as release.yml — keyed on the lockfile + gradle
+      # wrapper so it shares hits with the release build.
+      - name: Cache Gradle
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.gradle/caches
+            ~/.gradle/wrapper
+          key: gradle-${{ runner.os }}-${{ hashFiles('android/gradle/wrapper/gradle-wrapper.properties', 'android/**/*.gradle', 'android/**/*.gradle.kts', 'package-lock.json') }}
+          restore-keys: |
+            gradle-${{ runner.os }}-
+
+      - name: Install npm dependencies
+        run: npm ci
+
+      # Debug is a debuggable variant, so the React Native plugin skips JS
+      # bundling — the APK loads its bundle from Metro at runtime. Signed with
+      # the committed debug.keystore; no release secrets needed.
+      - name: Gradle assembleDebug
+        working-directory: android
+        run: ./gradlew assembleDebug --no-daemon --stacktrace
+
+      - name: Locate APK
+        id: apk
+        run: |
+          ls -lh android/app/build/outputs/apk/debug/
+          # The ABI split in app/build.gradle applies to debug too, so there is
+          # no universal APK — just the arm64-v8a one.
+          APK=android/app/build/outputs/apk/debug/app-arm64-v8a-debug.apk
+          test -f "$APK"
+          echo "path=$APK" >> "$GITHUB_OUTPUT"
+
+      - name: Upload APK artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: convert-x-dev-client
+          path: ${{ steps.apk.outputs.path }}
+          if-no-files-found: error
+
+      - name: Publish to rolling `dev` pre-release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: dev
+          name: Dev client (rolling)
+          prerelease: true
+          fail_on_unmatched_files: true
+          body: |
+            Rolling **Expo dev client** (debug build). Install once, then run
+            `npx expo start --tunnel` and your JS/TS edits hot-reload on the phone.
+
+            - Package id `com.cedrickgd.convertx.dev` — installs alongside the production app.
+            - Debug-signed; allow "install unknown apps" for your browser/installer.
+            - Rebuilt from the latest commit each time this workflow runs.
+          files: ${{ steps.apk.outputs.path }}
+
+      - name: Summary
+        run: |
+          {
+            echo "### Dev client built ✅"
+            echo
+            echo "**Install on your phone (one time):**"
+            echo
+            echo "https://github.com/${{ github.repository }}/releases/download/dev/app-arm64-v8a-debug.apk"
+            echo
+            echo "Then in the Codespace run \`npx expo start --tunnel\`, open **Convert-X (dev)**, and scan the QR."
+          } >> "$GITHUB_STEP_SUMMARY"

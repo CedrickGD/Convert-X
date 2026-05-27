@@ -33,6 +33,41 @@ npx expo prebuild        # one-time: regenerate android/
 npm run android          # dev build to a connected device/emulator
 ```
 
+### Live reload from a Codespace / remote machine
+
+When you can't plug the phone into the build machine — a locked-down work laptop,
+or this repo running in a GitHub Codespace — use the Expo **dev client** + a Metro
+**tunnel**. The phone reaches Metro over the public internet, so no USB, ADB, or
+same-network is needed.
+
+**One-time setup:**
+
+1. Run the **Build Android dev client** workflow (Actions tab → *Run workflow*, or
+   `gh workflow run dev-build.yml`). It builds a debug APK and attaches it to the
+   rolling [`dev` pre-release](https://github.com/CedrickGD/Convert-X-Android-APK/releases/tag/dev).
+2. On the phone, open that release and install `app-arm64-v8a-debug.apk` (allow
+   "install unknown apps"). It lands as a separate app — **Convert-X (dev)**,
+   package `com.cedrickgd.convertx.dev` — next to your production build.
+
+**Each session** (run in the Codespace):
+
+```bash
+npx expo start --tunnel   # first run installs @expo/ngrok — accept the prompt
+```
+
+Open **Convert-X (dev)** on the phone and scan the QR (it auto-connects to the last
+URL afterwards). Edit anything under `App.tsx` / `src/**` and it hot-reloads
+instantly. Shake the phone for the dev menu (reload, element inspector, change
+bundle URL).
+
+Re-run the dev-build workflow **only when native code changes** — the Kotlin
+modules under `modules/`, native deps, or `app.json` / `android/` config. Pure
+JS/TS edits never need a rebuild.
+
+> If a network blocks ngrok, forward Codespaces port **8081**, set its visibility
+> to *Public*, and point the dev client at the resulting `https://…app.github.dev`
+> URL via the dev menu's "Enter URL manually".
+
 ## Build APK (planned — see Phase 8)
 
 ```bash

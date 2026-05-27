@@ -1,3 +1,6 @@
+// Initializes the dev launcher + dev menu in debug builds. No-op in release.
+import 'expo-dev-client';
+
 import { registerRootComponent } from 'expo';
 
 import App from './App';
