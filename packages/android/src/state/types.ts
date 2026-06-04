@@ -90,7 +90,7 @@ export type ConvertSettings = {
 
 export const CONVERT_DEFAULTS: ConvertSettings = {
   format: null,
-  quality: 90,
+  quality: 100,
   trimStart: null,
   trimEnd: null,
   stripAudio: false,
@@ -137,7 +137,7 @@ export const RESIZE_DEFAULTS: ResizeSettings = {
   height: null,
   keepAspect: true,
   outputFormat: null,
-  quality: 92,
+  quality: 100,
   crop: null,
 };
 
