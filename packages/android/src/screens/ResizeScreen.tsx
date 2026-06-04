@@ -94,10 +94,12 @@ export function ResizeScreen() {
     const img = state.files.find((f) => f.mediaType === 'image');
     if (!img) return;
     try {
-      const dims =
-        img.width && img.height
-          ? { width: img.width, height: img.height }
-          : await imageSize(img.uri);
+      // Probe via imageSize() (the same manipulateAsync path convertImage uses)
+      // rather than trusting the picker's reported width/height — so the dims
+      // the user frames against are exactly the ones the crop is applied to.
+      // Avoids an EXIF-orientation mismatch on gallery photos where the picker's
+      // dims can differ from the manipulator's view of the pixel buffer.
+      const dims = await imageSize(img.uri);
       setCropTarget({ uri: img.uri, width: dims.width, height: dims.height });
     } catch (e) {
       Alert.alert('Could not open crop', e instanceof Error ? e.message : String(e));

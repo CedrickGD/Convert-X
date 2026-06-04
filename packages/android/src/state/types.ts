@@ -132,7 +132,9 @@ export type ResizeSettings = {
 
 export const RESIZE_DEFAULTS: ResizeSettings = {
   mode: 'percentage',
-  percent: 50,
+  // Default to full size: the Resize tab opens at 100% so a crop-only export
+  // keeps native resolution. The user dials this down to actually downscale.
+  percent: 100,
   width: null,
   height: null,
   keepAspect: true,
