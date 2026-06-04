@@ -7,6 +7,7 @@ import * as ImageManipulator from 'expo-image-manipulator';
 import * as MediaLibrary from 'expo-media-library';
 
 import { FormatDef, FORMATS } from './formats';
+import type { CropSpec } from '../state/types';
 
 export type ResizeSpec =
   | { kind: 'percentage'; percent: number }
@@ -19,6 +20,8 @@ export type ConvertRequest = {
   targetFormat: FormatDef;
   quality: number; // 0..100
   resize: ResizeSpec;
+  /** Free-form crop in source-pixel coords, applied before resize. null/undefined = no crop. */
+  crop?: CropSpec | null;
 };
 
 export type ConvertResult = {
@@ -46,6 +49,7 @@ export async function convertImage({
   targetFormat,
   quality,
   resize,
+  crop,
 }: ConvertRequest): Promise<ConvertResult> {
   const saveFormat = saveFormatFor(targetFormat);
   if (!saveFormat) {
@@ -53,12 +57,33 @@ export async function convertImage({
   }
 
   const actions: ImageManipulator.Action[] = [];
+
+  // Crop runs first (source-pixel coords) so any resize below applies to the
+  // cropped region. `base*` becomes the effective source size for percentage
+  // math; when there's no crop it stays 0 and we probe lazily only if needed.
+  let baseW = 0;
+  let baseH = 0;
+  if (crop && crop.w > 0 && crop.h > 0) {
+    const src = await probeImageSize(sourceUri);
+    const originX = Math.max(0, Math.min(Math.round(crop.x), src.width - 1));
+    const originY = Math.max(0, Math.min(Math.round(crop.y), src.height - 1));
+    const width = Math.max(1, Math.min(Math.round(crop.w), src.width - originX));
+    const height = Math.max(1, Math.min(Math.round(crop.h), src.height - originY));
+    actions.push({ crop: { originX, originY, width, height } });
+    baseW = width;
+    baseH = height;
+  }
+
   if (resize.kind === 'percentage' && resize.percent !== 100) {
-    const { width, height } = await probeImageSize(sourceUri);
+    if (baseW === 0) {
+      const probe = await probeImageSize(sourceUri);
+      baseW = probe.width;
+      baseH = probe.height;
+    }
     actions.push({
       resize: {
-        width: Math.max(1, Math.round(width * (resize.percent / 100))),
-        height: Math.max(1, Math.round(height * (resize.percent / 100))),
+        width: Math.max(1, Math.round(baseW * (resize.percent / 100))),
+        height: Math.max(1, Math.round(baseH * (resize.percent / 100))),
       },
     });
   } else if (resize.kind === 'pixels' && (resize.width || resize.height)) {
@@ -96,6 +121,15 @@ async function probeImageSize(uri: string): Promise<{ width: number; height: num
   // manipulateAsync with no actions is the cheapest way to read dimensions
   const probe = await ImageManipulator.manipulateAsync(uri, [], { base64: false });
   return { width: probe.width, height: probe.height };
+}
+
+/**
+ * Public source-dimension probe — used by the crop editor to map the on-screen
+ * box back to source pixels. Files picked via DocumentPicker arrive without
+ * width/height, so callers can't always rely on the FileEntry.
+ */
+export async function imageSize(uri: string): Promise<{ width: number; height: number }> {
+  return probeImageSize(uri);
 }
 
 export async function saveToGallery(uri: string): Promise<boolean> {

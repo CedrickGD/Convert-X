@@ -122,6 +122,12 @@ export type ResizeSettings = {
   outputFormat: string | null;
   /** Re-encode quality 0..100. */
   quality: number;
+  /**
+   * Free-form crop rectangle in source-pixel coords, applied BEFORE resize.
+   * null = no crop (whole image). Single-image only — cleared when the file
+   * set changes (see ResizeContext), since the rect is tied to one image.
+   */
+  crop: CropSpec | null;
 };
 
 export const RESIZE_DEFAULTS: ResizeSettings = {
@@ -132,6 +138,7 @@ export const RESIZE_DEFAULTS: ResizeSettings = {
   keepAspect: true,
   outputFormat: null,
   quality: 92,
+  crop: null,
 };
 
 // ── Download ───────────────────────────────────────────────────────────────

@@ -1,4 +1,4 @@
-import { Frame, Link2, Unlink2 } from 'lucide-react-native';
+import { Crop, Frame, Link2, Unlink2 } from 'lucide-react-native';
 import React, { useMemo } from 'react';
 import { Pressable, StyleSheet, Text, TextInput, View } from 'react-native';
 
@@ -30,35 +30,40 @@ export function ResizeSettings({ files, settings, onUpdate }: Props) {
   const firstImage = files.find((f) => f.mediaType === 'image' && f.width && f.height);
   const origW = firstImage?.width ?? 0;
   const origH = firstImage?.height ?? 0;
-  const aspect = origH > 0 ? origW / origH : 1;
+  // A crop changes the effective source the resize math works from. baseW/baseH
+  // are the cropped dims when a crop is set, else the original dims.
+  const crop = settings.crop;
+  const baseW = crop ? crop.w : origW;
+  const baseH = crop ? crop.h : origH;
+  const aspect = baseH > 0 ? baseW / baseH : 1;
   const isBatch = files.filter((f) => f.mediaType === 'image').length > 1;
 
   const previewDims = useMemo(() => {
-    if (origW === 0 || origH === 0) return { w: 0, h: 0 };
+    if (baseW === 0 || baseH === 0) return { w: 0, h: 0 };
     if (settings.mode === 'percentage') {
       const pct = (settings.percent || 100) / 100;
       return {
-        w: Math.max(1, Math.round(origW * pct)),
-        h: Math.max(1, Math.round(origH * pct)),
+        w: Math.max(1, Math.round(baseW * pct)),
+        h: Math.max(1, Math.round(baseH * pct)),
       };
     }
-    let w = settings.width ?? origW;
-    let h = settings.height ?? origH;
+    let w = settings.width ?? baseW;
+    let h = settings.height ?? baseH;
     if (settings.keepAspect) {
-      if (settings.width && settings.width !== origW) {
+      if (settings.width && settings.width !== baseW) {
         h = Math.max(1, Math.round(w / aspect));
-      } else if (settings.height && settings.height !== origH) {
+      } else if (settings.height && settings.height !== baseH) {
         w = Math.max(1, Math.round(h * aspect));
       }
     }
     return { w, h };
-  }, [origW, origH, aspect, settings.mode, settings.percent, settings.width, settings.height, settings.keepAspect]);
+  }, [baseW, baseH, aspect, settings.mode, settings.percent, settings.width, settings.height, settings.keepAspect]);
 
   const setWidth = (val: string) => {
     const n = parseInt(val, 10);
     const w = Number.isFinite(n) && n > 0 ? n : null;
     const patch: Partial<ResizeSettingsState> = { width: w };
-    if (settings.keepAspect && w && origW > 0) {
+    if (settings.keepAspect && w && baseW > 0) {
       patch.height = Math.max(1, Math.round(w / aspect));
     }
     onUpdate(patch);
@@ -68,7 +73,7 @@ export function ResizeSettings({ files, settings, onUpdate }: Props) {
     const n = parseInt(val, 10);
     const h = Number.isFinite(n) && n > 0 ? n : null;
     const patch: Partial<ResizeSettingsState> = { height: h };
-    if (settings.keepAspect && h && origH > 0) {
+    if (settings.keepAspect && h && baseH > 0) {
       patch.width = Math.max(1, Math.round(h * aspect));
     }
     onUpdate(patch);
@@ -81,7 +86,7 @@ export function ResizeSettings({ files, settings, onUpdate }: Props) {
   const toggleAspect = () => {
     const next = !settings.keepAspect;
     const patch: Partial<ResizeSettingsState> = { keepAspect: next };
-    if (next && settings.width && origW > 0) {
+    if (next && settings.width && baseW > 0) {
       patch.height = Math.max(1, Math.round(settings.width / aspect));
     }
     onUpdate(patch);
@@ -104,6 +109,18 @@ export function ResizeSettings({ files, settings, onUpdate }: Props) {
             {isBatch ? (
               <Text style={[styles.varies, { color: theme.text.muted }]}>(first file)</Text>
             ) : null}
+          </Text>
+        </View>
+      ) : null}
+
+      {crop ? (
+        <View style={styles.origRow}>
+          <Crop size={12} strokeWidth={2} color={theme.accent.primary} />
+          <Text style={[styles.origText, { color: theme.text.secondary }]}>
+            Cropped to{' '}
+            <Text style={[styles.origText, { color: theme.text.primary, fontWeight: '600' }]}>
+              {crop.w} × {crop.h}
+            </Text>
           </Text>
         </View>
       ) : null}

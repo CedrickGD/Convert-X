@@ -75,6 +75,7 @@ export async function runResizeSession(opts: ResizeRunOpts): Promise<void> {
           targetFormat: fmt,
           quality: opts.settings.quality,
           resize: specFromSettings(opts.settings),
+          crop: opts.settings.crop,
         });
         if (cancelled.has(opts.sessionId)) break;
         opts.onFileDone(file.id, result.outputUri, result.outputName, result.bytes);
