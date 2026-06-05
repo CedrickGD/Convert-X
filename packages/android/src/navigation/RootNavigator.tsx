@@ -1,6 +1,7 @@
 import { createNativeStackNavigator } from '@react-navigation/native-stack';
 import React from 'react';
 
+import { HistoryScreen } from '../screens/HistoryScreen';
 import { InstagramLoginScreen } from '../screens/InstagramLoginScreen';
 import { ModeRouter } from './ModeRouter';
 import { RootStackParamList } from './types';
@@ -38,6 +39,15 @@ export function RootNavigator() {
       <Stack.Screen
         name="InstagramLogin"
         component={InstagramLoginScreen}
+        options={{
+          presentation: 'modal',
+          animation: 'slide_from_bottom',
+          gestureEnabled: true,
+        }}
+      />
+      <Stack.Screen
+        name="History"
+        component={HistoryScreen}
         options={{
           presentation: 'modal',
           animation: 'slide_from_bottom',

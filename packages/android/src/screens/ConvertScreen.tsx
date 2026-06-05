@@ -19,6 +19,7 @@ import {
 import { getFfmpegLoadError } from '../../modules/convert-x-ffmpeg/src';
 import { FORMATS, MediaType, formatKeyFromName, mediaTypeFromName } from '../lib/formats';
 import { cancelSession, runConvertSession } from '../lib/conversionQueue';
+import { addHistoryEntry } from '../lib/history';
 import { useConvert } from '../state';
 import { FileEntry } from '../state/types';
 import { radius, spacing, typography, useTheme } from '../theme';
@@ -120,7 +121,7 @@ export function ConvertScreen() {
         convert.dispatch({ type: 'fileStatus', sessionId, id, status: 'converting', progress: 0 }),
       onFileProgress: (id, progress) =>
         convert.dispatch({ type: 'fileProgress', sessionId, id, progress }),
-      onFileDone: (id, outputUri, outputName, outputBytes) =>
+      onFileDone: (id, outputUri, outputName, outputBytes) => {
         convert.dispatch({
           type: 'fileResult',
           sessionId,
@@ -128,7 +129,15 @@ export function ConvertScreen() {
           outputUri,
           outputName,
           outputBytes,
-        }),
+        });
+        void addHistoryEntry({
+          uri: outputUri,
+          name: outputName,
+          bytes: outputBytes,
+          op: 'convert',
+          source: state.files.find((f) => f.id === id)?.name,
+        });
+      },
       onFileError: (id, error) => convert.dispatch({ type: 'fileError', sessionId, id, error }),
       onFileSkipped: (id) =>
         convert.dispatch({ type: 'fileStatus', sessionId, id, status: 'skipped' }),

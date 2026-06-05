@@ -23,6 +23,7 @@ import {
   ensureMediaPermission,
   probeUrl,
 } from '../lib/downloadQueue';
+import { addHistoryEntry } from '../lib/history';
 import { useDownload, useShared } from '../state';
 import { radius, spacing, typography, useTheme } from '../theme';
 
@@ -189,6 +190,22 @@ export function DownloadScreen() {
           onItemStart: (idx, entry) => {
             setCurrentItemIdx(idx);
             setCurrentItemTitle(entry.title);
+          },
+          onItemDone: (entry, r) => {
+            const path = r.outputPath
+              ? r.outputPath.startsWith('file://')
+                ? r.outputPath
+                : `file://${r.outputPath}`
+              : r.publicPath;
+            if (path) {
+              void addHistoryEntry({
+                uri: path,
+                name: r.outputPath?.split('/').pop() ?? entry.title,
+                bytes: 0,
+                op: 'download',
+                source: entry.webpageUrl,
+              });
+            }
           },
         });
         if (result.cancelled) {

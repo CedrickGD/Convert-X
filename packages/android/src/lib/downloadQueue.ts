@@ -352,6 +352,8 @@ export async function downloadBatch(opts: {
   onProgress: (overallPct: number, currentIndex: number) => void;
   /** Called when each item starts so the UI can show its title. */
   onItemStart?: (index: number, entry: DownloadEntry) => void;
+  /** Called after each item finishes successfully (for output history). */
+  onItemDone?: (entry: DownloadEntry, result: DownloadResult) => void;
 }): Promise<BatchDownloadResult> {
   const total = opts.entries.length;
   if (total === 0) {
@@ -398,6 +400,7 @@ export async function downloadBatch(opts: {
       }
       done += 1;
       if (r.publicPath) lastPublicPath = r.publicPath;
+      opts.onItemDone?.(entry, r);
     } catch (e) {
       failed += 1;
       errors.push({

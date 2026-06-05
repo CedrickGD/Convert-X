@@ -15,6 +15,7 @@ import {
 import { CropControl, CropEditor, ResizeSettings } from '../components/resize';
 import { MediaType, mediaTypeFromName } from '../lib/formats';
 import { imageSize } from '../lib/image';
+import { addHistoryEntry } from '../lib/history';
 import { cancelResizeSession, runResizeSession } from '../lib/resizeQueue';
 import { useResize } from '../state';
 import { CropSpec, FileEntry } from '../state/types';
@@ -143,8 +144,16 @@ export function ResizeScreen() {
         resize.dispatch({ type: 'fileStatus', sessionId, id, status: 'converting', progress: 0 }),
       onFileProgress: (id, progress) =>
         resize.dispatch({ type: 'fileProgress', sessionId, id, progress }),
-      onFileDone: (id, outputUri, outputName, outputBytes) =>
-        resize.dispatch({ type: 'fileResult', sessionId, id, outputUri, outputName, outputBytes }),
+      onFileDone: (id, outputUri, outputName, outputBytes) => {
+        resize.dispatch({ type: 'fileResult', sessionId, id, outputUri, outputName, outputBytes });
+        void addHistoryEntry({
+          uri: outputUri,
+          name: outputName,
+          bytes: outputBytes,
+          op: 'resize',
+          source: state.files.find((f) => f.id === id)?.name,
+        });
+      },
       onFileError: (id, error) =>
         resize.dispatch({ type: 'fileError', sessionId, id, error }),
       onFileSkipped: (id) =>
