@@ -73,7 +73,12 @@ function reducer(state: ResizeState, action: Action): ResizeState {
     case 'updateSettings':
       return { ...state, settings: { ...state.settings, ...action.patch } };
     case 'reset':
-      return { ...INITIAL };
+      // Keep mode / percent / format / quality preferences; per-image fields
+      // (crop, explicit pixel dims) reset for the next image.
+      return {
+        ...INITIAL,
+        settings: { ...state.settings, crop: null, width: null, height: null },
+      };
     case 'beginSession':
       return {
         ...state,
