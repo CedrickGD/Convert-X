@@ -54,32 +54,37 @@ pub async fn download_installer(app: AppHandle, url: String) -> Result<String, S
     Ok(dest.to_string_lossy().to_string())
 }
 
-/// Launch the downloaded MSI via msiexec and quit the app so the installer can
-/// overwrite the running executable. The spawn is detached (no wait), exactly
-/// like `open_file`.
+/// Apply a downloaded portable-exe update: spawn a detached helper that waits
+/// for us to exit, swaps the new exe over the running one, and relaunches it.
+/// Windows can't overwrite a running .exe, hence the helper.
 #[tauri::command]
 pub fn launch_installer(app: AppHandle, path: String) -> Result<(), String> {
     if !std::path::Path::new(&path).exists() {
-        return Err(format!("Installer not found: {}", path));
+        return Err(format!("Update file not found: {}", path));
     }
+    let current = std::env::current_exe().map_err(|e| format!("current_exe: {}", e))?;
+    let current_str = current.to_string_lossy().to_string();
     #[cfg(windows)]
     {
         use std::os::windows::process::CommandExt as _;
-        // NSIS per-user installer (installMode: currentUser) -> NO admin / UAC.
-        // /S runs it silently; the Tauri NSIS installer relaunches the app after.
-        let mut cmd = std::process::Command::new(&path);
-        cmd.arg("/S");
-        cmd.creation_flags(0x08000000);
+        // Wait ~2s for this process to release the exe, replace it in place, then
+        // relaunch. The cmd helper outlives us (DETACHED_PROCESS) and is windowless.
+        let script = format!(
+            "ping 127.0.0.1 -n 3 >nul & move /y \"{new}\" \"{cur}\" & start \"\" \"{cur}\"",
+            new = path,
+            cur = current_str
+        );
+        let mut cmd = std::process::Command::new("cmd");
+        cmd.args(["/c", &script]);
+        cmd.creation_flags(0x08000000 | 0x00000008); // CREATE_NO_WINDOW | DETACHED_PROCESS
         cmd.spawn()
-            .map_err(|e| format!("Failed to launch installer: {}", e))?;
+            .map_err(|e| format!("Failed to start update helper: {}", e))?;
     }
     #[cfg(not(windows))]
     {
         return Err("In-app update is only supported on Windows.".into());
     }
-    // Give msiexec a beat to start before we vanish, then exit so it can replace
-    // the running exe.
-    std::thread::sleep(std::time::Duration::from_millis(400));
+    std::thread::sleep(std::time::Duration::from_millis(300));
     app.exit(0);
     Ok(())
 }

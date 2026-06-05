@@ -36,6 +36,11 @@
 
   const platform = getPlatform();
   const isWeb = platform.platformType === "web";
+  const isDesktop = platform.platformType === "desktop";
+
+  // First-run tool setup: the desktop portable build downloads ffmpeg/yt-dlp/spotdl
+  // into AppData on first launch. null = ready/not-needed.
+  let toolSetup = null;
 
   filesStore.subscribe((v) => (files = v));
   settingsStore.subscribe((v) => (settings = v));
@@ -46,6 +51,27 @@
   hasEdits.subscribe((v) => (edited = v));
 
   onMount(() => {
+    if (isDesktop && platform.ensureTools) {
+      (async () => {
+        try {
+          const ready = await platform.toolsReady();
+          if (!ready) {
+            toolSetup = { tool: "", state: "starting" };
+            const stop = platform.onToolSetup?.((p) => (toolSetup = p));
+            try {
+              await platform.ensureTools();
+            } finally {
+              stop?.();
+            }
+          }
+        } catch (_) {
+          // Non-fatal: open the app anyway; conversions surface tool errors.
+        } finally {
+          toolSetup = null;
+        }
+      })();
+    }
+
     const unlistenProgress = platform.onProgress(({ file_id, progress, elapsed }) => {
       filesStore.update((all) =>
         all.map((f) => f.id === file_id ? { ...f, progress, elapsed } : f)
@@ -373,7 +399,25 @@
 
   $: progressLabel = mode === "resize" ? "Resizing..." : "Converting...";
   $: actionLabel = mode === "resize" ? "resized" : "converted";
+
+  $: toolSetupLabel = !toolSetup ? "" :
+    toolSetup.state === "extracting" ? "Unpacking ffmpeg…" :
+    toolSetup.tool === "ffmpeg" ? "Downloading the media engine (ffmpeg)…" :
+    toolSetup.tool === "yt-dlp" ? "Downloading the downloader (yt-dlp)…" :
+    toolSetup.tool === "spotdl" ? "Downloading Spotify support (spotdl)…" :
+    "Setting things up…";
 </script>
+
+{#if toolSetup}
+  <div class="tool-setup-overlay">
+    <div class="tool-setup-card">
+      <div class="spinner" aria-hidden="true"></div>
+      <h2>Preparing Convert-X…</h2>
+      <p>{toolSetupLabel}</p>
+      <p class="tool-setup-hint">One-time setup — fetching the conversion tools.</p>
+    </div>
+  </div>
+{/if}
 
 <main>
   <header>
@@ -747,4 +791,45 @@
     color: var(--text-primary);
     border-color: var(--border-hover);
   }
+
+  .tool-setup-overlay {
+    position: fixed;
+    inset: 0;
+    z-index: 1000;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    background: var(--bg-card);
+  }
+  .tool-setup-card {
+    text-align: center;
+    max-width: 340px;
+    padding: 28px 24px;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    gap: 10px;
+  }
+  .tool-setup-card h2 {
+    font-size: 1.05rem;
+    font-weight: 700;
+    color: var(--text-primary);
+    margin: 0;
+  }
+  .tool-setup-card p {
+    font-size: 0.85rem;
+    color: var(--text-secondary);
+    margin: 0;
+  }
+  .tool-setup-hint { font-size: 0.74rem; color: var(--text-muted); }
+  .spinner {
+    width: 34px;
+    height: 34px;
+    border: 3px solid var(--border);
+    border-top-color: var(--accent);
+    border-radius: 50%;
+    animation: spin 0.8s linear infinite;
+    margin-bottom: 6px;
+  }
+  @keyframes spin { to { transform: rotate(360deg); } }
 </style>

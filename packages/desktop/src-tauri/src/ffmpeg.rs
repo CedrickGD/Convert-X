@@ -156,6 +156,12 @@ pub fn get_ffmpeg_path(app: &tauri::AppHandle) -> PathBuf {
         }
     }
 
+    if let Some(p) = crate::tools::tools_dir(app).map(|d| d.join("ffmpeg.exe")) {
+        if p.exists() {
+            return p;
+        }
+    }
+
     if let Ok(resource_dir) = app.path().resource_dir() {
         let prod_path = resource_dir.join("bin").join("ffmpeg.exe");
         if prod_path.exists() {

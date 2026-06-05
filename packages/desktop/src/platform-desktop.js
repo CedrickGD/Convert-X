@@ -143,6 +143,21 @@ export function createDesktopAdapter() {
       return getVersion();
     },
 
+    async toolsReady() {
+      return invoke("tools_ready");
+    },
+
+    async ensureTools() {
+      return invoke("ensure_tools");
+    },
+
+    onToolSetup(callback) {
+      let unlisten;
+      listen("tool-setup", (event) => callback(event.payload))
+        .then((fn) => (unlisten = fn));
+      return () => unlisten?.();
+    },
+
     async downloadInstaller(url) {
       return invoke("download_installer", { url });
     },

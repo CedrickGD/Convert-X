@@ -112,10 +112,16 @@ fn resource_bin(app: &tauri::AppHandle, name: &str) -> Option<PathBuf> {
     if p.exists() { Some(p) } else { None }
 }
 
+fn appdata_bin(app: &tauri::AppHandle, name: &str) -> Option<PathBuf> {
+    let p = crate::tools::tools_dir(app)?.join(name);
+    if p.exists() { Some(p) } else { None }
+}
+
 pub fn get_ytdlp_path(app: &tauri::AppHandle) -> PathBuf {
     if cfg!(debug_assertions) {
         if let Some(p) = dev_bin("yt-dlp.exe") { return p; }
     }
+    if let Some(p) = appdata_bin(app, "yt-dlp.exe") { return p; }
     if let Some(p) = resource_bin(app, "yt-dlp.exe") { return p; }
     PathBuf::from("yt-dlp")
 }
@@ -124,6 +130,7 @@ pub fn get_spotdl_path(app: &tauri::AppHandle) -> PathBuf {
     if cfg!(debug_assertions) {
         if let Some(p) = dev_bin("spotdl.exe") { return p; }
     }
+    if let Some(p) = appdata_bin(app, "spotdl.exe") { return p; }
     if let Some(p) = resource_bin(app, "spotdl.exe") { return p; }
     PathBuf::from("spotdl")
 }

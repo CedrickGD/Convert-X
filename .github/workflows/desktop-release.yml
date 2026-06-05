@@ -30,34 +30,25 @@ jobs:
       - name: Install dependencies
         run: npm install
 
-      - name: Fetch bundled binaries (ffmpeg/ffprobe/yt-dlp/spotdl)
-        shell: pwsh
-        working-directory: packages/desktop/src-tauri
-        run: |
-          New-Item -ItemType Directory -Force bin | Out-Null
-          Write-Host "ffmpeg + ffprobe (BtbN gpl build)..."
-          Invoke-WebRequest "https://github.com/BtbN/FFmpeg-Builds/releases/download/latest/ffmpeg-master-latest-win64-gpl.zip" -OutFile ffmpeg.zip
-          Expand-Archive ffmpeg.zip -DestinationPath ffmpeg_tmp -Force
-          Copy-Item (Get-ChildItem -Recurse ffmpeg_tmp -Filter ffmpeg.exe  | Select-Object -First 1).FullName bin/ffmpeg.exe  -Force
-          Copy-Item (Get-ChildItem -Recurse ffmpeg_tmp -Filter ffprobe.exe | Select-Object -First 1).FullName bin/ffprobe.exe -Force
-          Remove-Item ffmpeg.zip, ffmpeg_tmp -Recurse -Force
-          Write-Host "yt-dlp..."
-          Invoke-WebRequest "https://github.com/yt-dlp/yt-dlp/releases/latest/download/yt-dlp.exe" -OutFile bin/yt-dlp.exe
-          Write-Host "spotdl (latest win32 asset)..."
-          $rel = Invoke-RestMethod "https://api.github.com/repos/spotDL/spotify-downloader/releases/latest" -Headers @{ "User-Agent" = "convert-x-ci" }
-          $spotUrl = ($rel.assets | Where-Object { $_.name -like "*win32.exe" } | Select-Object -First 1).browser_download_url
-          if (-not $spotUrl) { throw "spotdl win32 asset not found" }
-          Invoke-WebRequest $spotUrl -OutFile bin/spotdl.exe
-          Get-ChildItem bin | Select-Object Name, Length
+      # Build the Svelte UI; cargo embeds packages/desktop/dist into the binary.
+      - name: Build frontend
+        run: npm run build -w @convertx/desktop
 
-      - name: Build & publish Tauri app
-        uses: tauri-apps/tauri-action@v0
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      # Compile the self-contained portable exe. No installer, no bundled tools —
+      # the app downloads ffmpeg/yt-dlp/spotdl into AppData on first run.
+      - name: Build portable exe
+        working-directory: packages/desktop/src-tauri
+        run: cargo build --release
+
+      - name: Stage the portable exe
+        shell: pwsh
+        run: Copy-Item packages/desktop/src-tauri/target/release/convertx.exe Convert-X.exe -Force
+
+      - name: Publish release
+        uses: softprops/action-gh-release@v2
         with:
-          projectPath: packages/desktop
-          tagName: ${{ github.ref_name }}
-          releaseName: "ConvertX ${{ github.ref_name }}"
-          releaseBody: "Per-user installer (no admin needed) — download the `-setup.exe` below and run it. The app self-updates from here on, no admin prompt."
-          releaseDraft: false
-          prerelease: false
+          tag_name: ${{ github.ref_name }}
+          name: "ConvertX ${{ github.ref_name }}"
+          body: "Portable single-file build — no install, no admin. Download **Convert-X.exe** and run it; it fetches ffmpeg/yt-dlp on first use and self-updates from here on."
+          fail_on_unmatched_files: true
+          files: Convert-X.exe

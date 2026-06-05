@@ -2,6 +2,7 @@ mod convert;
 mod detect;
 mod downloader;
 mod ffmpeg;
+mod tools;
 mod updater;
 
 use convert::AppState;
@@ -101,6 +102,8 @@ pub fn run() {
             open_in_folder,
             updater::download_installer,
             updater::launch_installer,
+            tools::ensure_tools,
+            tools::tools_ready,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
