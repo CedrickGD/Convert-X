@@ -10,6 +10,7 @@ import {
   FileList,
   FilePreview,
   FormatPicker,
+  GifSettings,
   OutputPanel,
   OutputSettings,
   ProgressBar,
@@ -161,6 +162,15 @@ export function ConvertScreen() {
     return f?.category === 'video' || f?.category === 'audio' ? f.category : 'image';
   }, [state.settings.format]);
 
+  // Batch progress reads as 1/N steps; a "X of N" label makes the sequential
+  // advance legible instead of looking stalled.
+  const convertingLabel = useMemo(() => {
+    if (!isBatch) return 'Converting…';
+    const total = state.files.filter((f) => f.status !== 'skipped' && f.status !== 'error').length;
+    const doneN = state.files.filter((f) => f.status === 'done').length;
+    return `Converting ${Math.min(doneN + 1, total)} of ${total}…`;
+  }, [state.files, isBatch]);
+
   const compatibleCount = state.files.filter(
     (f) =>
       state.settings.format &&
@@ -263,6 +273,14 @@ export function ConvertScreen() {
             />
           ) : null}
 
+          {/* GIF output settings — width / framerate / palette colors. */}
+          {state.settings.format === 'gif' ? (
+            <GifSettings
+              settings={state.settings}
+              onUpdate={(patch) => convert.updateSettings(patch)}
+            />
+          ) : null}
+
           <OutputSettings
             singleFileName={
               !isBatch
@@ -274,6 +292,7 @@ export function ConvertScreen() {
             quality={state.settings.quality}
             onQualityChange={(q) => convert.updateSettings({ quality: q })}
             qualityKind={qualityKind}
+            showQuality={state.settings.format !== 'gif'}
           />
 
           <View style={styles.actions}>
@@ -315,7 +334,7 @@ export function ConvertScreen() {
       {state.view === 'converting' ? (
         <View style={styles.stack}>
           <FileList files={state.files} view="converting" />
-          <ProgressBar progress={overallProgress} label="Converting…" />
+          <ProgressBar progress={overallProgress} label={convertingLabel} />
           <View style={styles.actions}>
             <Pressable
               onPress={handleCancel}

@@ -1,5 +1,5 @@
 import { Crop, Frame, Link2, Unlink2 } from 'lucide-react-native';
-import React, { useMemo } from 'react';
+import React, { useMemo, useState } from 'react';
 import { Pressable, StyleSheet, Text, TextInput, View } from 'react-native';
 
 import type { FileEntry, ResizeSettings as ResizeSettingsState } from '../../state/types';
@@ -26,6 +26,9 @@ const OUTPUT_FORMATS = ['same', 'png', 'jpg', 'webp'];
  */
 export function ResizeSettings({ files, settings, onUpdate }: Props) {
   const { theme } = useTheme();
+  // Transient string so the percent field can be cleared mid-edit instead of
+  // snapping to "1" on every keystroke. Reconciles to settings.percent on blur.
+  const [percentDraft, setPercentDraft] = useState<string | null>(null);
 
   const firstImage = files.find((f) => f.mediaType === 'image' && f.width && f.height);
   const origW = firstImage?.width ?? 0;
@@ -80,7 +83,7 @@ export function ResizeSettings({ files, settings, onUpdate }: Props) {
   };
 
   const setPercent = (val: number) => {
-    onUpdate({ percent: Math.max(1, val) });
+    onUpdate({ percent: Math.max(1, Math.min(200, val)) });
   };
 
   const toggleAspect = () => {
@@ -187,6 +190,9 @@ export function ResizeSettings({ files, settings, onUpdate }: Props) {
           </View>
           <Pressable
             onPress={toggleAspect}
+            accessibilityRole="button"
+            accessibilityState={{ selected: settings.keepAspect }}
+            accessibilityLabel={settings.keepAspect ? 'Aspect ratio locked' : 'Aspect ratio unlocked'}
             style={({ pressed }) => [
               styles.lockBtn,
               {
@@ -216,8 +222,14 @@ export function ResizeSettings({ files, settings, onUpdate }: Props) {
           >
             <TextInput
               keyboardType="number-pad"
-              value={String(settings.percent)}
-              onChangeText={(v) => setPercent(parseInt(v, 10) || 1)}
+              value={percentDraft ?? String(settings.percent)}
+              onChangeText={(v) => {
+                setPercentDraft(v);
+                const n = parseInt(v, 10);
+                if (Number.isFinite(n)) onUpdate({ percent: Math.max(1, Math.min(200, n)) });
+              }}
+              onBlur={() => setPercentDraft(null)}
+              accessibilityLabel="Resize percentage"
               style={[styles.percentInput, { color: theme.text.primary }]}
             />
             <Text style={[styles.percentSign, { color: theme.accent.primary }]}>%</Text>
@@ -229,6 +241,9 @@ export function ResizeSettings({ files, settings, onUpdate }: Props) {
                 <Pressable
                   key={pct}
                   onPress={() => setPercent(pct)}
+                  accessibilityRole="button"
+                  accessibilityState={{ selected: active }}
+                  accessibilityLabel={`${pct} percent`}
                   style={({ pressed }) => [
                     styles.preset,
                     {
@@ -286,6 +301,8 @@ export function ResizeSettings({ files, settings, onUpdate }: Props) {
                 onPress={() =>
                   onUpdate({ outputFormat: fmt === 'same' ? null : fmt })
                 }
+                accessibilityRole="button"
+                accessibilityState={{ selected }}
                 style={({ pressed }) => [
                   styles.fmtBtn,
                   {
@@ -325,6 +342,8 @@ function ModeBtn({
   return (
     <Pressable
       onPress={onPress}
+      accessibilityRole="button"
+      accessibilityState={{ selected: active }}
       style={({ pressed }) => [
         styles.modeBtn,
         {

@@ -27,6 +27,13 @@ function audioBitrate(quality: number): number {
   return Math.round(AUDIO_BITRATE_LO + (AUDIO_BITRATE_HI - AUDIO_BITRATE_LO) * (clamped / 100));
 }
 
+/** Map quality 0..100 → mpeg4/flv1/msmpeg4 qscale 31..1 (lower = better). The
+ *  old `31 - quality/5` topped out at 11, so best quality was never reachable. */
+function mpeg4Qscale(quality: number): number {
+  const q = Math.max(0, Math.min(100, quality));
+  return Math.max(1, Math.round(31 - (q / 100) * 30));
+}
+
 /** H.264 hardware-encoder (h264_mediacodec) targets — everything except the
  *  legacy software-codec containers (avi/flv/wmv, which use mpeg4/flv1/
  *  msmpeg4v3). mediacodec rejects odd width/height; the software encoders are
@@ -142,13 +149,13 @@ function buildVideoArgs(opts: FfmpegBuildOpts): string[] {
       args.push('-c:v', 'h264_mediacodec', '-b:v', h264Bitrate);
       break;
     case 'avi':
-      args.push('-c:v', 'mpeg4', '-q:v', String(31 - Math.round(quality / 5)));
+      args.push('-c:v', 'mpeg4', '-q:v', String(mpeg4Qscale(quality)));
       break;
     case 'flv':
-      args.push('-c:v', 'flv1', '-q:v', String(31 - Math.round(quality / 5)));
+      args.push('-c:v', 'flv1', '-q:v', String(mpeg4Qscale(quality)));
       break;
     case 'wmv':
-      args.push('-c:v', 'msmpeg4v3', '-q:v', String(31 - Math.round(quality / 5)));
+      args.push('-c:v', 'msmpeg4v3', '-q:v', String(mpeg4Qscale(quality)));
       break;
     case 'ts':
       args.push('-c:v', 'h264_mediacodec', '-b:v', h264Bitrate);
