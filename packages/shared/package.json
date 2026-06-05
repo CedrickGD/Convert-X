@@ -8,6 +8,7 @@
     ".": "./src/index.js",
     "./components/*": "./src/components/*",
     "./stores/*": "./src/stores/*",
+    "./core/*": "./src/core/*",
     "./assets/*": "./src/assets/*",
     "./platform": "./src/platform.js"
   }
