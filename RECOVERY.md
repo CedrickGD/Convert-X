@@ -14,7 +14,16 @@ existing install — every user would have to uninstall and reinstall from scrat
   `CedrickGD/Convert-X` and `CedrickGD/Convert-X-Android-APK` — **but GitHub
   secrets are write-only: you cannot download them back.** They keep CI working;
   they are NOT a recovery path.
-- So the keystore **must** be backed up somewhere you can actually retrieve it.
+
+### ✅ Backup location (the place you CAN read the key back from)
+The keystore + password are backed up in the **private** repo **`CedrickGD/keys`**,
+in the `convert-x/` folder. Restore on a new PC with:
+
+```bash
+gh repo clone CedrickGD/keys
+```
+
+> Keep `CedrickGD/keys` **private**. Never make it public or share it.
 
 ### Where the keystore lives on the current PC
 - Keystore file: `C:/Users/cedri/keys/convert-x-android-release.jks`
@@ -22,13 +31,9 @@ existing install — every user would have to uninstall and reinstall from scrat
   (a single 32-char password used for **both** the store and the key)
 - Key alias: `convert-x-release`
 
-### Backup location (FILL IN once set up — do this before wiping!)
-- [ ] Backed up to: ________________________
-      (e.g. a PRIVATE repo `CedrickGD/convert-x-keys`, or Google Drive, or a password manager)
-
 ### Restoring on a new PC
-1. Put the keystore + password back into a folder **outside any repo**
-   (e.g. `C:/Users/<you>/keys/`).
+1. `gh repo clone CedrickGD/keys`, then copy the two files from `convert-x/` into a
+   folder **outside any code repo** (e.g. `C:/Users/<you>/keys/`).
 2. For local signed builds only: copy `packages/android/android/gradle.properties.example`
    to `packages/android/android/gradle.properties.local`, point
    `CONVERT_X_KEYSTORE_FILE` at the keystore path, and fill in the password + alias.
@@ -39,11 +44,12 @@ existing install — every user would have to uninstall and reinstall from scrat
 
 | Asset | Where | Notes |
 |---|---|---|
-| Desktop + web + android + shared source | `CedrickGD/Convert-X` | ⚠️ ensure the `chore/consolidate-monorepo` branch is **pushed** before wiping |
+| Desktop + web + android + shared source | `CedrickGD/Convert-X` | on branch `chore/consolidate-monorepo` (pushed) |
 | Released APKs | `CedrickGD/Convert-X-Android-APK` | also where the in-app updater pulls from |
+| Signing key backup | `CedrickGD/keys` (private) | the only place you can read the key back |
 | `_consolidation_backups/*.bundle` (local) | this PC only | throwaway — the originals are already on GitHub |
 
 ## Before you wipe this PC — checklist
-- [ ] `git push` the `chore/consolidate-monorepo` branch (+ any other unpushed branches)
-- [ ] Keystore + password backed up somewhere retrievable (see above)
-- [ ] Each of your OTHER repos in this folder has a GitHub remote and is pushed
+- [x] `git push` the `chore/consolidate-monorepo` branch (done) — also push any other unpushed branches
+- [x] Keystore + password backed up to private repo `CedrickGD/keys` (done 2026-06-05)
+- [ ] Confirm your OTHER repos in this folder each have a GitHub remote and are pushed
