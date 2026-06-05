@@ -1,0 +1,69 @@
+apply plugin: 'com.android.library'
+
+group = 'expo.modules.convertxffmpeg'
+version = '0.1.0'
+
+def expoModulesCorePlugin = new File(project(":expo-modules-core").projectDir.absolutePath, "ExpoModulesCorePlugin.gradle")
+apply from: expoModulesCorePlugin
+applyKotlinExpoModulesCorePlugin()
+useCoreDependencies()
+useExpoPublishing()
+
+buildscript {
+  ext.safeExtGet = { prop, fallback ->
+    rootProject.ext.has(prop) ? rootProject.ext.get(prop) : fallback
+  }
+}
+
+project.android {
+  compileSdkVersion safeExtGet("compileSdkVersion", 36)
+  defaultConfig {
+    minSdkVersion safeExtGet("minSdkVersion", 24)
+    targetSdkVersion safeExtGet("targetSdkVersion", 36)
+  }
+}
+
+android {
+  namespace "expo.modules.convertxffmpeg"
+  defaultConfig {
+    versionCode 1
+    versionName "0.1.0"
+  }
+  lintOptions {
+    abortOnError false
+  }
+}
+
+// Pulls the 16KB-page-aligned, full-gpl variant of FFmpeg Kit from Maven
+// Central. This is a community fork of arthenica/ffmpeg-kit (archived
+// April 2025) — see PLAN.md Phase 4 for the rationale.
+//
+// The artifact ID is intentionally a `repositories { maven { url ... } }`
+// candidate too — if Maven Central resolution fails we can pin to JitPack
+// here.
+repositories {
+  mavenCentral()
+}
+
+dependencies {
+  // JamaisMagic's 16KB-aligned `main-min` fork of arthenica/ffmpeg-kit
+  // (archived April 2025). Built with NDK r27d on Maven Central.
+  //
+  // We deliberately use `main-min` instead of `main-full-gpl` because the
+  // full/full-gpl libavdevice.so in this fork has unresolved
+  // `PLATFORM_hid_*` symbols (libhidapi was --enable'd at FFmpeg-configure
+  // time but the static lib was not bundled). On real 16KB-page devices
+  // (Samsung S26, Pixel 9+) System.loadLibrary("ffmpegkit") fails with
+  // `dlopen: cannot locate symbol "PLATFORM_hid_write"` and every
+  // FFmpegKit class is left poisoned.
+  //
+  // What `main-min` ships:
+  //   - h264/hevc/av1_mediacodec encoder + decoder (Android hardware codecs)
+  //   - native FFmpeg encoders: aac, flac, opus, vorbis, wmav2, pcm,
+  //     mpeg4, msmpeg4v3, gif, mjpeg, png, tiff, bmp
+  // What's NOT in `main-min`:
+  //   - libx264 / libx265 — substituted with h264_mediacodec / hevc_mediacodec
+  //   - libmp3lame — MP3 output is no longer supported (use M4A/AAC)
+  //   - libvpx-vp9 — WebM video output is no longer supported (use MP4)
+  implementation 'io.github.jamaismagic.ffmpeg:ffmpeg-kit-main-min-16kb:6.1.4'
+}

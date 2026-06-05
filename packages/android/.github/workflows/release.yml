@@ -1,0 +1,131 @@
+# Builds a signed Android release and publishes the APKs to a GitHub Release
+# whenever a `v*` tag is pushed (e.g. v0.2.0).
+#
+# Required repository secrets (Settings -> Secrets and variables -> Actions):
+#   RELEASE_KEYSTORE_BASE64    base64-encoded release keystore (.jks)
+#   RELEASE_KEYSTORE_PASSWORD  store password
+#   RELEASE_KEY_ALIAS          key alias inside the keystore
+#   RELEASE_KEY_PASSWORD       key password
+#
+# See android/app/build.gradle: the release signingConfig only activates when
+# CONVERT_X_KEYSTORE_FILE is present in gradle properties, which we write
+# into android/gradle.properties.local at job time.
+
+name: Release Android APKs
+
+on:
+  push:
+    tags:
+      - 'v*'
+
+# Needed so softprops/action-gh-release can create/update the Release.
+permissions:
+  contents: write
+
+# Silence the "Node.js 20 actions are deprecated" annotation that GitHub
+# surfaces on every run (and emails about, even on success). The pinned
+# action versions still use Node 20 internally — this env var tells the
+# runner to force them onto Node 24 so the annotation goes away.
+env:
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
+
+jobs:
+  build-android-release:
+    name: Build & publish signed APKs
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 1
+
+      - name: Set up JDK 21 (Temurin)
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '21'
+
+      - name: Set up Node 20
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: npm
+
+      # Persist Gradle's dependency cache + wrapper between runs. Without
+      # this each tag re-downloads ~500 MB of AndroidX/FFmpeg-kit/etc.
+      # which dominates the cold-build time. Key is bound to lockfile +
+      # gradle wrapper so version bumps invalidate cleanly.
+      - name: Cache Gradle
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.gradle/caches
+            ~/.gradle/wrapper
+          key: gradle-${{ runner.os }}-${{ hashFiles('android/gradle/wrapper/gradle-wrapper.properties', 'android/**/*.gradle', 'android/**/*.gradle.kts', 'package-lock.json') }}
+          restore-keys: |
+            gradle-${{ runner.os }}-
+
+      - name: Install npm dependencies
+        run: npm ci
+
+      - name: Decode release keystore (optional)
+        id: keystore
+        env:
+          KEYSTORE_BASE64: ${{ secrets.RELEASE_KEYSTORE_BASE64 }}
+        run: |
+          if [ -z "${KEYSTORE_BASE64}" ]; then
+            echo "No RELEASE_KEYSTORE_BASE64 secret set — building debug-signed APK."
+            echo "have_keystore=false" >> "$GITHUB_OUTPUT"
+          else
+            printf '%s' "${KEYSTORE_BASE64}" | base64 -d > android/app/release.keystore
+            test -s android/app/release.keystore
+            echo "have_keystore=true" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Gradle assembleRelease (signed)
+        if: steps.keystore.outputs.have_keystore == 'true'
+        working-directory: android
+        env:
+          KS_PASSWORD: ${{ secrets.RELEASE_KEYSTORE_PASSWORD }}
+          KEY_ALIAS: ${{ secrets.RELEASE_KEY_ALIAS }}
+          KEY_PASSWORD: ${{ secrets.RELEASE_KEY_PASSWORD }}
+        run: |
+          # R8 minify is OFF until proguard keep-rules cover all the
+          # reflectively-loaded Expo Modules + FFmpegKit / yt-dlp paths.
+          # Without that, the release loads a black screen at runtime.
+          # Trade APK size now, audit later.
+          ./gradlew assembleRelease \
+            --no-daemon \
+            --stacktrace \
+            -PCONVERT_X_KEYSTORE_FILE=release.keystore \
+            -PCONVERT_X_KEYSTORE_PASSWORD="${KS_PASSWORD}" \
+            -PCONVERT_X_KEY_ALIAS="${KEY_ALIAS}" \
+            -PCONVERT_X_KEY_PASSWORD="${KEY_PASSWORD}" \
+            -Pandroid.enableMinifyInReleaseBuilds=false \
+            -Pandroid.enableShrinkResourcesInReleaseBuilds=false
+
+      - name: Gradle assembleRelease (debug-signed fallback)
+        if: steps.keystore.outputs.have_keystore == 'false'
+        working-directory: android
+        run: |
+          ./gradlew assembleRelease \
+            --no-daemon \
+            --stacktrace \
+            -Pandroid.enableMinifyInReleaseBuilds=false \
+            -Pandroid.enableShrinkResourcesInReleaseBuilds=false
+
+      - name: List generated APKs
+        run: |
+          ls -lh android/app/build/outputs/apk/release/
+          # Fail fast if the arm64 APK is missing — we only build that
+          # ABI now (see splits block in app/build.gradle).
+          test -f android/app/build/outputs/apk/release/app-arm64-v8a-release.apk
+
+      - name: Publish GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          # The tag that triggered the workflow is used by default.
+          generate_release_notes: true
+          fail_on_unmatched_files: true
+          files: android/app/build/outputs/apk/release/*.apk
