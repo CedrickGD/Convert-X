@@ -1,5 +1,5 @@
 import * as Clipboard from 'expo-clipboard';
-import { Check, Download as DownloadIcon, Link2, Music, Video } from 'lucide-react-native';
+import { ArrowDownToLine, Check, Download as DownloadIcon, Link2, Music, Share2, Video } from 'lucide-react-native';
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
   ActivityIndicator,
@@ -12,6 +12,7 @@ import {
   View,
 } from 'react-native';
 import { Image as ExpoImage } from 'expo-image';
+import * as Sharing from 'expo-sharing';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 
 import { ProgressBar } from '../components/convert';
@@ -23,7 +24,11 @@ import {
   ensureMediaPermission,
   probeUrl,
 } from '../lib/downloadQueue';
+import { mediaTypeFromName } from '../lib/formats';
+import { haptics } from '../lib/haptics';
 import { addHistoryEntry } from '../lib/history';
+import { saveToGallery } from '../lib/image';
+import { addRecentUrl, getRecentUrls } from '../lib/recentUrls';
 import { useDownload, useShared } from '../state';
 import { radius, spacing, typography, useTheme } from '../theme';
 
@@ -58,8 +63,29 @@ export function DownloadScreen() {
     errors: Array<{ title: string; message: string }>;
   } | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const [results, setResults] = useState<{ name: string; uri: string }[]>([]);
+  const [recent, setRecent] = useState<string[]>([]);
 
   const site = detectSite(url);
+
+  useEffect(() => {
+    getRecentUrls().then(setRecent);
+  }, []);
+
+  const handleShareItem = useCallback(async (uri: string) => {
+    if (!(await Sharing.isAvailableAsync())) return;
+    await Sharing.shareAsync(uri).catch(() => {});
+  }, []);
+
+  const handleSaveItem = useCallback(async (uri: string) => {
+    const res = await saveToGallery(uri);
+    if (res.ok) haptics.success();
+    else haptics.error();
+    Alert.alert(
+      res.ok ? 'Saved' : 'Save failed',
+      res.ok ? 'Saved to your Convert-X album.' : res.reason ?? 'Could not save to gallery.'
+    );
+  }, []);
 
   // Clear the URL search when the user leaves the Download tab — unless a
   // probe / download / completed session is sitting on screen. Lets them
@@ -109,6 +135,7 @@ export function DownloadScreen() {
         cookies: state.settings.cookiesPath || undefined,
       });
       setEntries(result.entries);
+      void addRecentUrl(trimmed).then(setRecent);
       // If the URL targeted a specific carousel item (Instagram does
       // this when you tap a single image in a post), default the
       // selection to JUST that item. User can tap "Select all" to
@@ -147,6 +174,7 @@ export function DownloadScreen() {
       if (toDownload.length === 0) return;
       setError(null);
       setDone(null);
+      setResults([]);
       setProgress(0);
       setCurrentItemIdx(0);
       setCurrentItemTitle(toDownload[0]?.title ?? null);
@@ -197,15 +225,10 @@ export function DownloadScreen() {
                 ? r.outputPath
                 : `file://${r.outputPath}`
               : r.publicPath;
-            if (path) {
-              void addHistoryEntry({
-                uri: path,
-                name: r.outputPath?.split('/').pop() ?? entry.title,
-                bytes: 0,
-                op: 'download',
-                source: entry.webpageUrl,
-              });
-            }
+            if (!path) return;
+            const name = r.outputPath?.split('/').pop() ?? entry.title;
+            setResults((prev) => [...prev, { name, uri: path }]);
+            void addHistoryEntry({ uri: path, name, bytes: 0, op: 'download', source: entry.webpageUrl });
           },
         });
         if (result.cancelled) {
@@ -249,6 +272,7 @@ export function DownloadScreen() {
     setEntries([]);
     setSelectedIds(new Set());
     setDone(null);
+    setResults([]);
     setError(null);
     setProgress(0);
     setCurrentItemIdx(0);
@@ -321,6 +345,30 @@ export function DownloadScreen() {
               </View>
             ) : null}
           </View>
+
+          {recent.length > 0 && !url ? (
+            <View style={styles.recentRow}>
+              {recent.map((u) => (
+                <Pressable
+                  key={u}
+                  onPress={() => setUrl(u)}
+                  accessibilityRole="button"
+                  accessibilityLabel={`Use recent URL ${u}`}
+                  style={({ pressed }) => [
+                    styles.recentChip,
+                    {
+                      borderColor: theme.border.subtle,
+                      backgroundColor: pressed ? theme.bg.surfaceHigh : theme.bg.surface,
+                    },
+                  ]}
+                >
+                  <Text numberOfLines={1} style={[styles.recentChipText, { color: theme.text.muted }]}>
+                    {shortUrl(u)}
+                  </Text>
+                </Pressable>
+              ))}
+            </View>
+          ) : null}
 
           {/* Category + format + quality */}
           <View
@@ -630,6 +678,55 @@ export function DownloadScreen() {
               </View>
             ) : null}
           </View>
+          {results.length > 0 ? (
+            <View style={[styles.card, { backgroundColor: theme.bg.surface, borderColor: theme.border.subtle }]}>
+              {results.map((res, i) => {
+                const cat = mediaTypeFromName(res.name);
+                const canSave = cat === 'image' || cat === 'video';
+                return (
+                  <View
+                    key={i}
+                    style={[
+                      styles.resultRow,
+                      i > 0 ? { borderTopWidth: StyleSheet.hairlineWidth, borderTopColor: theme.border.subtle } : null,
+                    ]}
+                  >
+                    <Text numberOfLines={1} style={[styles.resultName, { color: theme.text.primary }]}>
+                      {res.name}
+                    </Text>
+                    <View style={styles.resultActions}>
+                      {canSave ? (
+                        <Pressable
+                          hitSlop={6}
+                          onPress={() => handleSaveItem(res.uri)}
+                          accessibilityRole="button"
+                          accessibilityLabel={`Save ${res.name} to gallery`}
+                          style={({ pressed }) => [
+                            styles.resultIconBtn,
+                            { borderColor: theme.border.subtle, backgroundColor: pressed ? theme.bg.surfaceHigh : 'transparent' },
+                          ]}
+                        >
+                          <ArrowDownToLine size={14} strokeWidth={2} color={theme.text.secondary} />
+                        </Pressable>
+                      ) : null}
+                      <Pressable
+                        hitSlop={6}
+                        onPress={() => handleShareItem(res.uri)}
+                        accessibilityRole="button"
+                        accessibilityLabel={`Share ${res.name}`}
+                        style={({ pressed }) => [
+                          styles.resultIconBtn,
+                          { borderColor: theme.border.subtle, backgroundColor: pressed ? theme.bg.surfaceHigh : 'transparent' },
+                        ]}
+                      >
+                        <Share2 size={14} strokeWidth={2} color={theme.text.secondary} />
+                      </Pressable>
+                    </View>
+                  </View>
+                );
+              })}
+            </View>
+          ) : null}
           <View style={styles.actions}>
             {done && done.errors.length > 0 ? (
               <Pressable
@@ -667,6 +764,11 @@ export function DownloadScreen() {
       ) : null}
     </ScrollView>
   );
+}
+
+/** Strip scheme/www and truncate for a compact recent-URL chip. */
+function shortUrl(u: string): string {
+  return u.replace(/^https?:\/\/(www\.)?/, '').slice(0, 26);
 }
 
 /** Format a yt-dlp duration (seconds) into a short clock string. */
@@ -924,4 +1026,29 @@ const styles = StyleSheet.create({
 
   errorText: { ...typography.caption, textAlign: 'center' },
   carouselNotice: { ...typography.caption, lineHeight: 17 },
+  resultRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: spacing.md,
+    paddingVertical: spacing.md,
+  },
+  resultName: { ...typography.bodySm, flex: 1 },
+  resultActions: { flexDirection: 'row', gap: spacing.sm },
+  recentRow: { flexDirection: 'row', flexWrap: 'wrap', gap: spacing.sm },
+  recentChip: {
+    maxWidth: '100%',
+    paddingHorizontal: spacing.lg,
+    paddingVertical: spacing.sm,
+    borderRadius: radius.round,
+    borderWidth: StyleSheet.hairlineWidth,
+  },
+  recentChipText: { ...typography.micro },
+  resultIconBtn: {
+    width: 32,
+    height: 32,
+    borderRadius: radius.xs,
+    borderWidth: StyleSheet.hairlineWidth,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
 });
