@@ -8,7 +8,7 @@ export default defineConfig(async () => ({
   plugins: [svelte()],
   resolve: {
     alias: {
-      "@convertx/shared": path.resolve(__dirname, "packages/shared/src"),
+      "@convertx/shared": path.resolve(__dirname, "../shared/src"),
     },
   },
   clearScreen: false,

@@ -1,26 +1,18 @@
 {
-  "name": "convert-x",
+  "name": "convertx-monorepo",
   "private": true,
   "version": "0.1.0",
-  "type": "module",
-  "workspaces": ["packages/*"],
+  "workspaces": [
+    "packages/desktop",
+    "packages/web",
+    "packages/shared"
+  ],
   "scripts": {
-    "dev": "vite",
-    "build": "vite build",
-    "preview": "vite preview",
-    "tauri": "tauri",
-    "dev:web": "npm run dev -w packages/web",
-    "build:web": "npm run build -w packages/web"
-  },
-  "dependencies": {
-    "@tauri-apps/api": "^2",
-    "@tauri-apps/plugin-dialog": "^2",
-    "@tauri-apps/plugin-shell": "^2"
-  },
-  "devDependencies": {
-    "@sveltejs/vite-plugin-svelte": "^4",
-    "@tauri-apps/cli": "^2",
-    "svelte": "^5",
-    "vite": "^5"
+    "dev:desktop": "npm run dev -w @convertx/desktop",
+    "build:desktop": "npm run build -w @convertx/desktop",
+    "tauri": "npm run tauri -w @convertx/desktop --",
+    "dev:web": "npm run dev -w @convertx/web",
+    "build:web": "npm run build -w @convertx/web",
+    "preview:web": "npm run preview -w @convertx/web"
   }
 }
