@@ -1,6 +1,6 @@
 import * as DocumentPicker from 'expo-document-picker';
 import * as FileSystem from 'expo-file-system/legacy';
-import { Check, Code, Cookie, Download, Heart, Package, RefreshCw, SwatchBook, Trash2 } from 'lucide-react-native';
+import { Check, Code, Cookie, Download, Globe, Heart, Monitor, Package, RefreshCw, SwatchBook, Trash2 } from 'lucide-react-native';
 // Phase 2 used a static import for the version; the in-app updater (Phase 9)
 // uses the same source of truth.
 import pkg from '../../package.json';
@@ -33,6 +33,9 @@ type Nav = NativeStackNavigationProp<RootStackParamList>;
 const REPO_DESKTOP = 'https://github.com/CedrickGD/Convert-X';
 const REPO_ANDROID = 'https://github.com/CedrickGD/Convert-X-Android-APK';
 const AUTHOR = 'https://github.com/CedrickGD';
+// Cross-platform install destinations (the other two surfaces of Convert-X).
+const DESKTOP_RELEASES = 'https://github.com/CedrickGD/Convert-X/releases';
+const WEB_URL = 'https://convert-x-online.pages.dev';
 
 const OSS = [
   { name: 'FFmpeg', role: 'media engine', url: 'https://ffmpeg.org' },
@@ -113,9 +116,38 @@ export function CreditsScreen() {
           </View>
           <View style={{ flex: 1 }}>
             <Text style={[styles.rowTitle, { color: theme.text.primary }]}>Convert-X Android v{version}</Text>
-            <Text style={[styles.rowSub, { color: theme.text.secondary }]}>Also available on desktop</Text>
+            <Text style={[styles.rowSub, { color: theme.text.secondary }]}>Also on desktop & web</Text>
           </View>
         </View>
+      </View>
+
+      {/* Also available on — cross-link to the desktop + web surfaces */}
+      <View
+        style={[
+          styles.card,
+          { backgroundColor: theme.bg.surface, borderColor: theme.border.subtle },
+        ]}
+      >
+        <Text style={[styles.cardLabel, { color: theme.text.muted }]}>ALSO AVAILABLE ON</Text>
+        <Pressable onPress={() => open(DESKTOP_RELEASES)} style={styles.row}>
+          <View style={[styles.iconBox, { backgroundColor: theme.bg.surfaceSunken, borderColor: theme.border.subtle, borderWidth: StyleSheet.hairlineWidth }]}>
+            <Monitor size={18} strokeWidth={1.8} color={theme.text.primary} />
+          </View>
+          <View style={{ flex: 1 }}>
+            <Text style={[styles.rowTitle, { color: theme.text.primary }]}>Desktop app</Text>
+            <Text style={[styles.rowSub, { color: theme.text.secondary }]}>Windows installer · MSI</Text>
+          </View>
+        </Pressable>
+        <View style={[styles.divider, { backgroundColor: theme.border.subtle }]} />
+        <Pressable onPress={() => open(WEB_URL)} style={styles.row}>
+          <View style={[styles.iconBox, { backgroundColor: theme.bg.surfaceSunken, borderColor: theme.border.subtle, borderWidth: StyleSheet.hairlineWidth }]}>
+            <Globe size={18} strokeWidth={1.8} color={theme.text.primary} />
+          </View>
+          <View style={{ flex: 1 }}>
+            <Text style={[styles.rowTitle, { color: theme.text.primary }]}>Web app</Text>
+            <Text style={[styles.rowSub, { color: theme.text.secondary }]}>convert-x-online.pages.dev</Text>
+          </View>
+        </Pressable>
       </View>
 
       {/* Appearance — custom accent color, persisted */}

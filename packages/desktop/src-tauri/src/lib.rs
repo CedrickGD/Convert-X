@@ -2,6 +2,7 @@ mod convert;
 mod detect;
 mod downloader;
 mod ffmpeg;
+mod updater;
 
 use convert::AppState;
 use std::sync::{Arc, Mutex};
@@ -98,6 +99,8 @@ pub fn run() {
             fetch_remote_image,
             open_file,
             open_in_folder,
+            updater::download_installer,
+            updater::launch_installer,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

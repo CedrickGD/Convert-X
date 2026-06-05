@@ -49,6 +49,60 @@ export function pickWindowsAssets(release) {
   return { msi, exe };
 }
 
+// The monorepo holds BOTH desktop (`desktop-v*`, MSI) and android (`v*`, APK)
+// releases, so `/releases/latest` is unreliable for the desktop updater. List
+// releases and return the newest published one whose tag is `desktop-v*` and
+// that ships a Windows installer.
+export async function fetchLatestDesktopRelease() {
+  try {
+    const res = await fetch(`https://api.github.com/repos/${REPO}/releases?per_page=30`, {
+      headers: {
+        Accept: "application/vnd.github+json",
+        "X-GitHub-Api-Version": "2022-11-28",
+      },
+    });
+    if (!res.ok) return null;
+    const list = await res.json();
+    for (const json of list) {
+      if (json.draft || json.prerelease) continue;
+      if (!String(json.tag_name).startsWith("desktop-v")) continue;
+      const assets = (json.assets || []).map((a) => ({
+        name: a.name,
+        size: a.size,
+        downloadUrl: a.browser_download_url,
+        contentType: a.content_type,
+      }));
+      const win = assets.find((a) => /\.(msi|exe)$/i.test(a.name));
+      if (!win) continue;
+      return {
+        tagName: json.tag_name,
+        version: String(json.tag_name).replace(/^desktop-v/, ""),
+        name: json.name,
+        notes: json.body || "",
+        publishedAt: json.published_at,
+        htmlUrl: json.html_url,
+        assets,
+      };
+    }
+    return null;
+  } catch {
+    return null;
+  }
+}
+
+// True if `latest` (dotted semver) is strictly newer than `current`.
+export function isNewerVersion(latest, current) {
+  const pa = String(latest || "").split(".").map((n) => parseInt(n, 10) || 0);
+  const pb = String(current || "").split(".").map((n) => parseInt(n, 10) || 0);
+  for (let i = 0; i < 3; i++) {
+    const a = pa[i] || 0;
+    const b = pb[i] || 0;
+    if (a > b) return true;
+    if (a < b) return false;
+  }
+  return false;
+}
+
 export function formatSize(bytes) {
   if (!bytes) return "";
   const u = ["B", "KB", "MB", "GB"];

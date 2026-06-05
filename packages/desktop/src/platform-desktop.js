@@ -1,4 +1,5 @@
 import { invoke } from "@tauri-apps/api/core";
+import { getVersion } from "@tauri-apps/api/app";
 import { listen } from "@tauri-apps/api/event";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import { open } from "@tauri-apps/plugin-dialog";
@@ -135,6 +136,26 @@ export function createDesktopAdapter() {
 
     async openInFolder(path) {
       return invoke("open_in_folder", { path });
+    },
+
+    // --- Self-update (in-app, Windows MSI) ---
+    async getAppVersion() {
+      return getVersion();
+    },
+
+    async downloadInstaller(url) {
+      return invoke("download_installer", { url });
+    },
+
+    async launchInstaller(path) {
+      return invoke("launch_installer", { path });
+    },
+
+    onUpdateProgress(callback) {
+      let unlisten;
+      listen("desktop-update-progress", (event) => callback(event.payload))
+        .then((fn) => (unlisten = fn));
+      return () => unlisten?.();
     },
 
     onFileDrop(callback) {

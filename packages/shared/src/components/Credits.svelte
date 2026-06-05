@@ -2,16 +2,75 @@
   import { onMount } from "svelte";
   import DesktopDownload from "./DesktopDownload.svelte";
   import WebVersionLink from "./WebVersionLink.svelte";
-  import { fetchLatestRelease, REPO_URL } from "../lib/github.js";
+  import {
+    fetchLatestRelease,
+    fetchLatestDesktopRelease,
+    isNewerVersion,
+    pickWindowsAssets,
+    formatSize,
+    REPO_URL,
+  } from "../lib/github.js";
   import { getPlatform } from "../platform.js";
 
-  const isWeb = getPlatform().platformType === "web";
+  const platform = getPlatform();
+  const isWeb = platform.platformType === "web";
+  const isDesktop = platform.platformType === "desktop";
+
+  // APKs live in the monorepo's GitHub releases (v* tags).
+  const ANDROID_URL = `${REPO_URL}/releases`;
 
   let version = "";
+
+  // --- Desktop self-update (mirrors the Android one-click flow) ---
+  let upState = "idle"; // idle | checking | available | downloading | uptodate | error
+  let upPct = 0;
+  let currentVersion = "";
+  let latest = null;
+  let latestAsset = null;
+
+  async function checkDesktopUpdate(silent) {
+    if (!isDesktop) return;
+    if (!silent) upState = "checking";
+    try {
+      if (!currentVersion) currentVersion = await platform.getAppVersion();
+      const rel = await fetchLatestDesktopRelease();
+      if (rel && isNewerVersion(rel.version, currentVersion)) {
+        const win = pickWindowsAssets(rel);
+        latestAsset = win.msi || win.exe;
+        latest = rel;
+        upState = latestAsset ? "available" : silent ? "idle" : "error";
+      } else {
+        upState = silent ? "idle" : "uptodate";
+      }
+    } catch {
+      upState = silent ? "idle" : "error";
+    }
+  }
+
+  async function installDesktopUpdate() {
+    if (!latestAsset) return;
+    upState = "downloading";
+    upPct = 0;
+    const stop = platform.onUpdateProgress((p) => (upPct = p));
+    try {
+      const path = await platform.downloadInstaller(latestAsset.downloadUrl);
+      await platform.launchInstaller(path); // app quits here so the MSI can replace it
+    } catch {
+      upState = "error";
+    } finally {
+      stop?.();
+    }
+  }
+
+  function onUpdateButton() {
+    if (upState === "available") installDesktopUpdate();
+    else checkDesktopUpdate(false);
+  }
 
   onMount(async () => {
     const r = await fetchLatestRelease();
     if (r?.tagName) version = r.tagName;
+    if (isDesktop) checkDesktopUpdate(true); // silent auto-check
   });
 
   const oss = [
@@ -35,11 +94,51 @@
     </a>
   </section>
 
+  {#if isDesktop}
+    <section class="card update">
+      <h2>{upState === "available" ? "Update available" : "App update"}</h2>
+      <div class="update-row">
+        <div class="update-info">
+          <div class="update-sub">
+            {#if upState === "checking"}Checking GitHub…
+            {:else if upState === "downloading"}Downloading… {upPct}%
+            {:else if upState === "available"}v{latest.version}{latestAsset?.size ? ` · ${formatSize(latestAsset.size)}` : ""}
+            {:else if upState === "uptodate"}You have the latest version.
+            {:else if upState === "error"}Couldn't check for updates.
+            {:else}{currentVersion ? `Installed v${currentVersion}` : "Check for updates"}{/if}
+          </div>
+        </div>
+        {#if upState !== "downloading"}
+          <button
+            class="update-btn"
+            class:primary={upState === "available"}
+            on:click={onUpdateButton}
+            disabled={upState === "checking"}
+          >
+            {upState === "available" ? "Update now" : "Check"}
+          </button>
+        {/if}
+      </div>
+      {#if upState === "downloading"}
+        <div class="progress"><div class="bar" style={`width:${upPct}%`}></div></div>
+      {/if}
+    </section>
+  {/if}
+
   {#if isWeb}
     <DesktopDownload variant="card" />
   {:else}
     <WebVersionLink />
   {/if}
+
+  <!-- Cross-link to the third surface (Android), shown on web + desktop -->
+  <section class="card">
+    <h2>Also on Android</h2>
+    <a class="cross-link" href={ANDROID_URL} target="_blank" rel="noopener noreferrer">
+      Download the Android APK
+      <span aria-hidden="true">→</span>
+    </a>
+  </section>
 
   <section class="card">
     <h2>Open Source</h2>
@@ -109,6 +208,66 @@
     font-size: 0.78rem;
     color: var(--text-muted);
   }
+
+  /* Update card */
+  .update-row {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 12px;
+  }
+
+  .update-sub {
+    font-size: 0.85rem;
+    color: var(--text-secondary);
+  }
+
+  .update-btn {
+    flex-shrink: 0;
+    padding: 7px 14px;
+    font-size: 0.82rem;
+    font-weight: 600;
+    border-radius: var(--radius-sm);
+    border: 1px solid var(--border);
+    background: var(--bg-elev, transparent);
+    color: var(--text-primary);
+    cursor: pointer;
+    transition: background var(--transition-fast), color var(--transition-fast), border-color var(--transition-fast);
+  }
+
+  .update-btn:hover:not(:disabled) { border-color: var(--accent); color: var(--accent); }
+  .update-btn:disabled { opacity: 0.6; cursor: default; }
+
+  .update-btn.primary {
+    background: var(--accent);
+    border-color: var(--accent);
+    color: #fff;
+  }
+  .update-btn.primary:hover { filter: brightness(1.08); color: #fff; }
+
+  .progress {
+    margin-top: 10px;
+    height: 6px;
+    background: var(--border);
+    border-radius: 999px;
+    overflow: hidden;
+  }
+  .bar {
+    height: 100%;
+    background: var(--accent);
+    transition: width 0.2s ease;
+  }
+
+  .cross-link {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    font-size: 0.85rem;
+    font-weight: 500;
+    color: var(--text-primary);
+    text-decoration: none;
+  }
+  .cross-link:hover { color: var(--accent); }
 
   .lead {
     font-size: 0.82rem;
