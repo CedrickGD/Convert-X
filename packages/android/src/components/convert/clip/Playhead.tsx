@@ -26,7 +26,7 @@ type Props = {
 
 const HEAD_W = 3;
 
-export function Playhead({
+export const Playhead = React.memo(function Playhead({
   time,
   duration,
   trackWidth,
@@ -92,7 +92,7 @@ export function Playhead({
       </Animated.View>
     </GestureDetector>
   );
-}
+});
 
 const styles = StyleSheet.create({
   head: {

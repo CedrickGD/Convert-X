@@ -1,4 +1,4 @@
-import React from 'react';
+import React, { useMemo } from 'react';
 import { LayoutChangeEvent, Pressable, StyleSheet, Text, View } from 'react-native';
 
 import { radius, spacing, typography, useTheme } from '../../../theme';
@@ -30,7 +30,9 @@ export function TimelineTrack({
   children,
 }: Props) {
   const { theme } = useTheme();
-  const ticks = buildTicks(duration);
+  // duration is constant during playback — don't rebuild the tick array on
+  // every 4Hz currentTime re-render.
+  const ticks = useMemo(() => buildTicks(duration), [duration]);
 
   const startPct = duration > 0 ? (trimStart / duration) * 100 : 0;
   const endPct = duration > 0 ? (trimEnd / duration) * 100 : 100;
