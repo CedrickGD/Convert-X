@@ -47,6 +47,8 @@ export function FileList({ files, view, onRemoveFile, onAddFiles }: Props) {
         {view === 'ready' && onAddFiles ? (
           <Pressable
             onPress={onAddFiles}
+            accessibilityRole="button"
+            accessibilityLabel="Add files"
             style={({ pressed }) => [
               styles.addBtn,
               {
@@ -133,17 +135,27 @@ function FileRow({
         )}
       </View>
       {isDone ? (
-        <View style={[styles.statusBadge, { backgroundColor: theme.accent.subtle }]}>
+        <View
+          accessible
+          accessibilityLabel="Converted"
+          style={[styles.statusBadge, { backgroundColor: theme.accent.subtle }]}
+        >
           <Check size={12} strokeWidth={2.4} color={theme.accent.primary} />
         </View>
       ) : isError ? (
-        <View style={[styles.statusBadge, { backgroundColor: theme.status.errorDim }]}>
+        <View
+          accessible
+          accessibilityLabel={file.error ?? 'Failed'}
+          style={[styles.statusBadge, { backgroundColor: theme.status.errorDim }]}
+        >
           <X size={12} strokeWidth={2.4} color={theme.status.error} />
         </View>
       ) : view === 'ready' && onRemove ? (
         <Pressable
           hitSlop={8}
           onPress={onRemove}
+          accessibilityRole="button"
+          accessibilityLabel={`Remove ${file.name}`}
           style={({ pressed }) => [styles.removeBtn, { opacity: pressed ? 0.5 : 1 }]}
         >
           <X size={14} strokeWidth={2} color={theme.text.muted} />

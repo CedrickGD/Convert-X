@@ -15,6 +15,7 @@ import Animated, {
   runOnJS,
   useAnimatedProps,
   useAnimatedStyle,
+  useReducedMotion,
   useSharedValue,
 } from 'react-native-reanimated';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
@@ -70,6 +71,7 @@ export function CropEditor({
 }: Props) {
   const { theme } = useTheme();
   const insets = useSafeAreaInsets();
+  const reduceMotion = useReducedMotion();
 
   // Measured image-area size; the displayed image is fit inside it by aspect.
   const [area, setArea] = useState({ w: 0, h: 0 });
@@ -292,18 +294,30 @@ export function CropEditor({
     <Modal
       visible
       transparent={false}
-      animationType="slide"
+      animationType={reduceMotion ? 'none' : 'slide'}
       statusBarTranslucent
       onRequestClose={onCancel}
     >
       <GestureHandlerRootView style={[styles.root, { backgroundColor: theme.bg.base }]}>
         {/* Header */}
         <View style={[styles.header, { paddingTop: insets.top + spacing.md }]}>
-          <Pressable onPress={onCancel} hitSlop={10} style={styles.headerBtn}>
+          <Pressable
+            onPress={onCancel}
+            hitSlop={10}
+            accessibilityRole="button"
+            accessibilityLabel="Cancel crop"
+            style={styles.headerBtn}
+          >
             <Text style={[styles.headerCancel, { color: theme.text.secondary }]}>Cancel</Text>
           </Pressable>
           <Text style={[styles.headerTitle, { color: theme.text.primary }]}>Crop</Text>
-          <Pressable onPress={apply} hitSlop={10} style={styles.headerBtn}>
+          <Pressable
+            onPress={apply}
+            hitSlop={10}
+            accessibilityRole="button"
+            accessibilityLabel="Apply crop"
+            style={styles.headerBtn}
+          >
             <Text style={[styles.headerDone, { color: theme.accent.primary }]}>Done</Text>
           </Pressable>
         </View>
@@ -377,6 +391,8 @@ export function CropEditor({
           </View>
           <Pressable
             onPress={reset}
+            accessibilityRole="button"
+            accessibilityLabel="Reset crop to full image"
             style={({ pressed }) => [
               styles.resetBtn,
               {
