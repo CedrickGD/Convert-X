@@ -1,9 +1,12 @@
-import { Code, Moon, Sun } from 'lucide-react-native';
+import { useNavigation } from '@react-navigation/native';
+import type { NativeStackNavigationProp } from '@react-navigation/native-stack';
+import { Code, History as HistoryIcon, Moon, Sun } from 'lucide-react-native';
 import React from 'react';
 import { Linking, Pressable, StyleSheet, Text, View } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 
 import pkg from '../../package.json';
+import { RootStackParamList } from '../navigation/types';
 import { radius, spacing, typography, useTheme } from '../theme';
 
 const REPO_URL = 'https://github.com/CedrickGD/Convert-X';
@@ -16,6 +19,7 @@ const REPO_URL = 'https://github.com/CedrickGD/Convert-X';
 export function AppHeader() {
   const { theme, settings, setColorScheme } = useTheme();
   const insets = useSafeAreaInsets();
+  const navigation = useNavigation<NativeStackNavigationProp<RootStackParamList>>();
 
   const onToggleTheme = () => {
     setColorScheme(theme.isDark ? 'light' : 'dark');
@@ -54,25 +58,42 @@ export function AppHeader() {
         </Text>
       </View>
 
-      <Pressable
-        onPress={onToggleTheme}
-        hitSlop={10}
-        accessibilityRole="button"
-        accessibilityLabel={theme.isDark ? 'Switch to light theme' : 'Switch to dark theme'}
-        style={({ pressed }) => [
-          styles.iconBtn,
-          {
-            borderColor: theme.border.subtle,
-            backgroundColor: pressed ? theme.bg.surfaceHigh : 'transparent',
-          },
-        ]}
-      >
-        {theme.isDark ? (
-          <Sun size={18} strokeWidth={1.8} color={theme.text.secondary} />
-        ) : (
-          <Moon size={18} strokeWidth={1.8} color={theme.text.secondary} />
-        )}
-      </Pressable>
+      <View style={styles.rightGroup}>
+        <Pressable
+          onPress={() => navigation.navigate('History')}
+          hitSlop={10}
+          accessibilityRole="button"
+          accessibilityLabel="Output history"
+          style={({ pressed }) => [
+            styles.iconBtn,
+            {
+              borderColor: theme.border.subtle,
+              backgroundColor: pressed ? theme.bg.surfaceHigh : 'transparent',
+            },
+          ]}
+        >
+          <HistoryIcon size={18} strokeWidth={1.8} color={theme.text.secondary} />
+        </Pressable>
+        <Pressable
+          onPress={onToggleTheme}
+          hitSlop={10}
+          accessibilityRole="button"
+          accessibilityLabel={theme.isDark ? 'Switch to light theme' : 'Switch to dark theme'}
+          style={({ pressed }) => [
+            styles.iconBtn,
+            {
+              borderColor: theme.border.subtle,
+              backgroundColor: pressed ? theme.bg.surfaceHigh : 'transparent',
+            },
+          ]}
+        >
+          {theme.isDark ? (
+            <Sun size={18} strokeWidth={1.8} color={theme.text.secondary} />
+          ) : (
+            <Moon size={18} strokeWidth={1.8} color={theme.text.secondary} />
+          )}
+        </Pressable>
+      </View>
     </View>
   );
 }
@@ -86,6 +107,7 @@ const styles = StyleSheet.create({
     paddingBottom: spacing.xxs,
     gap: spacing.md,
   },
+  rightGroup: { flexDirection: 'row', gap: spacing.md },
   iconBtn: {
     width: 32,
     height: 32,

@@ -103,6 +103,9 @@ function FormatChip({
     <Pressable
       onPress={disabled ? undefined : onPress}
       disabled={disabled}
+      accessibilityRole="button"
+      accessibilityState={{ selected, disabled }}
+      accessibilityLabel={disabled ? `${format.label}, not supported yet` : format.label}
       style={({ pressed }) => [
         styles.chip,
         {

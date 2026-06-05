@@ -3,6 +3,7 @@ import { StyleSheet, View } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 
 import { AppHeader } from '../components/AppHeader';
+import { ErrorBoundary } from '../components/ErrorBoundary';
 import { Navbar } from '../components/Navbar';
 import { ConvertScreen } from '../screens/ConvertScreen';
 import { CreditsScreen } from '../screens/CreditsScreen';
@@ -33,10 +34,26 @@ const MODE_RENDERERS: Record<Mode, () => React.ReactElement> = {
   credits: () => <CreditsScreen />,
 };
 
+const MODE_LABELS: Record<Mode, string> = {
+  convert: 'Convert',
+  resize: 'Resize',
+  download: 'Download',
+  credits: 'Credits',
+};
+
 export function ModeRouter() {
   const { theme } = useTheme();
   const { activeMode } = useShared();
   const insets = useSafeAreaInsets();
+
+  const boundaryColors = {
+    bg: theme.bg.base,
+    text: theme.text.primary,
+    muted: theme.text.muted,
+    accent: theme.accent.primary,
+    onAccent: theme.accent.onPrimary,
+    border: theme.border.subtle,
+  };
 
   return (
     <View style={[styles.root, { backgroundColor: theme.bg.base }]}>
@@ -56,7 +73,9 @@ export function ModeRouter() {
               { display: mode === activeMode ? 'flex' : 'none' },
             ]}
           >
-            {MODE_RENDERERS[mode]()}
+            <ErrorBoundary colors={boundaryColors} label={MODE_LABELS[mode]}>
+              {MODE_RENDERERS[mode]()}
+            </ErrorBoundary>
           </View>
         ))}
       </View>

@@ -10,14 +10,16 @@ import {
   FileList,
   FilePreview,
   FormatPicker,
+  GifSettings,
   OutputPanel,
   OutputSettings,
   ProgressBar,
   VideoEditControls,
 } from '../components/convert';
 import { getFfmpegLoadError } from '../../modules/convert-x-ffmpeg/src';
-import { MediaType, formatKeyFromName, mediaTypeFromName } from '../lib/formats';
+import { FORMATS, MediaType, formatKeyFromName, mediaTypeFromName } from '../lib/formats';
 import { cancelSession, runConvertSession } from '../lib/conversionQueue';
+import { addHistoryEntry } from '../lib/history';
 import { useConvert } from '../state';
 import { FileEntry } from '../state/types';
 import { radius, spacing, typography, useTheme } from '../theme';
@@ -119,7 +121,7 @@ export function ConvertScreen() {
         convert.dispatch({ type: 'fileStatus', sessionId, id, status: 'converting', progress: 0 }),
       onFileProgress: (id, progress) =>
         convert.dispatch({ type: 'fileProgress', sessionId, id, progress }),
-      onFileDone: (id, outputUri, outputName, outputBytes) =>
+      onFileDone: (id, outputUri, outputName, outputBytes) => {
         convert.dispatch({
           type: 'fileResult',
           sessionId,
@@ -127,7 +129,15 @@ export function ConvertScreen() {
           outputUri,
           outputName,
           outputBytes,
-        }),
+        });
+        void addHistoryEntry({
+          uri: outputUri,
+          name: outputName,
+          bytes: outputBytes,
+          op: 'convert',
+          source: state.files.find((f) => f.id === id)?.name,
+        });
+      },
       onFileError: (id, error) => convert.dispatch({ type: 'fileError', sessionId, id, error }),
       onFileSkipped: (id) =>
         convert.dispatch({ type: 'fileStatus', sessionId, id, status: 'skipped' }),
@@ -153,6 +163,22 @@ export function ConvertScreen() {
     if (active.length === 0) return 0;
     return active.reduce((sum, f) => sum + f.progress, 0) / active.length;
   }, [state.files]);
+
+  // Quality-slider copy depends on the target's media category — the same
+  // 0..100 knob means image compression, video bitrate, or audio bitrate.
+  const qualityKind = useMemo<'image' | 'video' | 'audio'>(() => {
+    const f = FORMATS.find((x) => x.key === state.settings.format);
+    return f?.category === 'video' || f?.category === 'audio' ? f.category : 'image';
+  }, [state.settings.format]);
+
+  // Batch progress reads as 1/N steps; a "X of N" label makes the sequential
+  // advance legible instead of looking stalled.
+  const convertingLabel = useMemo(() => {
+    if (!isBatch) return 'Converting…';
+    const total = state.files.filter((f) => f.status !== 'skipped' && f.status !== 'error').length;
+    const doneN = state.files.filter((f) => f.status === 'done').length;
+    return `Converting ${Math.min(doneN + 1, total)} of ${total}…`;
+  }, [state.files, isBatch]);
 
   const compatibleCount = state.files.filter(
     (f) =>
@@ -256,12 +282,26 @@ export function ConvertScreen() {
             />
           ) : null}
 
+          {/* GIF output settings — width / framerate / palette colors. */}
+          {state.settings.format === 'gif' ? (
+            <GifSettings
+              settings={state.settings}
+              onUpdate={(patch) => convert.updateSettings(patch)}
+            />
+          ) : null}
+
           <OutputSettings
-            singleFileName={!isBatch ? single?.name?.replace(/\.[^.]+$/, '') ?? '' : undefined}
+            singleFileName={
+              !isBatch
+                ? state.settings.customName ?? single?.name?.replace(/\.[^.]+$/, '') ?? ''
+                : undefined
+            }
+            onFilenameChange={(name) => convert.updateSettings({ customName: name })}
             formatExt={state.settings.format ?? undefined}
             quality={state.settings.quality}
             onQualityChange={(q) => convert.updateSettings({ quality: q })}
-            qualityKind="image"
+            qualityKind={qualityKind}
+            showQuality={state.settings.format !== 'gif'}
           />
 
           <View style={styles.actions}>
@@ -303,7 +343,7 @@ export function ConvertScreen() {
       {state.view === 'converting' ? (
         <View style={styles.stack}>
           <FileList files={state.files} view="converting" />
-          <ProgressBar progress={overallProgress} label="Converting…" />
+          <ProgressBar progress={overallProgress} label={convertingLabel} />
           <View style={styles.actions}>
             <Pressable
               onPress={handleCancel}

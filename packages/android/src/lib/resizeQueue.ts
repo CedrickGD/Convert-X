@@ -5,7 +5,7 @@
  */
 
 import { FORMATS } from './formats';
-import { convertImage, ResizeSpec } from './image';
+import { convertImage, isSupportedImageFormat, ResizeSpec } from './image';
 import type { FileEntry, ResizeSettings } from '../state/types';
 
 const cancelled = new Set<string>();
@@ -59,10 +59,23 @@ export async function runResizeSession(opts: ResizeRunOpts): Promise<void> {
 
       const targetKey =
         opts.settings.outputFormat ?? file.name.split('.').pop()?.toLowerCase() ?? 'png';
-      const fmt = FORMATS.find((f) => f.key === targetKey) ?? FORMATS[0];
-      if (!fmt.supported) {
-        opts.onFileError(file.id, `${fmt.label} not supported on mobile yet — Phase 4`);
-        continue;
+      let fmt = FORMATS.find((f) => f.key === targetKey) ?? FORMATS[0];
+      // Resize is image-manipulator-only, which can only encode PNG / JPG /
+      // WebP. BMP/TIFF/ICO/GIF are flagged `supported` for the FFmpeg convert
+      // path but would throw at convertImage time here. When the target came
+      // from "Same" (no explicit output format), silently fall back to PNG so
+      // the export still works; when the user explicitly picked an unencodable
+      // format, tell them.
+      if (!isSupportedImageFormat(fmt)) {
+        if (opts.settings.outputFormat == null) {
+          fmt = FORMATS.find((f) => f.key === 'png') ?? fmt;
+        } else {
+          opts.onFileError(
+            file.id,
+            `${fmt.label} isn't supported for resize — choose PNG, JPG, or WebP.`
+          );
+          continue;
+        }
       }
 
       opts.onFileStart(file.id);
@@ -75,6 +88,7 @@ export async function runResizeSession(opts: ResizeRunOpts): Promise<void> {
           targetFormat: fmt,
           quality: opts.settings.quality,
           resize: specFromSettings(opts.settings),
+          crop: opts.settings.crop,
         });
         if (cancelled.has(opts.sessionId)) break;
         opts.onFileDone(file.id, result.outputUri, result.outputName, result.bytes);

@@ -7,6 +7,8 @@
  * change the desktop CSS in lockstep.
  */
 
+import { darken, lighten, normalizeHex, readableOn, rgba } from '../lib/color';
+
 export type ColorScheme = 'light' | 'dark' | 'system';
 
 export type Theme = {
@@ -81,8 +83,10 @@ export const DARK_THEME: Theme = {
   text: {
     primary: '#f0f0f0',
     secondary: '#999999',
-    muted: '#4a4a4a',
-    tertiary: '#4a4a4a',
+    // Bumped from #4a4a4a (2.2:1) to ~4.6:1 on bg.base for WCAG-AA — muted
+    // carries informational text (sizes, labels, tick marks, placeholders).
+    muted: '#7a7a7a',
+    tertiary: '#7a7a7a',
     onAccent: '#000000',
   },
   border: {
@@ -126,8 +130,9 @@ export const LIGHT_THEME: Theme = {
   text: {
     primary: '#111111',
     secondary: '#555555',
-    muted: '#999999',
-    tertiary: '#999999',
+    // Bumped from #999 (2.85:1) to ~4.9:1 on bg.base for WCAG-AA.
+    muted: '#6b6b6b',
+    tertiary: '#6b6b6b',
     onAccent: '#ffffff',
   },
   border: {
@@ -148,6 +153,43 @@ export const LIGHT_THEME: Theme = {
   },
 };
 
-export function resolveTheme(isDark: boolean): Theme {
-  return isDark ? DARK_THEME : LIGHT_THEME;
+/**
+ * Build the full accent cluster from a single base color — used when the user
+ * overrides the default emerald with their own. Shades and the on-accent text
+ * color are derived so buttons/labels stay legible on any hue.
+ */
+function buildAccent(base: string, isDark: boolean): Theme['accent'] {
+  // Mirror the hand-tuned stock palettes per scheme: dark mode lightens for
+  // hover / darkens for dim; light mode does the inverse. Glow/subtle/border
+  // alphas also differ by scheme (see DARK_THEME vs LIGHT_THEME above).
+  const hover = isDark ? lighten(base, 0.18) : darken(base, 0.18);
+  const dim = isDark ? darken(base, 0.16) : lighten(base, 0.16);
+  return {
+    primary: base,
+    hover,
+    dim,
+    glow: rgba(base, isDark ? 0.12 : 0.15),
+    subtle: rgba(base, isDark ? 0.06 : 0.05),
+    onPrimary: readableOn(base),
+    gradient: [base, hover],
+    primarySoft: dim,
+    primaryGlow: hover,
+  };
+}
+
+/**
+ * Resolve the active theme. A valid `accentColor` (hex like "#7c3aed") overrides
+ * the default emerald accent everywhere; null/undefined/invalid → stock palette.
+ */
+export function resolveTheme(isDark: boolean, accentColor?: string | null): Theme {
+  const base = isDark ? DARK_THEME : LIGHT_THEME;
+  const hex = normalizeHex(accentColor);
+  if (!hex) return base;
+  const accent = buildAccent(hex, isDark);
+  return {
+    ...base,
+    accent,
+    border: { ...base.border, accent: rgba(hex, isDark ? 0.4 : 0.35) },
+    text: { ...base.text, onAccent: accent.onPrimary },
+  };
 }

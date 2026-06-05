@@ -29,6 +29,8 @@ export function Dropzone({ mode, onPickFiles, onPickFromGallery }: Props) {
   return (
     <Pressable
       onPress={onPickFiles}
+      accessibilityRole="button"
+      accessibilityLabel={isResize ? 'Pick images to resize' : 'Pick files to convert'}
       style={({ pressed }) => [
         styles.card,
         {
@@ -45,7 +47,7 @@ export function Dropzone({ mode, onPickFiles, onPickFromGallery }: Props) {
         )}
       </View>
 
-      <Text style={[styles.title, { color: theme.text.primary }]} numberOfLines={1} adjustsFontSizeToFit>
+      <Text style={[styles.title, { color: theme.text.primary }]} numberOfLines={2} maxFontSizeMultiplier={1.3}>
         {isResize ? 'Drop images to resize' : 'Drop files to convert'}
       </Text>
 
@@ -54,7 +56,7 @@ export function Dropzone({ mode, onPickFiles, onPickFromGallery }: Props) {
       </Text>
 
       <View style={styles.chipRow}>
-        {['PNG', 'JPG', 'WebP', 'MP4', 'MP3'].map((label) => (
+        {['PNG', 'JPG', 'WebP', 'MP4', 'M4A'].map((label) => (
           <View key={label} style={[styles.chip, { borderColor: theme.border.subtle }]}>
             <Text style={[styles.chipText, { color: theme.text.muted }]}>{label}</Text>
           </View>
@@ -64,6 +66,8 @@ export function Dropzone({ mode, onPickFiles, onPickFromGallery }: Props) {
       <View style={styles.actionsRow}>
         <Pressable
           onPress={onPickFiles}
+          accessibilityRole="button"
+          accessibilityLabel="Pick from files"
           style={({ pressed }) => [
             styles.secondaryBtn,
             {
@@ -78,6 +82,8 @@ export function Dropzone({ mode, onPickFiles, onPickFromGallery }: Props) {
         </Pressable>
         <Pressable
           onPress={onPickFromGallery}
+          accessibilityRole="button"
+          accessibilityLabel="Pick from gallery"
           style={({ pressed }) => [
             styles.secondaryBtn,
             {

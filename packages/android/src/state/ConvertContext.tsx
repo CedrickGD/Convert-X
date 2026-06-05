@@ -74,7 +74,19 @@ function reducer(state: ConvertState, action: Action): ConvertState {
     case 'updateSettings':
       return { ...state, settings: { ...state.settings, ...action.patch } };
     case 'reset':
-      return { ...INITIAL };
+      // Keep the user's format / quality / transform / gif preferences
+      // ("convert again with the same settings"); only the per-file editing
+      // fields (custom name, crop, trim) don't carry to the next batch.
+      return {
+        ...INITIAL,
+        settings: {
+          ...state.settings,
+          customName: null,
+          crop: null,
+          trimStart: null,
+          trimEnd: null,
+        },
+      };
     case 'beginSession':
       return {
         ...state,
@@ -97,14 +109,19 @@ function reducer(state: ConvertState, action: Action): ConvertState {
             : f
         ),
       };
-    case 'fileProgress':
+    case 'fileProgress': {
       if (action.sessionId !== state.currentSessionId) return state;
+      // Dedupe: identical rounded progress must not allocate a new state
+      // object — that would re-render every consumer + the Navbar for nothing.
+      const cur = state.files.find((f) => f.id === action.id);
+      if (cur && cur.progress === action.progress) return state;
       return {
         ...state,
         files: state.files.map((f) =>
           f.id === action.id ? { ...f, progress: action.progress } : f
         ),
       };
+    }
     case 'fileResult':
       if (action.sessionId !== state.currentSessionId) return state;
       return {

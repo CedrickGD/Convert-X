@@ -1,7 +1,7 @@
 import { useEventListener } from 'expo';
 import { VideoView, useVideoPlayer } from 'expo-video';
 import { Pause, Play } from 'lucide-react-native';
-import React, { useEffect, useImperativeHandle, useState } from 'react';
+import React, { useEffect, useImperativeHandle, useMemo, useState } from 'react';
 import { Pressable, StyleSheet, Text, View } from 'react-native';
 
 import { radius, spacing, typography, useTheme } from '../../../theme';
@@ -118,18 +118,29 @@ export const MediaPreview = React.forwardRef<MediaPreviewHandle, Props>(function
     }
   };
 
-  // CSS-style affine transform for rotate/flip preview (FFmpeg applies real pixel rotation at export).
-  const transform = [
-    { rotate: `${rotate}deg` },
-    { scaleX: flipH ? -1 : 1 },
-    { scaleY: flipV ? -1 : 1 },
-  ];
+  // CSS-style affine transform for rotate/flip preview (FFmpeg applies real
+  // pixel rotation at export). Memoized so the VideoView style ref stays stable
+  // across the ~4Hz timeUpdate re-renders and the native view doesn't reconcile
+  // its props every tick.
+  const videoStyle = useMemo(
+    () => [
+      StyleSheet.absoluteFillObject,
+      {
+        transform: [
+          { rotate: `${rotate}deg` },
+          { scaleX: flipH ? -1 : 1 },
+          { scaleY: flipV ? -1 : 1 },
+        ],
+      },
+    ],
+    [rotate, flipH, flipV]
+  );
 
   return (
     <View style={[styles.frame, { backgroundColor: '#000', borderColor: theme.border.subtle }]}>
       <VideoView
         player={player}
-        style={[StyleSheet.absoluteFillObject, { transform }]}
+        style={videoStyle}
         contentFit="contain"
         nativeControls={false}
       />

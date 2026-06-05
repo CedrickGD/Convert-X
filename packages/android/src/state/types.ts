@@ -55,6 +55,9 @@ export type ConvertSettings = {
   format: string | null;
   /** 0..100 — image/audio quality knob (CRF for video, bitrate for audio). */
   quality: number;
+  /** Optional custom output filename (stem only, no extension) for
+   *  single-file conversions. null = derive from the source filename. */
+  customName: string | null;
 
   // ── Video editor fields (Phase v0.4 wires the args, v0.5 ships the UI) ──
   /** Trim in-point (seconds). null = source start. */
@@ -90,7 +93,8 @@ export type ConvertSettings = {
 
 export const CONVERT_DEFAULTS: ConvertSettings = {
   format: null,
-  quality: 90,
+  quality: 100,
+  customName: null,
   trimStart: null,
   trimEnd: null,
   stripAudio: false,
@@ -122,16 +126,25 @@ export type ResizeSettings = {
   outputFormat: string | null;
   /** Re-encode quality 0..100. */
   quality: number;
+  /**
+   * Free-form crop rectangle in source-pixel coords, applied BEFORE resize.
+   * null = no crop (whole image). Single-image only — cleared when the file
+   * set changes (see ResizeContext), since the rect is tied to one image.
+   */
+  crop: CropSpec | null;
 };
 
 export const RESIZE_DEFAULTS: ResizeSettings = {
   mode: 'percentage',
-  percent: 50,
+  // Default to full size: the Resize tab opens at 100% so a crop-only export
+  // keeps native resolution. The user dials this down to actually downscale.
+  percent: 100,
   width: null,
   height: null,
   keepAspect: true,
   outputFormat: null,
-  quality: 92,
+  quality: 100,
+  crop: null,
 };
 
 // ── Download ───────────────────────────────────────────────────────────────

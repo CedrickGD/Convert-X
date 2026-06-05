@@ -27,6 +27,21 @@ function audioBitrate(quality: number): number {
   return Math.round(AUDIO_BITRATE_LO + (AUDIO_BITRATE_HI - AUDIO_BITRATE_LO) * (clamped / 100));
 }
 
+/** Map quality 0..100 → mpeg4/flv1/msmpeg4 qscale 31..1 (lower = better). The
+ *  old `31 - quality/5` topped out at 11, so best quality was never reachable. */
+function mpeg4Qscale(quality: number): number {
+  const q = Math.max(0, Math.min(100, quality));
+  return Math.max(1, Math.round(31 - (q / 100) * 30));
+}
+
+/** H.264 hardware-encoder (h264_mediacodec) targets — everything except the
+ *  legacy software-codec containers (avi/flv/wmv, which use mpeg4/flv1/
+ *  msmpeg4v3). mediacodec rejects odd width/height; the software encoders are
+ *  more forgiving. */
+function usesMediacodec(key: string): boolean {
+  return !['avi', 'flv', 'wmv'].includes(key);
+}
+
 export type FfmpegBuildOpts = {
   inputPath: string;
   outputPath: string;
@@ -134,13 +149,13 @@ function buildVideoArgs(opts: FfmpegBuildOpts): string[] {
       args.push('-c:v', 'h264_mediacodec', '-b:v', h264Bitrate);
       break;
     case 'avi':
-      args.push('-c:v', 'mpeg4', '-q:v', String(31 - Math.round(quality / 5)));
+      args.push('-c:v', 'mpeg4', '-q:v', String(mpeg4Qscale(quality)));
       break;
     case 'flv':
-      args.push('-c:v', 'flv1', '-q:v', String(31 - Math.round(quality / 5)));
+      args.push('-c:v', 'flv1', '-q:v', String(mpeg4Qscale(quality)));
       break;
     case 'wmv':
-      args.push('-c:v', 'msmpeg4v3', '-q:v', String(31 - Math.round(quality / 5)));
+      args.push('-c:v', 'msmpeg4v3', '-q:v', String(mpeg4Qscale(quality)));
       break;
     case 'ts':
       args.push('-c:v', 'h264_mediacodec', '-b:v', h264Bitrate);
@@ -212,6 +227,13 @@ function buildVideoFilterChain(opts: FfmpegBuildOpts): string {
     const w = opts.resizeWidth ?? -2;
     const h = opts.resizeHeight ?? -2;
     parts.push(`scale=${w}:${h}`);
+  }
+  // h264_mediacodec (used for every mp4/mov/mkv/ts target) rejects odd
+  // width/height — common after a crop or rotate, or from an odd-sized
+  // source. Force even final dimensions. Video targets only: the image
+  // encoders (bmp/tiff/ico) share this chain and accept odd dimensions.
+  if (opts.target.category === 'video' && usesMediacodec(opts.target.key)) {
+    parts.push('scale=trunc(iw/2)*2:trunc(ih/2)*2');
   }
   return parts.join(',');
 }

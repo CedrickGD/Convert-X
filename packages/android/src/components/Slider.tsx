@@ -139,7 +139,18 @@ export function Slider({
         </View>
       ) : null}
       <GestureDetector gesture={composed}>
-        <View style={styles.trackWrap}>
+        <View
+          style={styles.trackWrap}
+          accessible
+          accessibilityRole="adjustable"
+          accessibilityLabel={label ?? 'Slider'}
+          accessibilityValue={{ min, max, now: Math.round(value), text: formatted }}
+          accessibilityActions={[{ name: 'increment' }, { name: 'decrement' }]}
+          onAccessibilityAction={(e) => {
+            if (e.nativeEvent.actionName === 'increment') commit(value + step);
+            else if (e.nativeEvent.actionName === 'decrement') commit(value - step);
+          }}
+        >
           <View
             onLayout={handleLayout}
             style={[

@@ -14,6 +14,8 @@ type Props = {
   quality: number;
   onQualityChange: (q: number) => void;
   qualityKind?: 'image' | 'video' | 'audio';
+  /** Hide the quality slider (e.g. GIF, whose palette pipeline ignores it). */
+  showQuality?: boolean;
 };
 
 const QUALITY_KIND_COPY: Record<string, { label: string; hi: string }> = {
@@ -36,6 +38,7 @@ export function OutputSettings({
   quality,
   onQualityChange,
   qualityKind = 'image',
+  showQuality = true,
 }: Props) {
   const { theme } = useTheme();
   const copy = QUALITY_KIND_COPY[qualityKind] ?? QUALITY_KIND_COPY.image;
@@ -73,21 +76,23 @@ export function OutputSettings({
         </View>
       ) : null}
 
-      <View style={styles.field}>
-        <Slider
-          value={quality}
-          onChange={onQualityChange}
-          min={1}
-          max={100}
-          step={1}
-          label={copy.label}
-          suffix="%"
-        />
-        <View style={styles.sliderLabels}>
-          <Text style={[styles.sliderLabel, { color: theme.text.muted }]}>Smaller</Text>
-          <Text style={[styles.sliderLabel, { color: theme.text.muted }]}>{copy.hi}</Text>
+      {showQuality ? (
+        <View style={styles.field}>
+          <Slider
+            value={quality}
+            onChange={onQualityChange}
+            min={1}
+            max={100}
+            step={1}
+            label={copy.label}
+            suffix="%"
+          />
+          <View style={styles.sliderLabels}>
+            <Text style={[styles.sliderLabel, { color: theme.text.muted }]}>Smaller</Text>
+            <Text style={[styles.sliderLabel, { color: theme.text.muted }]}>{copy.hi}</Text>
+          </View>
         </View>
-      </View>
+      ) : null}
     </View>
   );
 }

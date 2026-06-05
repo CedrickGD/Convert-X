@@ -160,6 +160,22 @@ export function downloadAndInstall(
     const result = await dl.downloadAsync();
     if (!result || !result.uri) throw new Error('Download failed');
 
+    // Integrity guard: a flaky connection can resolve a truncated download as
+    // "success". Verify the bytes match the release asset size before handing
+    // a half-written APK to the system installer (which would otherwise fail
+    // with a confusing "app not installed").
+    if (info.apkSize > 0) {
+      const dlInfo = await FileSystem.getInfoAsync(result.uri);
+      const size = dlInfo.exists && 'size' in dlInfo ? dlInfo.size ?? 0 : 0;
+      if (size !== info.apkSize) {
+        await FileSystem.deleteAsync(result.uri, { idempotent: true }).catch(() => {});
+        throw new Error(
+          `Update download was incomplete (${size} of ${info.apkSize} bytes). ` +
+            'Check your connection and try again.'
+        );
+      }
+    }
+
     await installApk(result.uri);
   })().finally(() => {
     inflightDownload = null;

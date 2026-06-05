@@ -3,7 +3,7 @@ import { Pressable, StyleSheet, Text, View } from 'react-native';
 
 import { useConvert, useDownload, useResize, useShared } from '../state';
 import { Mode } from '../state/types';
-import { radius, spacing, typography, useTheme } from '../theme';
+import { elevation, radius, spacing, typography, useTheme } from '../theme';
 
 /**
  * Desktop's Navbar.svelte ported to RN.
@@ -49,18 +49,23 @@ export function Navbar() {
           <Pressable
             key={tab.key}
             onPress={() => switchMode(tab.key)}
+            hitSlop={{ top: 8, bottom: 8 }}
+            android_ripple={{ color: theme.accent.glow, borderless: false }}
+            accessibilityRole="tab"
+            accessibilityState={{ selected: isActive }}
+            accessibilityLabel={isBusy ? `${tab.label}, working` : tab.label}
             style={({ pressed }) => [
               styles.tab,
               {
                 backgroundColor: isActive ? theme.bg.surface : 'transparent',
                 opacity: pressed && !isActive ? 0.7 : 1,
+                elevation: isActive ? elevation.low : 0,
               },
             ]}
           >
             <Text
               numberOfLines={1}
-              adjustsFontSizeToFit
-              minimumFontScale={0.7}
+              maxFontSizeMultiplier={1.2}
               style={[
                 styles.tabLabel,
                 { color: isActive ? theme.text.primary : theme.text.muted },
@@ -98,10 +103,17 @@ const styles = StyleSheet.create({
     borderRadius: radius.xs + 1,
   },
   tabLabel: {
-    ...typography.caption,
-    fontWeight: '600',
+    // Weight comes from the font family (Inter-SemiBold), not fontWeight — a
+    // custom-family + fontWeight combo is a no-op in RN. typography.base is the
+    // SemiBold the StyleGuide reference uses, so the live tab now matches it.
+    ...typography.base,
   },
   busyDot: {
+    // Absolutely positioned so it doesn't shift the centered label when work
+    // starts (the in-flow dot used to make the label jitter / shrink).
+    position: 'absolute',
+    top: 4,
+    right: 6,
     width: 6,
     height: 6,
     borderRadius: 3,

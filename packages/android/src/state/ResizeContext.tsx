@@ -53,16 +53,32 @@ function reducer(state: ResizeState, action: Action): ResizeState {
   switch (action.type) {
     case 'addFiles': {
       const next = [...state.files, ...action.files];
-      return { ...state, files: next, view: next.length > 0 ? 'ready' : 'idle' };
+      // A crop is in one image's pixel space — drop it when the set changes.
+      return {
+        ...state,
+        files: next,
+        view: next.length > 0 ? 'ready' : 'idle',
+        settings: { ...state.settings, crop: null },
+      };
     }
     case 'removeFile': {
       const next = state.files.filter((f) => f.id !== action.id);
-      return { ...state, files: next, view: next.length === 0 ? 'idle' : state.view };
+      return {
+        ...state,
+        files: next,
+        view: next.length === 0 ? 'idle' : state.view,
+        settings: { ...state.settings, crop: null },
+      };
     }
     case 'updateSettings':
       return { ...state, settings: { ...state.settings, ...action.patch } };
     case 'reset':
-      return { ...INITIAL };
+      // Keep mode / percent / format / quality preferences; per-image fields
+      // (crop, explicit pixel dims) reset for the next image.
+      return {
+        ...INITIAL,
+        settings: { ...state.settings, crop: null, width: null, height: null },
+      };
     case 'beginSession':
       return {
         ...state,
@@ -83,14 +99,18 @@ function reducer(state: ResizeState, action: Action): ResizeState {
             : f
         ),
       };
-    case 'fileProgress':
+    case 'fileProgress': {
       if (action.sessionId !== state.currentSessionId) return state;
+      // Dedupe identical rounded progress so we don't re-render for nothing.
+      const cur = state.files.find((f) => f.id === action.id);
+      if (cur && cur.progress === action.progress) return state;
       return {
         ...state,
         files: state.files.map((f) =>
           f.id === action.id ? { ...f, progress: action.progress } : f
         ),
       };
+    }
     case 'fileResult':
       if (action.sessionId !== state.currentSessionId) return state;
       return {

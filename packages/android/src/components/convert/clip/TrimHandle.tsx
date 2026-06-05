@@ -8,6 +8,7 @@ import Animated, {
   withSpring,
 } from 'react-native-reanimated';
 
+import { haptics } from '../../../lib/haptics';
 import { useTheme } from '../../../theme';
 
 type Props = {
@@ -26,7 +27,9 @@ const HIT_W = 48;
 const GRIP_W = 8;
 const MIN_GAP_SEC = 0.1;
 
-export function TrimHandle({
+// Memoized: during playback only the Playhead's `time` changes, so the trim
+// handles (stable props + useCallback'd callbacks) skip re-rendering 4×/sec.
+export const TrimHandle = React.memo(function TrimHandle({
   side,
   time,
   otherTime,
@@ -59,6 +62,7 @@ export function TrimHandle({
       'worklet';
       dragging.value = 1;
       startX.value = x.value;
+      runOnJS(haptics.tap)();
     })
     .onUpdate((e) => {
       'worklet';
@@ -99,7 +103,7 @@ export function TrimHandle({
       </Animated.View>
     </GestureDetector>
   );
-}
+});
 
 // Make withSpring happy in case worklet wraps it later.
 void withSpring;

@@ -1,9 +1,9 @@
 import * as Clipboard from 'expo-clipboard';
-import { Check, Download as DownloadIcon, Link2 } from 'lucide-react-native';
+import { ArrowDownToLine, Check, Download as DownloadIcon, Link2, Music, Share2, Video } from 'lucide-react-native';
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
+  ActivityIndicator,
   Alert,
-  Image,
   Pressable,
   ScrollView,
   StyleSheet,
@@ -11,6 +11,8 @@ import {
   TextInput,
   View,
 } from 'react-native';
+import { Image as ExpoImage } from 'expo-image';
+import * as Sharing from 'expo-sharing';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 
 import { ProgressBar } from '../components/convert';
@@ -22,6 +24,11 @@ import {
   ensureMediaPermission,
   probeUrl,
 } from '../lib/downloadQueue';
+import { mediaTypeFromName } from '../lib/formats';
+import { haptics } from '../lib/haptics';
+import { addHistoryEntry } from '../lib/history';
+import { saveToGallery } from '../lib/image';
+import { addRecentUrl, getRecentUrls } from '../lib/recentUrls';
 import { useDownload, useShared } from '../state';
 import { radius, spacing, typography, useTheme } from '../theme';
 
@@ -56,8 +63,29 @@ export function DownloadScreen() {
     errors: Array<{ title: string; message: string }>;
   } | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const [results, setResults] = useState<{ name: string; uri: string }[]>([]);
+  const [recent, setRecent] = useState<string[]>([]);
 
   const site = detectSite(url);
+
+  useEffect(() => {
+    getRecentUrls().then(setRecent);
+  }, []);
+
+  const handleShareItem = useCallback(async (uri: string) => {
+    if (!(await Sharing.isAvailableAsync())) return;
+    await Sharing.shareAsync(uri).catch(() => {});
+  }, []);
+
+  const handleSaveItem = useCallback(async (uri: string) => {
+    const res = await saveToGallery(uri);
+    if (res.ok) haptics.success();
+    else haptics.error();
+    Alert.alert(
+      res.ok ? 'Saved' : 'Save failed',
+      res.ok ? 'Saved to your Convert-X album.' : res.reason ?? 'Could not save to gallery.'
+    );
+  }, []);
 
   // Clear the URL search when the user leaves the Download tab — unless a
   // probe / download / completed session is sitting on screen. Lets them
@@ -107,6 +135,7 @@ export function DownloadScreen() {
         cookies: state.settings.cookiesPath || undefined,
       });
       setEntries(result.entries);
+      void addRecentUrl(trimmed).then(setRecent);
       // If the URL targeted a specific carousel item (Instagram does
       // this when you tap a single image in a post), default the
       // selection to JUST that item. User can tap "Select all" to
@@ -138,72 +167,100 @@ export function DownloadScreen() {
   );
 
   const allSelected = entries.length > 0 && selectedIds.size === entries.length;
+  const partialCarousel = entries.some((e) => e.partialCarousel);
 
-  const handleDownload = useCallback(async () => {
-    if (selectedEntries.length === 0) return;
-    setError(null);
-    setDone(null);
-    setProgress(0);
-    setCurrentItemIdx(0);
-    setCurrentItemTitle(selectedEntries[0]?.title ?? null);
+  const runDownload = useCallback(
+    async (toDownload: DownloadEntry[]) => {
+      if (toDownload.length === 0) return;
+      setError(null);
+      setDone(null);
+      setResults([]);
+      setProgress(0);
+      setCurrentItemIdx(0);
+      setCurrentItemTitle(toDownload[0]?.title ?? null);
 
-    // Ask for permission up-front. If the user denies, we still download
-    // to app-private storage — but we tell them so they're not surprised
-    // when the file isn't in their Gallery afterwards.
-    const granted = await ensureMediaPermission();
-    if (!granted) {
-      const proceed = await new Promise<boolean>((resolve) => {
-        Alert.alert(
-          'Save to Gallery?',
-          'Without this permission, downloads stay inside Convert-X and won’t show up in your Gallery or Files app. Continue with a private download?',
-          [
-            { text: 'Cancel', style: 'cancel', onPress: () => resolve(false) },
-            { text: 'Continue', onPress: () => resolve(true) },
-          ],
-          { cancelable: true, onDismiss: () => resolve(false) }
-        );
-      });
-      if (!proceed) return;
-    }
-
-    const sessionId = `dl-${Date.now()}`;
-    download.dispatch({ type: 'beginSession', sessionId });
-    try {
-      const result = await downloadBatch({
-        sessionId,
-        entries: selectedEntries,
-        audioOnly: state.settings.category === 'audio',
-        format: state.settings.format,
-        quality: state.settings.quality,
-        spotifyClientId: state.settings.spotifyClientId || undefined,
-        spotifyClientSecret: state.settings.spotifyClientSecret || undefined,
-        cookies: state.settings.cookiesPath || undefined,
-        saveToGallery: granted,
-        onProgress: (overall, idx) => {
-          setProgress(overall);
-          setCurrentItemIdx(idx);
-        },
-        onItemStart: (idx, entry) => {
-          setCurrentItemIdx(idx);
-          setCurrentItemTitle(entry.title);
-        },
-      });
-      if (result.cancelled) {
-        download.dispatch({ type: 'cancelSession' });
-      } else {
-        setDone({
-          publicPath: result.lastPublicPath,
-          completed: result.done,
-          total: selectedEntries.length,
-          errors: result.errors,
+      // Ask for permission up-front. If the user denies, we still download
+      // to app-private storage — but we tell them so they're not surprised
+      // when the file isn't in their Gallery afterwards.
+      const granted = await ensureMediaPermission();
+      if (!granted) {
+        const proceed = await new Promise<boolean>((resolve) => {
+          Alert.alert(
+            'Save to Gallery?',
+            'Without this permission, downloads stay inside Convert-X and won’t show up in your Gallery or Files app. Continue with a private download?',
+            [
+              { text: 'Cancel', style: 'cancel', onPress: () => resolve(false) },
+              { text: 'Continue', onPress: () => resolve(true) },
+            ],
+            { cancelable: true, onDismiss: () => resolve(false) }
+          );
         });
-        download.dispatch({ type: 'finishSession', sessionId });
+        if (!proceed) return;
       }
-    } catch (e) {
-      setError(e instanceof Error ? e.message : String(e));
-      download.dispatch({ type: 'cancelSession' });
-    }
-  }, [download, selectedEntries, state.settings]);
+
+      const sessionId = `dl-${Date.now()}`;
+      download.dispatch({ type: 'beginSession', sessionId });
+      try {
+        const result = await downloadBatch({
+          sessionId,
+          entries: toDownload,
+          audioOnly: state.settings.category === 'audio',
+          format: state.settings.format,
+          quality: state.settings.quality,
+          spotifyClientId: state.settings.spotifyClientId || undefined,
+          spotifyClientSecret: state.settings.spotifyClientSecret || undefined,
+          cookies: state.settings.cookiesPath || undefined,
+          saveToGallery: granted,
+          onProgress: (overall, idx) => {
+            setProgress(overall);
+            setCurrentItemIdx(idx);
+          },
+          onItemStart: (idx, entry) => {
+            setCurrentItemIdx(idx);
+            setCurrentItemTitle(entry.title);
+          },
+          onItemDone: (entry, r) => {
+            const path = r.outputPath
+              ? r.outputPath.startsWith('file://')
+                ? r.outputPath
+                : `file://${r.outputPath}`
+              : r.publicPath;
+            if (!path) return;
+            const name = r.outputPath?.split('/').pop() ?? entry.title;
+            setResults((prev) => [...prev, { name, uri: path }]);
+            void addHistoryEntry({ uri: path, name, bytes: 0, op: 'download', source: entry.webpageUrl });
+          },
+        });
+        if (result.cancelled) {
+          download.dispatch({ type: 'cancelSession' });
+        } else {
+          setDone({
+            publicPath: result.lastPublicPath,
+            completed: result.done,
+            total: toDownload.length,
+            errors: result.errors,
+          });
+          download.dispatch({ type: 'finishSession', sessionId });
+        }
+      } catch (e) {
+        setError(e instanceof Error ? e.message : String(e));
+        download.dispatch({ type: 'cancelSession' });
+      }
+    },
+    [download, state.settings]
+  );
+
+  const handleDownload = useCallback(
+    () => runDownload(selectedEntries),
+    [runDownload, selectedEntries]
+  );
+
+  // Re-run only the items that failed last time, preserving prior successes.
+  const handleRetryFailed = useCallback(() => {
+    const failedTitles = new Set((done?.errors ?? []).map((e) => e.title));
+    const failed = entries.filter((e) => failedTitles.has(e.title));
+    if (failed.length > 0) runDownload(failed);
+  }, [done, entries, runDownload]);
 
   const handleCancel = useCallback(() => {
     cancelBatch();
@@ -215,6 +272,7 @@ export function DownloadScreen() {
     setEntries([]);
     setSelectedIds(new Set());
     setDone(null);
+    setResults([]);
     setError(null);
     setProgress(0);
     setCurrentItemIdx(0);
@@ -288,6 +346,30 @@ export function DownloadScreen() {
             ) : null}
           </View>
 
+          {recent.length > 0 && !url ? (
+            <View style={styles.recentRow}>
+              {recent.map((u) => (
+                <Pressable
+                  key={u}
+                  onPress={() => setUrl(u)}
+                  accessibilityRole="button"
+                  accessibilityLabel={`Use recent URL ${u}`}
+                  style={({ pressed }) => [
+                    styles.recentChip,
+                    {
+                      borderColor: theme.border.subtle,
+                      backgroundColor: pressed ? theme.bg.surfaceHigh : theme.bg.surface,
+                    },
+                  ]}
+                >
+                  <Text numberOfLines={1} style={[styles.recentChipText, { color: theme.text.muted }]}>
+                    {shortUrl(u)}
+                  </Text>
+                </Pressable>
+              ))}
+            </View>
+          ) : null}
+
           {/* Category + format + quality */}
           <View
             style={[
@@ -296,13 +378,20 @@ export function DownloadScreen() {
             ]}
           >
             <Text style={[styles.cardLabel, { color: theme.text.muted }]}>CATEGORY</Text>
-            <View style={styles.toggle}>
+            <View
+              style={[
+                styles.toggle,
+                { backgroundColor: theme.bg.surfaceSunken, borderColor: theme.border.subtle },
+              ]}
+            >
               <ToggleBtn
+                icon={Video}
                 label="Video"
                 active={state.settings.category === 'video'}
                 onPress={() => download.updateSettings({ category: 'video', format: null })}
               />
               <ToggleBtn
+                icon={Music}
                 label="Audio"
                 active={state.settings.category === 'audio'}
                 onPress={() => download.updateSettings({ category: 'audio', format: null })}
@@ -355,9 +444,13 @@ export function DownloadScreen() {
                 },
               ]}
             >
-              <Text style={[styles.primaryBtnText, { color: theme.accent.onPrimary }]}>
-                {probing ? 'Loading…' : 'Find'}
-              </Text>
+              {probing ? (
+                <ActivityIndicator size="small" color={theme.accent.onPrimary} />
+              ) : (
+                <Text style={[styles.primaryBtnText, { color: theme.accent.onPrimary }]}>
+                  Find
+                </Text>
+              )}
             </Pressable>
           </View>
 
@@ -396,6 +489,12 @@ export function DownloadScreen() {
                 </Pressable>
               ) : null}
             </View>
+            {partialCarousel ? (
+              <Text style={[styles.carouselNotice, { color: theme.status.warning }]}>
+                Only the first item is available without login. Sign in via
+                Credits → Login for the full carousel.
+              </Text>
+            ) : null}
             {entries.map((e, idx) => {
               const isSelected = selectedIds.has(e.id);
               const multi = entries.length > 1;
@@ -425,13 +524,15 @@ export function DownloadScreen() {
                   ) : null}
                   <View style={styles.thumbWrap}>
                     {e.thumbnail ? (
-                      <Image
+                      <ExpoImage
                         source={{ uri: e.thumbnail }}
                         style={[
                           styles.thumbnail,
                           { backgroundColor: theme.bg.surfaceSunken, borderColor: theme.border.subtle },
                         ]}
-                        resizeMode="cover"
+                        contentFit="cover"
+                        cachePolicy="memory-disk"
+                        recyclingKey={e.id}
                       />
                     ) : (
                       <View
@@ -577,7 +678,70 @@ export function DownloadScreen() {
               </View>
             ) : null}
           </View>
+          {results.length > 0 ? (
+            <View style={[styles.card, { backgroundColor: theme.bg.surface, borderColor: theme.border.subtle }]}>
+              {results.map((res, i) => {
+                const cat = mediaTypeFromName(res.name);
+                const canSave = cat === 'image' || cat === 'video';
+                return (
+                  <View
+                    key={i}
+                    style={[
+                      styles.resultRow,
+                      i > 0 ? { borderTopWidth: StyleSheet.hairlineWidth, borderTopColor: theme.border.subtle } : null,
+                    ]}
+                  >
+                    <Text numberOfLines={1} style={[styles.resultName, { color: theme.text.primary }]}>
+                      {res.name}
+                    </Text>
+                    <View style={styles.resultActions}>
+                      {canSave ? (
+                        <Pressable
+                          hitSlop={6}
+                          onPress={() => handleSaveItem(res.uri)}
+                          accessibilityRole="button"
+                          accessibilityLabel={`Save ${res.name} to gallery`}
+                          style={({ pressed }) => [
+                            styles.resultIconBtn,
+                            { borderColor: theme.border.subtle, backgroundColor: pressed ? theme.bg.surfaceHigh : 'transparent' },
+                          ]}
+                        >
+                          <ArrowDownToLine size={14} strokeWidth={2} color={theme.text.secondary} />
+                        </Pressable>
+                      ) : null}
+                      <Pressable
+                        hitSlop={6}
+                        onPress={() => handleShareItem(res.uri)}
+                        accessibilityRole="button"
+                        accessibilityLabel={`Share ${res.name}`}
+                        style={({ pressed }) => [
+                          styles.resultIconBtn,
+                          { borderColor: theme.border.subtle, backgroundColor: pressed ? theme.bg.surfaceHigh : 'transparent' },
+                        ]}
+                      >
+                        <Share2 size={14} strokeWidth={2} color={theme.text.secondary} />
+                      </Pressable>
+                    </View>
+                  </View>
+                );
+              })}
+            </View>
+          ) : null}
           <View style={styles.actions}>
+            {done && done.errors.length > 0 ? (
+              <Pressable
+                onPress={handleRetryFailed}
+                accessibilityRole="button"
+                style={({ pressed }) => [
+                  styles.ghostBtn,
+                  { borderColor: theme.border.subtle, backgroundColor: pressed ? theme.bg.surfaceHigh : 'transparent' },
+                ]}
+              >
+                <Text style={[styles.ghostBtnText, { color: theme.text.secondary }]}>
+                  Retry failed ({done.errors.length})
+                </Text>
+              </Pressable>
+            ) : null}
             <Pressable
               onPress={handleReset}
               style={({ pressed }) => [
@@ -602,6 +766,11 @@ export function DownloadScreen() {
   );
 }
 
+/** Strip scheme/www and truncate for a compact recent-URL chip. */
+function shortUrl(u: string): string {
+  return u.replace(/^https?:\/\/(www\.)?/, '').slice(0, 26);
+}
+
 /** Format a yt-dlp duration (seconds) into a short clock string. */
 function formatDuration(seconds: number): string {
   const s = Math.max(0, Math.floor(seconds));
@@ -613,10 +782,12 @@ function formatDuration(seconds: number): string {
 }
 
 function ToggleBtn({
+  icon: Icon,
   label,
   active,
   onPress,
 }: {
+  icon: React.ComponentType<{ size?: number; strokeWidth?: number; color?: string }>;
   label: string;
   active: boolean;
   onPress: () => void;
@@ -628,15 +799,21 @@ function ToggleBtn({
       style={({ pressed }) => [
         styles.toggleBtn,
         {
-          backgroundColor: active ? theme.bg.surface : 'transparent',
+          backgroundColor: active ? theme.accent.primary : 'transparent',
           opacity: pressed && !active ? 0.7 : 1,
+          elevation: active ? 2 : 0,
         },
       ]}
     >
+      <Icon
+        size={15}
+        strokeWidth={2}
+        color={active ? theme.accent.onPrimary : theme.text.secondary}
+      />
       <Text
         style={[
           styles.toggleBtnText,
-          { color: active ? theme.text.primary : theme.text.muted },
+          { color: active ? theme.accent.onPrimary : theme.text.secondary },
         ]}
       >
         {label}
@@ -719,18 +896,21 @@ const styles = StyleSheet.create({
 
   toggle: {
     flexDirection: 'row',
-    gap: 4,
+    gap: spacing.xs,
     padding: 3,
-    borderRadius: radius.xs,
-    backgroundColor: 'transparent',
+    borderRadius: radius.sm,
+    borderWidth: StyleSheet.hairlineWidth,
   },
   toggleBtn: {
     flex: 1,
-    paddingVertical: spacing.md,
-    borderRadius: radius.xs - 2,
+    flexDirection: 'row',
     alignItems: 'center',
+    justifyContent: 'center',
+    gap: spacing.sm,
+    paddingVertical: spacing.lg,
+    borderRadius: radius.xs,
   },
-  toggleBtnText: { ...typography.caption, fontWeight: '600' },
+  toggleBtnText: { ...typography.bodySm, fontWeight: '600' },
 
   chipRow: { flexDirection: 'row', flexWrap: 'wrap', gap: spacing.pico },
   chip: {
@@ -845,4 +1025,30 @@ const styles = StyleSheet.create({
   doneSub: { ...typography.caption, textAlign: 'center' },
 
   errorText: { ...typography.caption, textAlign: 'center' },
+  carouselNotice: { ...typography.caption, lineHeight: 17 },
+  resultRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: spacing.md,
+    paddingVertical: spacing.md,
+  },
+  resultName: { ...typography.bodySm, flex: 1 },
+  resultActions: { flexDirection: 'row', gap: spacing.sm },
+  recentRow: { flexDirection: 'row', flexWrap: 'wrap', gap: spacing.sm },
+  recentChip: {
+    maxWidth: '100%',
+    paddingHorizontal: spacing.lg,
+    paddingVertical: spacing.sm,
+    borderRadius: radius.round,
+    borderWidth: StyleSheet.hairlineWidth,
+  },
+  recentChipText: { ...typography.micro },
+  resultIconBtn: {
+    width: 32,
+    height: 32,
+    borderRadius: radius.xs,
+    borderWidth: StyleSheet.hairlineWidth,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
 });

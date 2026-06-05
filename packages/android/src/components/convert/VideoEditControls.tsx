@@ -63,6 +63,9 @@ export function VideoEditControls({ settings, onUpdate, audioForcedOff = false }
               : () => onUpdate({ stripAudio: !settings.stripAudio })
           }
           disabled={audioForcedOff}
+          accessibilityRole="switch"
+          accessibilityState={{ checked: !audioStripped, disabled: audioForcedOff }}
+          accessibilityLabel="Keep audio in output"
           style={({ pressed }) => [
             styles.audioBtn,
             {
@@ -171,6 +174,8 @@ function Chip({
   return (
     <Pressable
       onPress={onPress}
+      accessibilityRole="button"
+      accessibilityState={{ selected }}
       style={({ pressed }) => [
         styles.chip,
         {
@@ -207,6 +212,9 @@ function TransformBtn({
   return (
     <Pressable
       onPress={onPress}
+      accessibilityRole="button"
+      accessibilityState={{ selected: active }}
+      accessibilityLabel={label}
       style={({ pressed }) => [
         styles.transformBtn,
         {

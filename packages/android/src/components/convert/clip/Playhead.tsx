@@ -8,6 +8,7 @@ import Animated, {
   withTiming,
 } from 'react-native-reanimated';
 
+import { haptics } from '../../../lib/haptics';
 import { useTheme } from '../../../theme';
 
 type Props = {
@@ -25,7 +26,7 @@ type Props = {
 
 const HEAD_W = 3;
 
-export function Playhead({
+export const Playhead = React.memo(function Playhead({
   time,
   duration,
   trackWidth,
@@ -56,6 +57,7 @@ export function Playhead({
       'worklet';
       dragging.value = 1;
       startX.value = x.value;
+      runOnJS(haptics.tap)();
     })
     .onUpdate((e) => {
       'worklet';
@@ -90,7 +92,7 @@ export function Playhead({
       </Animated.View>
     </GestureDetector>
   );
-}
+});
 
 const styles = StyleSheet.create({
   head: {

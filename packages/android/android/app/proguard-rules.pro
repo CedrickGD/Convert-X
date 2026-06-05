@@ -25,8 +25,11 @@
 -keepattributes Signature
 -dontwarn kotlin.reflect.jvm.internal.**
 
-# Phase 6: youtubedl-android — uncomment when the downloader native module
-# lands so its JNI entry points survive R8 in release builds.
-# -keep class com.yausername.youtubedl_android.** { *; }
-# -keep class com.yausername.ffmpeg.** { *; }
-# -keep class com.yausername.aria2c.** { *; }
+# youtubedl-android (downloader) — JNI entry points + the Python/ffmpeg/aria2c
+# payload loaders must survive R8 in release builds.
+-keep class com.yausername.youtubedl_android.** { *; }
+-keep class com.yausername.ffmpeg.** { *; }
+-keep class com.yausername.aria2c.** { *; }
+
+# Convert-X downloader Expo module.
+-keep class expo.modules.convertxdownloader.** { *; }
