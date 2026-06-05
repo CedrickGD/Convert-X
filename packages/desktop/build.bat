@@ -108,17 +108,10 @@ copy "%~dp0src-tauri\bin\ffprobe.exe" "%RELEASE_DIR%\bin\ffprobe.exe" >nul
 copy "%~dp0src-tauri\bin\yt-dlp.exe" "%RELEASE_DIR%\bin\yt-dlp.exe" >nul
 copy "%~dp0src-tauri\bin\spotdl.exe" "%RELEASE_DIR%\bin\spotdl.exe" >nul
 
-:: Copy the MSI installer if it exists
-for %%f in ("%~dp0src-tauri\target\release\bundle\msi\*.msi") do (
+:: Copy the NSIS installer (per-user, no admin) if it exists
+for %%f in ("%~dp0src-tauri\target\release\bundle\nsis\*-setup.exe") do (
     copy "%%f" "%RELEASE_DIR%\%%~nxf" >nul
     echo  Installer: %%~nxf
-)
-
-:: Copy WebView2 bootstrapper if bundled
-if exist "%~dp0src-tauri\target\release\bundle\msi\*.exe" (
-    for %%f in ("%~dp0src-tauri\target\release\bundle\msi\*.exe") do (
-        copy "%%f" "%RELEASE_DIR%\%%~nxf" >nul
-    )
 )
 
 echo.
@@ -128,7 +121,7 @@ echo  ===================================
 echo.
 echo   release\
 echo     ConvertX.exe        (portable)
-for %%f in ("%RELEASE_DIR%\*.msi") do (
+for %%f in ("%RELEASE_DIR%\*-setup.exe") do (
     echo     %%~nxf  (installer^)
 )
 echo     bin\ffmpeg.exe

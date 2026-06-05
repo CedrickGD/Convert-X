@@ -58,6 +58,6 @@ jobs:
           projectPath: packages/desktop
           tagName: ${{ github.ref_name }}
           releaseName: "ConvertX ${{ github.ref_name }}"
-          releaseBody: "See assets below to download this version. The MSI is the recommended installer; the portable EXE requires FFmpeg in `bin/`."
+          releaseBody: "Per-user installer (no admin needed) — download the `-setup.exe` below and run it. The app self-updates from here on, no admin prompt."
           releaseDraft: false
           prerelease: false

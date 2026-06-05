@@ -49,7 +49,7 @@ pub async fn download_installer(app: AppHandle, url: String) -> Result<String, S
         ));
     }
 
-    let dest = std::env::temp_dir().join("convertx-update.msi");
+    let dest = std::env::temp_dir().join("convertx-update.exe");
     std::fs::write(&dest, &buf).map_err(|e| format!("Write installer: {}", e))?;
     Ok(dest.to_string_lossy().to_string())
 }
@@ -65,9 +65,10 @@ pub fn launch_installer(app: AppHandle, path: String) -> Result<(), String> {
     #[cfg(windows)]
     {
         use std::os::windows::process::CommandExt as _;
-        let mut cmd = std::process::Command::new("msiexec");
-        // /passive = progress bar, no prompts; the MSI relaunches the app on finish.
-        cmd.args(["/i", &path, "/passive"]);
+        // NSIS per-user installer (installMode: currentUser) -> NO admin / UAC.
+        // /S runs it silently; the Tauri NSIS installer relaunches the app after.
+        let mut cmd = std::process::Command::new(&path);
+        cmd.arg("/S");
         cmd.creation_flags(0x08000000);
         cmd.spawn()
             .map_err(|e| format!("Failed to launch installer: {}", e))?;
