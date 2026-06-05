@@ -45,7 +45,7 @@ gh repo clone CedrickGD/keys
 | Asset | Where | Notes |
 |---|---|---|
 | Desktop + web + android + shared source | `CedrickGD/Convert-X` | on branch `chore/consolidate-monorepo` (pushed) |
-| Released APKs | `CedrickGD/Convert-X-Android-APK` | also where the in-app updater pulls from |
+| Released APKs | `CedrickGD/Convert-X` (this repo's Releases) | also where the in-app updater pulls from |
 | Signing key backup | `CedrickGD/keys` (private) | the only place you can read the key back |
 | `_consolidation_backups/*.bundle` (local) | this PC only | throwaway — the originals are already on GitHub |
 

@@ -15,7 +15,7 @@ Convert-X/
 ├── MONOREPO.md                  # this file
 ├── .github/workflows/
 │   ├── desktop-release.yml      # tag desktop-v*  -> MSI to Convert-X releases
-│   ├── android-release.yml      # tag v*          -> APKs to Convert-X-Android-APK
+│   ├── android-release.yml      # tag v*          -> APKs to THIS repo's Releases
 │   ├── web-ci.yml               # push to main    -> builds packages/web
 │   └── discord-notify.yml       # push/tags       -> Discord webhook
 └── packages/
@@ -87,7 +87,7 @@ Your dev-client + `--tunnel` workflow is unchanged by the consolidation — Andr
 | Surface | Trigger | Workflow | Artifacts land in |
 |---|---|---|---|
 | **Desktop** | push tag `desktop-v*` (e.g. `desktop-v0.2.0`) | `desktop-release.yml` | **Convert-X** GitHub Releases (MSI/EXE) |
-| **Android** | push tag `v*` (e.g. `v0.6.15`) | `android-release.yml` | **Convert-X-Android-APK** Releases (per-ABI APKs) |
+| **Android** | push tag `v*` (e.g. `v0.6.20`) | `android-release.yml` | **Convert-X** Releases (per-ABI APKs) |
 | **Web** | push to `main` | `web-ci.yml` | builds only; deploy via Cloudflare Pages |
 
 ```bash
@@ -102,8 +102,10 @@ git tag v0.6.15 && git push origin v0.6.15
 - **Android must stay `v*`.** The in-app updater (`packages/android/src/lib/updater.ts`) does `tag_name.replace(/^v/, '')` then semver-compares. A prefixed tag like `android-v0.6.15` would parse to `NaN` and the app would report "no update". So Android keeps the bare `v0.6.15` scheme.
 - **Desktop uses `desktop-v*`** so it doesn't collide with Android in the same repo. (`v*` and `desktop-v*` are disjoint — different first letters.)
 
-### The Android updater + cross-repo APK publishing
-Already-installed Android apps poll `CedrickGD/Convert-X-Android-APK/releases/latest`. To avoid breaking those live users, `android-release.yml` **publishes the APKs cross-repo to `Convert-X-Android-APK`** (not to this monorepo), so `updater.ts` needs **zero changes**. That cross-repo publish needs a PAT (see secrets below).
+### The Android updater (single-repo)
+`android-release.yml` publishes the APKs to **this repo's own Releases** using the built-in `GITHUB_TOKEN` — no PAT, no second repo. The in-app updater (`packages/android/src/lib/updater.ts`) reads `CedrickGD/Convert-X`'s release list and picks the newest release with an ABI-matched APK asset (so desktop `desktop-v*` MSI releases are skipped).
+
+> **Migration note:** apps installed *before* this switch still poll the old `Convert-X-Android-APK` repo. Install one build of the new (repointed) version manually once; after that, auto-updates resume from `Convert-X`. The old repo can then be archived.
 
 Web deploy: `web-ci.yml` only *builds* `packages/web`. Actual deployment is Cloudflare Pages — either Cloudflare's own Git integration pointed at `packages/web`, or `wrangler` from that folder. (Web has no in-app updater; a reload is always the latest.)
 
@@ -119,7 +121,7 @@ The keystore secrets used to live on the old Android repo and **must be re-added
 | `RELEASE_KEYSTORE_PASSWORD` | android-release | keystore store password |
 | `RELEASE_KEY_ALIAS` | android-release | key alias (e.g. `convert-x-release`) |
 | `RELEASE_KEY_PASSWORD` | android-release | key password |
-| `APK_RELEASE_TOKEN` | android-release | **NEW** — a PAT with `contents:write` on `Convert-X-Android-APK` (fine-grained, scoped to just that repo). Enables the cross-repo APK publish. |
+| ~~`APK_RELEASE_TOKEN`~~ | — | No longer needed — APKs now publish to this repo with the built-in token. |
 | `PRIVAT_DC_NOTIFY` | discord-notify | Discord webhook URL |
 
 Desktop release uses the built-in `GITHUB_TOKEN` (no extra secret).

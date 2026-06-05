@@ -1,19 +1,15 @@
-# Builds a signed Android release and publishes the APKs to the
-# Convert-X-Android-APK GitHub Release whenever a `v*` tag is pushed
-# (e.g. v0.6.15).
+# Builds a signed Android release and publishes the APKs to THIS repo's
+# GitHub Releases whenever a `v*` tag is pushed (e.g. v0.6.20).
 #
-# The Android source now lives in packages/android of the Convert-X
-# monorepo, but the APKs are still published to the SEPARATE
-# CedrickGD/Convert-X-Android-APK repo, because the in-app updater
-# (packages/android/src/lib/updater.ts) polls that repo's /releases/latest.
-# Publishing there keeps every already-installed app updating with no code
-# change. This is a CROSS-REPO publish, so it needs a PAT (APK_RELEASE_TOKEN)
-# — the default GITHUB_TOKEN can only write to the repo running the workflow.
+# Everything is in the Convert-X monorepo now — source AND releases — so this
+# publishes to Convert-X's own releases using the built-in GITHUB_TOKEN (no PAT
+# needed). The in-app updater (packages/android/src/lib/updater.ts) reads this
+# repo's release list and picks the newest release that has an APK asset.
 #
 # Keep the tag as plain `v*`. The updater does `tag_name.replace(/^v/, '')`
-# and semver-parses the rest, so a prefixed tag (e.g. android-v0.6.15) would
-# parse to NaN and silently report "no update". Desktop releases use a
-# separate `desktop-v*` tag, which does not collide with `v*`.
+# and semver-parses the rest, so a prefixed tag (e.g. android-v0.6.20) would
+# parse to NaN. Desktop releases use `desktop-v*` (MSI, no APK) and are simply
+# skipped by the updater.
 #
 # Required repository secrets on CedrickGD/Convert-X
 # (Settings -> Secrets and variables -> Actions):
@@ -21,9 +17,6 @@
 #   RELEASE_KEYSTORE_PASSWORD  store password
 #   RELEASE_KEY_ALIAS          key alias inside the keystore
 #   RELEASE_KEY_PASSWORD       key password
-#   APK_RELEASE_TOKEN          PAT with contents:write on
-#                              CedrickGD/Convert-X-Android-APK (a fine-grained
-#                              PAT scoped to just that repo is enough)
 #
 # See packages/android/android/app/build.gradle: the release signingConfig
 # only activates when CONVERT_X_KEYSTORE_FILE is present in gradle properties,
@@ -135,14 +128,11 @@ jobs:
           # Fail fast if the arm64 APK is missing — we only build that ABI.
           test -f app/build/outputs/apk/release/app-arm64-v8a-release.apk
 
-      - name: Publish GitHub Release (to Convert-X-Android-APK)
+      - name: Publish GitHub Release
         uses: softprops/action-gh-release@v2
         with:
-          # Cross-repo publish: APKs go to the dedicated release repo the
-          # in-app updater polls. Requires APK_RELEASE_TOKEN (PAT).
-          repository: CedrickGD/Convert-X-Android-APK
-          token: ${{ secrets.APK_RELEASE_TOKEN }}
-          # The tag that triggered the workflow (v*) is reused on the target.
+          # Publishes to THIS repo (Convert-X) with the built-in GITHUB_TOKEN.
+          # The workflow's `permissions: contents: write` covers it — no PAT.
           generate_release_notes: true
           fail_on_unmatched_files: true
           files: packages/android/android/app/build/outputs/apk/release/*.apk

@@ -17,8 +17,11 @@ import * as FileSystem from 'expo-file-system/legacy';
 import { getSupportedAbis, installApk } from '../../modules/convert-x-ffmpeg/src';
 import pkg from '../../package.json';
 
+// Releases now live in the unified Convert-X monorepo, which holds BOTH
+// desktop (desktop-v*, MSI) and android (v*, APK) releases — so we fetch the
+// release LIST and pick the newest one that has an ABI-matched APK asset.
 const RELEASES_API =
-  'https://api.github.com/repos/CedrickGD/Convert-X-Android-APK/releases/latest';
+  'https://api.github.com/repos/CedrickGD/Convert-X/releases?per_page=30';
 
 export type UpdateInfo = {
   version: string;
@@ -88,15 +91,27 @@ export async function checkForUpdate(): Promise<UpdateInfo | null> {
         },
       });
       if (!res.ok) return null;
-      const rel = (await res.json()) as GhRelease;
-      if (rel.draft || rel.prerelease) return null;
+      const rels = (await res.json()) as GhRelease[];
+
+      const abis = await getSupportedAbis();
+      // The list is newest-first. Take the newest published release that has an
+      // APK matching this device's ABI — this skips desktop (MSI) releases that
+      // share the same repo.
+      let rel: GhRelease | null = null;
+      let asset: GhAsset | null = null;
+      for (const r of rels) {
+        if (r.draft || r.prerelease) continue;
+        const a = pickAssetForAbi(r.assets, abis);
+        if (a) {
+          rel = r;
+          asset = a;
+          break;
+        }
+      }
+      if (!rel || !asset) return null;
 
       const latest = rel.tag_name.replace(/^v/, '');
       if (cmpSemver(latest, pkg.version) <= 0) return null;
-
-      const abis = await getSupportedAbis();
-      const asset = pickAssetForAbi(rel.assets, abis);
-      if (!asset) return null;
 
       return {
         version: latest,
