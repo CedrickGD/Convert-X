@@ -1,6 +1,13 @@
 # ConvertX
 
-Fast, offline desktop file converter. Drag, pick a format, done.
+Fast, offline file converter. Drag, pick a format, done.
+
+> **This is now a monorepo** containing all three surfaces — **desktop**
+> (`packages/desktop`, Tauri v2 + Svelte + Rust), **web** (`packages/web`,
+> Svelte + ffmpeg.wasm), and **android** (`packages/android`, Expo + React
+> Native). See **[MONOREPO.md](MONOREPO.md)** for the layout, dev/build
+> commands, and how releases + the in-app updater work. The rest of this
+> README covers the desktop app specifically.
 
 Built with **Tauri v2 + Svelte + Rust**. Uses FFmpeg under the hood.
 

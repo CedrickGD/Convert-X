@@ -3,7 +3,7 @@ name: Discord Notifications
 on:
   push:
     branches: [main]
-    tags: ["v*"]
+    tags: ["v*", "desktop-v*"]
 
 jobs:
   notify:
@@ -32,22 +32,32 @@ jobs:
           curl -s -H "Content-Type: application/json" -X POST "$WEBHOOK_URL" -d "$PAYLOAD"
 
       - name: Release Notification
-        if: startsWith(github.ref, 'refs/tags/v')
+        if: startsWith(github.ref, 'refs/tags/')
         env:
           WEBHOOK_URL: ${{ secrets.PRIVAT_DC_NOTIFY }}
         run: |
           TAG="${GITHUB_REF#refs/tags/}"
-          REPO="${{ github.repository }}"
           ACTOR="${{ github.actor }}"
           TIMESTAMP=$(date -u +"%d.%m.%Y %H:%M")
-          RELEASE_URL="https://github.com/${REPO}/releases/tag/${TAG}"
+          # Desktop releases (desktop-v*) publish to this repo; Android
+          # releases (v*) publish to the Convert-X-Android-APK release repo
+          # that the in-app updater polls. Link to whichever actually holds
+          # the assets.
+          if [[ "$TAG" == desktop-v* ]]; then
+            PLATFORM="Desktop"
+            RELEASE_REPO="CedrickGD/Convert-X"
+          else
+            PLATFORM="Android"
+            RELEASE_REPO="CedrickGD/Convert-X-Android-APK"
+          fi
+          RELEASE_URL="https://github.com/${RELEASE_REPO}/releases/tag/${TAG}"
           DESC="${TAG} is now available.\n\n[Download from GitHub](${RELEASE_URL})"
 
           PAYLOAD=$(jq -n \
             --arg author "$ACTOR" \
-            --arg title "Release: ConvertX ${TAG}" \
+            --arg title "Release: ConvertX ${PLATFORM} ${TAG}" \
             --arg desc "$DESC" \
-            --arg footer "${REPO} • ${TIMESTAMP}" \
+            --arg footer "${RELEASE_REPO} • ${TIMESTAMP}" \
             '{embeds: [{color: 5025616, author: {name: $author}, title: $title, description: $desc, footer: {text: $footer}}]}')
 
           curl -s -H "Content-Type: application/json" -X POST "$WEBHOOK_URL" -d "$PAYLOAD"
