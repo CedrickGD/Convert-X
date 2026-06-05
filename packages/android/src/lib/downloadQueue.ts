@@ -359,6 +359,11 @@ export async function downloadBatch(opts: {
   let lastPublicPath: string | undefined;
   const errors: BatchDownloadResult['errors'] = [];
 
+  // A previous batch that was cancelled mid-item leaves cancelRequested set
+  // (the r.cancelled early-return below doesn't clear it). Reset here so a
+  // fresh batch isn't aborted on iteration 0. See cancelBatch().
+  cancelRequested = false;
+
   for (let i = 0; i < total; i++) {
     if (cancelRequested) {
       cancelRequested = false;
@@ -385,6 +390,7 @@ export async function downloadBatch(opts: {
         },
       });
       if (r.cancelled) {
+        cancelRequested = false;
         return { done, failed, cancelled: true, lastPublicPath, errors };
       }
       done += 1;
@@ -430,16 +436,18 @@ async function downloadDirect(opts: {
   const outputPath = `${opts.outDir}/${safeName}.${ext}`;
   const fileUri = `file://${outputPath}`;
 
+  // Hold the resumable so a Cancel tap can actually abort the transfer (not
+  // just skip to the next item) and we can clean up the partial on abort.
+  let dl: ReturnType<typeof FileSystem.createDownloadResumable> | null = null;
   inflight = {
     sessionId: opts.sessionId,
     cancel: () => {
-      // expo-file-system's downloadAsync doesn't expose a cancel,
-      // so cancellation only takes effect between items in the batch.
+      dl?.cancelAsync().catch(() => {});
     },
   };
 
   try {
-    const dl = FileSystem.createDownloadResumable(
+    dl = FileSystem.createDownloadResumable(
       opts.directUrl,
       fileUri,
       {},
@@ -473,6 +481,10 @@ async function downloadDirect(opts: {
     }
 
     return { outputPath, publicPath };
+  } catch (e) {
+    // A cancelled or failed transfer leaves a partial file behind.
+    await FileSystem.deleteAsync(fileUri, { idempotent: true }).catch(() => {});
+    throw e;
   } finally {
     inflight = null;
   }

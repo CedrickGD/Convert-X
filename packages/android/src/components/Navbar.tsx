@@ -49,6 +49,10 @@ export function Navbar() {
           <Pressable
             key={tab.key}
             onPress={() => switchMode(tab.key)}
+            hitSlop={{ top: 8, bottom: 8 }}
+            accessibilityRole="tab"
+            accessibilityState={{ selected: isActive }}
+            accessibilityLabel={isBusy ? `${tab.label}, working` : tab.label}
             style={({ pressed }) => [
               styles.tab,
               {
@@ -59,8 +63,7 @@ export function Navbar() {
           >
             <Text
               numberOfLines={1}
-              adjustsFontSizeToFit
-              minimumFontScale={0.7}
+              maxFontSizeMultiplier={1.2}
               style={[
                 styles.tabLabel,
                 { color: isActive ? theme.text.primary : theme.text.muted },

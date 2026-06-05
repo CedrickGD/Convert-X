@@ -9,7 +9,8 @@ import Animated, {
 } from 'react-native-reanimated';
 import * as Sharing from 'expo-sharing';
 
-import { prettyBytes } from '../../lib/formats';
+import { mediaTypeFromName, prettyBytes } from '../../lib/formats';
+import { haptics } from '../../lib/haptics';
 import { saveToGallery } from '../../lib/image';
 import type { FileEntry } from '../../state/types';
 import { radius, spacing, typography, useTheme } from '../../theme';
@@ -46,6 +47,18 @@ export function OutputPanel({ files, actionLabel = 'converted', onStartOver }: P
     opacity: ringOpacity.value,
   }));
 
+  // Completion haptic — fires once when the done panel mounts. A success tick
+  // if anything converted, a warning if everything failed, so the user feels
+  // the result even if they looked away during a long job.
+  useEffect(() => {
+    const anyError = files.some((f) => f.status === 'error');
+    const anyDone = files.some((f) => f.status === 'done');
+    if (anyDone) haptics.success();
+    else if (anyError) haptics.warn();
+    // mount-only: the done view is shown once per session.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
   const done = files.filter((f) => f.status === 'done');
   const errors = files.filter((f) => f.status === 'error');
   const total = done.reduce((sum, f) => sum + (f.outputBytes ?? 0), 0);
@@ -60,10 +73,12 @@ export function OutputPanel({ files, actionLabel = 'converted', onStartOver }: P
   };
 
   const handleSave = async (uri: string) => {
-    const ok = await saveToGallery(uri);
+    const res = await saveToGallery(uri);
+    if (res.ok) haptics.success();
+    else haptics.error();
     Alert.alert(
-      ok ? 'Saved' : 'Save failed',
-      ok ? 'Image saved to Convert-X album.' : 'Permission denied.'
+      res.ok ? 'Saved' : 'Save failed',
+      res.ok ? 'Saved to your Convert-X album.' : res.reason ?? 'Could not save to gallery.'
     );
   };
 
@@ -113,7 +128,12 @@ export function OutputPanel({ files, actionLabel = 'converted', onStartOver }: P
         contentContainerStyle={styles.listContent}
         showsVerticalScrollIndicator={false}
       >
-        {done.map((f, i) => (
+        {done.map((f, i) => {
+          // Gallery save only works for image/video on Android — MediaLibrary
+          // rejects audio/ICO/TIFF/BMP. Offer Share-only for those.
+          const cat = mediaTypeFromName(f.outputName ?? f.name);
+          const canSave = cat === 'image' || cat === 'video';
+          return (
           <View
             key={f.id}
             style={[
@@ -133,19 +153,21 @@ export function OutputPanel({ files, actionLabel = 'converted', onStartOver }: P
               </Text>
             </View>
             <View style={styles.rowActions}>
-              <Pressable
-                hitSlop={6}
-                onPress={() => f.outputUri && handleSave(f.outputUri)}
-                style={({ pressed }) => [
-                  styles.iconBtn,
-                  {
-                    borderColor: theme.border.subtle,
-                    backgroundColor: pressed ? theme.bg.surfaceHigh : 'transparent',
-                  },
-                ]}
-              >
-                <Save size={14} strokeWidth={2} color={theme.text.secondary} />
-              </Pressable>
+              {canSave ? (
+                <Pressable
+                  hitSlop={6}
+                  onPress={() => f.outputUri && handleSave(f.outputUri)}
+                  style={({ pressed }) => [
+                    styles.iconBtn,
+                    {
+                      borderColor: theme.border.subtle,
+                      backgroundColor: pressed ? theme.bg.surfaceHigh : 'transparent',
+                    },
+                  ]}
+                >
+                  <Save size={14} strokeWidth={2} color={theme.text.secondary} />
+                </Pressable>
+              ) : null}
               <Pressable
                 hitSlop={6}
                 onPress={() => f.outputUri && handleShare(f.outputUri)}
@@ -161,7 +183,8 @@ export function OutputPanel({ files, actionLabel = 'converted', onStartOver }: P
               </Pressable>
             </View>
           </View>
-        ))}
+          );
+        })}
       </ScrollView>
 
       <Pressable

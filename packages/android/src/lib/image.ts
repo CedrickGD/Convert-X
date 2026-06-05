@@ -22,6 +22,9 @@ export type ConvertRequest = {
   resize: ResizeSpec;
   /** Free-form crop in source-pixel coords, applied before resize. null/undefined = no crop. */
   crop?: CropSpec | null;
+  /** Optional output filename stem (no extension). null/undefined = derive
+   *  from sourceName. Used for the single-file rename field. */
+  outputBaseName?: string | null;
 };
 
 export type ConvertResult = {
@@ -50,6 +53,7 @@ export async function convertImage({
   quality,
   resize,
   crop,
+  outputBaseName,
 }: ConvertRequest): Promise<ConvertResult> {
   const saveFormat = saveFormatFor(targetFormat);
   if (!saveFormat) {
@@ -98,7 +102,7 @@ export async function convertImage({
     format: saveFormat,
   });
 
-  const stem = sourceName.replace(/\.[^.]+$/, '') || 'image';
+  const stem = outputBaseName?.trim() || sourceName.replace(/\.[^.]+$/, '') || 'image';
   const outputName = `${stem}.${targetFormat.ext}`;
 
   // Copy to the app's persistent document dir with the new name so the share
@@ -108,6 +112,9 @@ export async function convertImage({
     intermediates: true,
   });
   await FileSystem.copyAsync({ from: manipulated.uri, to: finalUri });
+  // expo-image-manipulator writes its result to a cache temp; we've copied it
+  // to exports/ under the final name, so drop the temp to avoid leaking it.
+  await FileSystem.deleteAsync(manipulated.uri, { idempotent: true }).catch(() => {});
 
   // v19 legacy `InfoOptions` dropped the `size` flag — size is always present
   // on existing files now. Left original guard for `exists`.
@@ -132,9 +139,13 @@ export async function imageSize(uri: string): Promise<{ width: number; height: n
   return probeImageSize(uri);
 }
 
-export async function saveToGallery(uri: string): Promise<boolean> {
+export type SaveResult = { ok: boolean; reason?: string };
+
+export async function saveToGallery(uri: string): Promise<SaveResult> {
   const perm = await MediaLibrary.requestPermissionsAsync();
-  if (!perm.granted) return false;
+  if (!perm.granted) {
+    return { ok: false, reason: 'Permission to save to your gallery was denied.' };
+  }
   try {
     const asset = await MediaLibrary.createAssetAsync(uri);
     const album = await MediaLibrary.getAlbumAsync('Convert-X');
@@ -143,9 +154,15 @@ export async function saveToGallery(uri: string): Promise<boolean> {
     } else {
       await MediaLibrary.addAssetsToAlbumAsync([asset], album, false);
     }
-    return true;
-  } catch {
-    return false;
+    return { ok: true };
+  } catch (e) {
+    // createAssetAsync rejects on Android for non-image/video MIME types
+    // (audio, ICO, TIFF, BMP) even with permission granted — surface the
+    // real reason rather than a misleading "permission denied".
+    return {
+      ok: false,
+      reason: e instanceof Error ? e.message : 'Could not add this file to the gallery.',
+    };
   }
 }
 

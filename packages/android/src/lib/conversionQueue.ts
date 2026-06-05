@@ -42,6 +42,11 @@ function clearSession(sessionId: string): void {
   cancelled.delete(sessionId);
 }
 
+/** Strip filesystem-hostile characters from a user-typed output name. */
+function sanitizeStem(s: string): string {
+  return s.replace(/[\\/:*?"<>|]/g, '_').trim();
+}
+
 export type ConvertRunOpts = {
   sessionId: string;
   files: FileEntry[];
@@ -68,6 +73,13 @@ export async function runConvertSession(opts: ConvertRunOpts): Promise<void> {
     clearSession(opts.sessionId);
     return;
   }
+
+  // Single-file rename support: the OutputSettings "FILE NAME" field sets
+  // settings.customName. Only applies when converting exactly one file.
+  const customStem =
+    opts.files.length === 1 && opts.settings.customName
+      ? sanitizeStem(opts.settings.customName) || null
+      : null;
 
   try {
     for (const file of opts.files) {
@@ -99,12 +111,13 @@ export async function runConvertSession(opts: ConvertRunOpts): Promise<void> {
             targetFormat: fmt,
             quality: opts.settings.quality,
             resize: opts.resize ?? { kind: 'none' },
+            outputBaseName: customStem,
           });
           if (isCancelled(opts.sessionId)) break;
           opts.onFileDone(file.id, result.outputUri, result.outputName, result.bytes);
         } else {
           // FFmpeg path — video, audio, GIF, BMP/TIFF, etc.
-          await runFfmpegFile({ ...opts, file, fmt });
+          await runFfmpegFile({ ...opts, file, fmt, customStem });
           if (isCancelled(opts.sessionId)) break;
         }
       } catch (e) {
@@ -117,7 +130,13 @@ export async function runConvertSession(opts: ConvertRunOpts): Promise<void> {
   }
 }
 
-async function runFfmpegFile(opts: ConvertRunOpts & { file: FileEntry; fmt: import('./formats').FormatDef }): Promise<void> {
+async function runFfmpegFile(
+  opts: ConvertRunOpts & {
+    file: FileEntry;
+    fmt: import('./formats').FormatDef;
+    customStem?: string | null;
+  }
+): Promise<void> {
   const { file, fmt } = opts;
 
   // Probe the input so we can compute progress percent.
@@ -132,7 +151,7 @@ async function runFfmpegFile(opts: ConvertRunOpts & { file: FileEntry; fmt: impo
   // Output path — app cache dir, randomized name to avoid collisions.
   const outputDir = `${FileSystem.documentDirectory}exports`;
   await FileSystem.makeDirectoryAsync(outputDir, { intermediates: true }).catch(() => {});
-  const stem = file.name.replace(/\.[^.]+$/, '') || 'output';
+  const stem = opts.customStem ?? (file.name.replace(/\.[^.]+$/, '') || 'output');
   const outputName = `${stem}.${fmt.ext}`;
   const outputPath = `${outputDir}/${Date.now()}-${outputName}`;
   // FFmpeg needs filesystem paths, not file:// URIs, so strip the scheme.
@@ -176,7 +195,11 @@ async function runFfmpegFile(opts: ConvertRunOpts & { file: FileEntry; fmt: impo
 
   try {
     const result = await executeAsync(opts.sessionId, args, durationMs);
-    if (isCancelled(opts.sessionId)) return;
+    if (isCancelled(opts.sessionId)) {
+      // Cancelled mid-encode — FFmpeg may have written a partial file.
+      await FileSystem.deleteAsync(outputPath, { idempotent: true }).catch(() => {});
+      return;
+    }
     if (result.returnCode !== 0) {
       // Pull the last meaningful stderr lines so the result panel can show
       // what FFmpeg actually complained about (codec not found, invalid
@@ -188,12 +211,21 @@ async function runFfmpegFile(opts: ConvertRunOpts & { file: FileEntry; fmt: impo
         .slice(-3)
         .join(' · ');
       const detail = tail ? ` — ${tail}` : '';
+      await FileSystem.deleteAsync(outputPath, { idempotent: true }).catch(() => {});
       opts.onFileError(file.id, `FFmpeg exited ${result.returnCode}${detail}`);
       return;
     }
     // Read output size for the result panel.
     const info = await FileSystem.getInfoAsync(outputPath);
     const bytes = info.exists && 'size' in info ? info.size ?? 0 : 0;
+    if (!info.exists || bytes <= 0) {
+      // FFmpeg can exit 0 yet write nothing (empty filtergraph, a mediacodec
+      // container that never received frames). Don't hand the user a 0-byte
+      // file to Save/Share — surface it as a real failure.
+      await FileSystem.deleteAsync(outputPath, { idempotent: true }).catch(() => {});
+      opts.onFileError(file.id, 'FFmpeg produced no output (0 bytes).');
+      return;
+    }
     opts.onFileDone(file.id, outputPath, outputName, bytes);
   } finally {
     sub.remove();

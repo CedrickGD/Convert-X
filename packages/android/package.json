@@ -9,7 +9,8 @@
     "web": "expo start --web",
     "prebuild": "expo prebuild",
     "build:apk": "expo prebuild && cd android && gradlew clean assembleRelease && cd .. && node scripts/copy-apk.js",
-    "build:apk:fast": "cd android && gradlew assembleRelease && cd .. && node scripts/copy-apk.js"
+    "build:apk:fast": "cd android && gradlew assembleRelease && cd .. && node scripts/copy-apk.js",
+    "bump": "node scripts/bump-version.js"
   },
   "dependencies": {
     "@react-native-async-storage/async-storage": "2.2.0",

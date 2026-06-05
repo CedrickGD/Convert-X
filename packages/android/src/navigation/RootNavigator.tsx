@@ -2,9 +2,16 @@ import { createNativeStackNavigator } from '@react-navigation/native-stack';
 import React from 'react';
 
 import { InstagramLoginScreen } from '../screens/InstagramLoginScreen';
-import { StyleGuideScreen } from '../screens/dev/StyleGuideScreen';
 import { ModeRouter } from './ModeRouter';
 import { RootStackParamList } from './types';
+
+// Dev-only: require()'d under __DEV__ so Metro dead-code-eliminates the
+// ~770-line styleguide screen (and its imports) from release bundles. A bare
+// `import` would ship it and leave navigate('StyleGuide') reachable in prod.
+const StyleGuideScreen = __DEV__
+  ? (require('../screens/dev/StyleGuideScreen') as typeof import('../screens/dev/StyleGuideScreen'))
+      .StyleGuideScreen
+  : undefined;
 
 const Stack = createNativeStackNavigator<RootStackParamList>();
 
@@ -17,15 +24,17 @@ export function RootNavigator() {
   return (
     <Stack.Navigator screenOptions={{ headerShown: false }}>
       <Stack.Screen name="Root" component={ModeRouter} />
-      <Stack.Screen
-        name="StyleGuide"
-        component={StyleGuideScreen}
-        options={{
-          presentation: 'modal',
-          animation: 'slide_from_bottom',
-          gestureEnabled: true,
-        }}
-      />
+      {__DEV__ && StyleGuideScreen ? (
+        <Stack.Screen
+          name="StyleGuide"
+          component={StyleGuideScreen}
+          options={{
+            presentation: 'modal',
+            animation: 'slide_from_bottom',
+            gestureEnabled: true,
+          }}
+        />
+      ) : null}
       <Stack.Screen
         name="InstagramLogin"
         component={InstagramLoginScreen}

@@ -16,7 +16,7 @@ import {
   VideoEditControls,
 } from '../components/convert';
 import { getFfmpegLoadError } from '../../modules/convert-x-ffmpeg/src';
-import { MediaType, formatKeyFromName, mediaTypeFromName } from '../lib/formats';
+import { FORMATS, MediaType, formatKeyFromName, mediaTypeFromName } from '../lib/formats';
 import { cancelSession, runConvertSession } from '../lib/conversionQueue';
 import { useConvert } from '../state';
 import { FileEntry } from '../state/types';
@@ -154,6 +154,13 @@ export function ConvertScreen() {
     return active.reduce((sum, f) => sum + f.progress, 0) / active.length;
   }, [state.files]);
 
+  // Quality-slider copy depends on the target's media category — the same
+  // 0..100 knob means image compression, video bitrate, or audio bitrate.
+  const qualityKind = useMemo<'image' | 'video' | 'audio'>(() => {
+    const f = FORMATS.find((x) => x.key === state.settings.format);
+    return f?.category === 'video' || f?.category === 'audio' ? f.category : 'image';
+  }, [state.settings.format]);
+
   const compatibleCount = state.files.filter(
     (f) =>
       state.settings.format &&
@@ -257,11 +264,16 @@ export function ConvertScreen() {
           ) : null}
 
           <OutputSettings
-            singleFileName={!isBatch ? single?.name?.replace(/\.[^.]+$/, '') ?? '' : undefined}
+            singleFileName={
+              !isBatch
+                ? state.settings.customName ?? single?.name?.replace(/\.[^.]+$/, '') ?? ''
+                : undefined
+            }
+            onFilenameChange={(name) => convert.updateSettings({ customName: name })}
             formatExt={state.settings.format ?? undefined}
             quality={state.settings.quality}
             onQualityChange={(q) => convert.updateSettings({ quality: q })}
-            qualityKind="image"
+            qualityKind={qualityKind}
           />
 
           <View style={styles.actions}>

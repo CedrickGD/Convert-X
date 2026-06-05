@@ -13,7 +13,9 @@ import { StyleSheet, View } from 'react-native';
 import { GestureHandlerRootView } from 'react-native-gesture-handler';
 import { SafeAreaProvider } from 'react-native-safe-area-context';
 
+import { ErrorBoundary } from './src/components/ErrorBoundary';
 import { runFirstLaunchYtDlpUpdate } from './src/lib/downloadQueue';
+import { purgeOldExports } from './src/lib/storage';
 import { RootNavigator } from './src/navigation/RootNavigator';
 import {
   ConvertProvider,
@@ -86,6 +88,13 @@ function Root({ fontsReady }: { fontsReady: boolean }) {
     void runFirstLaunchYtDlpUpdate();
   }, [ready]);
 
+  // Reclaim stale app-private exports/downloads on launch so the working
+  // copies don't accumulate unbounded. Fire-and-forget.
+  useEffect(() => {
+    if (!ready) return;
+    void purgeOldExports();
+  }, [ready]);
+
   const navTheme = useMemo<NavTheme>(() => {
     const base = theme.isDark ? DarkTheme : DefaultTheme;
     return {
@@ -110,7 +119,19 @@ function Root({ fontsReady }: { fontsReady: boolean }) {
   return (
     <View style={[styles.root, { backgroundColor: theme.bg.base }]}>
       <NavigationContainer theme={navTheme}>
-        <RootNavigator />
+        <ErrorBoundary
+          label="app"
+          colors={{
+            bg: theme.bg.base,
+            text: theme.text.primary,
+            muted: theme.text.muted,
+            accent: theme.accent.primary,
+            onAccent: theme.accent.onPrimary,
+            border: theme.border.subtle,
+          }}
+        >
+          <RootNavigator />
+        </ErrorBoundary>
       </NavigationContainer>
       <StatusBar style={theme.isDark ? 'light' : 'dark'} />
     </View>

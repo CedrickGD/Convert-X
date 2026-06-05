@@ -83,8 +83,10 @@ export const DARK_THEME: Theme = {
   text: {
     primary: '#f0f0f0',
     secondary: '#999999',
-    muted: '#4a4a4a',
-    tertiary: '#4a4a4a',
+    // Bumped from #4a4a4a (2.2:1) to ~4.6:1 on bg.base for WCAG-AA — muted
+    // carries informational text (sizes, labels, tick marks, placeholders).
+    muted: '#7a7a7a',
+    tertiary: '#7a7a7a',
     onAccent: '#000000',
   },
   border: {
@@ -128,8 +130,9 @@ export const LIGHT_THEME: Theme = {
   text: {
     primary: '#111111',
     secondary: '#555555',
-    muted: '#999999',
-    tertiary: '#999999',
+    // Bumped from #999 (2.85:1) to ~4.9:1 on bg.base for WCAG-AA.
+    muted: '#6b6b6b',
+    tertiary: '#6b6b6b',
     onAccent: '#ffffff',
   },
   border: {

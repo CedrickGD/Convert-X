@@ -1,6 +1,6 @@
 import { Image } from 'expo-image';
 import { RotateCcw } from 'lucide-react-native';
-import React, { useEffect, useMemo, useState } from 'react';
+import React, { useLayoutEffect, useMemo, useState } from 'react';
 import {
   LayoutChangeEvent,
   Modal,
@@ -12,12 +12,14 @@ import {
 } from 'react-native';
 import { Gesture, GestureDetector, GestureHandlerRootView } from 'react-native-gesture-handler';
 import Animated, {
+  runOnJS,
   useAnimatedProps,
   useAnimatedStyle,
   useSharedValue,
 } from 'react-native-reanimated';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 
+import { haptics } from '../../lib/haptics';
 import type { CropSpec } from '../../state/types';
 import { radius, spacing, typography, useTheme } from '../../theme';
 
@@ -71,6 +73,14 @@ export function CropEditor({
 
   // Measured image-area size; the displayed image is fit inside it by aspect.
   const [area, setArea] = useState({ w: 0, h: 0 });
+  // Gate the crop overlay until the box geometry has been seeded (effect below).
+  // Mounting the gesture/animated subtree only AFTER the shared values hold the
+  // real box size avoids a cold-start race: on the very first crop open of a
+  // session the rect's animated style would otherwise attach to the initial
+  // 0×0 shared values and miss the post-layout seed — leaving a collapsed,
+  // undraggable box (corner knobs + edge bars stacked at the origin). It worked
+  // on the second open only because the native surfaces were warm by then.
+  const [ready, setReady] = useState(false);
   const disp = useMemo(() => {
     const availW = area.w - PAD * 2;
     const availH = area.h - PAD * 2;
@@ -98,9 +108,14 @@ export function CropEditor({
   const sh = useSharedValue(0);
   const active = useSharedValue(0);
 
-  // Initialise / re-fit the box whenever the display size resolves.
-  useEffect(() => {
-    if (disp.w <= 0 || disp.h <= 0) return;
+  // Initialise / re-fit the box whenever the display size resolves. Runs as a
+  // layout effect (before paint) and flips `ready` only after seeding, so the
+  // overlay never mounts against un-seeded 0×0 geometry.
+  useLayoutEffect(() => {
+    if (disp.w <= 0 || disp.h <= 0) {
+      setReady(false);
+      return;
+    }
     const perDisp = imageWidth / disp.w;
     bw.value = disp.w;
     bh.value = disp.h;
@@ -120,6 +135,7 @@ export function CropEditor({
       w.value = disp.w;
       h.value = disp.h;
     }
+    setReady(true);
   }, [disp, initialCrop, imageWidth, bw, bh, minS, spd, x, y, w, h]);
 
   const onArea = (e: LayoutChangeEvent) => {
@@ -140,6 +156,7 @@ export function CropEditor({
           sy.value = y.value;
           sw.value = w.value;
           sh.value = h.value;
+          runOnJS(haptics.tap)();
         })
         .onUpdate((e) => {
           'worklet';
@@ -187,6 +204,7 @@ export function CropEditor({
         active.value = 1;
         sx.value = x.value;
         sy.value = y.value;
+        runOnJS(haptics.tap)();
       })
       .onUpdate((e) => {
         'worklet';
@@ -292,7 +310,7 @@ export function CropEditor({
 
         {/* Image + crop overlay */}
         <View style={styles.area} onLayout={onArea}>
-          {disp.w > 0 ? (
+          {ready ? (
             <View style={{ width: disp.w, height: disp.h }}>
               <Image source={imageSource} style={StyleSheet.absoluteFill} contentFit="fill" />
 

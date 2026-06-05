@@ -27,6 +27,14 @@ function audioBitrate(quality: number): number {
   return Math.round(AUDIO_BITRATE_LO + (AUDIO_BITRATE_HI - AUDIO_BITRATE_LO) * (clamped / 100));
 }
 
+/** H.264 hardware-encoder (h264_mediacodec) targets — everything except the
+ *  legacy software-codec containers (avi/flv/wmv, which use mpeg4/flv1/
+ *  msmpeg4v3). mediacodec rejects odd width/height; the software encoders are
+ *  more forgiving. */
+function usesMediacodec(key: string): boolean {
+  return !['avi', 'flv', 'wmv'].includes(key);
+}
+
 export type FfmpegBuildOpts = {
   inputPath: string;
   outputPath: string;
@@ -212,6 +220,13 @@ function buildVideoFilterChain(opts: FfmpegBuildOpts): string {
     const w = opts.resizeWidth ?? -2;
     const h = opts.resizeHeight ?? -2;
     parts.push(`scale=${w}:${h}`);
+  }
+  // h264_mediacodec (used for every mp4/mov/mkv/ts target) rejects odd
+  // width/height — common after a crop or rotate, or from an odd-sized
+  // source. Force even final dimensions. Video targets only: the image
+  // encoders (bmp/tiff/ico) share this chain and accept odd dimensions.
+  if (opts.target.category === 'video' && usesMediacodec(opts.target.key)) {
+    parts.push('scale=trunc(iw/2)*2:trunc(ih/2)*2');
   }
   return parts.join(',');
 }

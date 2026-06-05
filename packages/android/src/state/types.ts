@@ -55,6 +55,9 @@ export type ConvertSettings = {
   format: string | null;
   /** 0..100 — image/audio quality knob (CRF for video, bitrate for audio). */
   quality: number;
+  /** Optional custom output filename (stem only, no extension) for
+   *  single-file conversions. null = derive from the source filename. */
+  customName: string | null;
 
   // ── Video editor fields (Phase v0.4 wires the args, v0.5 ships the UI) ──
   /** Trim in-point (seconds). null = source start. */
@@ -91,6 +94,7 @@ export type ConvertSettings = {
 export const CONVERT_DEFAULTS: ConvertSettings = {
   format: null,
   quality: 100,
+  customName: null,
   trimStart: null,
   trimEnd: null,
   stripAudio: false,

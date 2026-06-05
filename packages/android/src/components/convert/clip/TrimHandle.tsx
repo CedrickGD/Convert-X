@@ -8,6 +8,7 @@ import Animated, {
   withSpring,
 } from 'react-native-reanimated';
 
+import { haptics } from '../../../lib/haptics';
 import { useTheme } from '../../../theme';
 
 type Props = {
@@ -59,6 +60,7 @@ export function TrimHandle({
       'worklet';
       dragging.value = 1;
       startX.value = x.value;
+      runOnJS(haptics.tap)();
     })
     .onUpdate((e) => {
       'worklet';

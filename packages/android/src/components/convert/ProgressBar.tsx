@@ -4,6 +4,7 @@ import Animated, {
   Easing,
   cancelAnimation,
   useAnimatedStyle,
+  useReducedMotion,
   useSharedValue,
   withRepeat,
   withTiming,
@@ -29,15 +30,21 @@ type Props = {
 export function ProgressBar({ progress, elapsed, label = 'Converting…' }: Props) {
   const { theme } = useTheme();
   const shimmer = useSharedValue(0);
+  const reduceMotion = useReducedMotion();
 
   useEffect(() => {
+    if (reduceMotion) {
+      // Respect "Remove animations" — hold the fill steady instead of pulsing.
+      shimmer.value = 1;
+      return;
+    }
     shimmer.value = withRepeat(
       withTiming(1, { duration: 1500, easing: Easing.inOut(Easing.ease) }),
       -1,
       true
     );
     return () => cancelAnimation(shimmer);
-  }, [shimmer]);
+  }, [shimmer, reduceMotion]);
 
   const shimmerStyle = useAnimatedStyle(() => ({
     opacity: 0.3 + shimmer.value * 0.6,
@@ -51,6 +58,10 @@ export function ProgressBar({ progress, elapsed, label = 'Converting…' }: Prop
         styles.card,
         { backgroundColor: theme.bg.surface, borderColor: theme.border.subtle },
       ]}
+      accessibilityRole="progressbar"
+      accessibilityLabel={label}
+      accessibilityValue={{ min: 0, max: 100, now: Math.round(clamped) }}
+      accessibilityLiveRegion="polite"
     >
       <View style={styles.head}>
         <Text style={[styles.label, { color: theme.text.secondary }]}>{label}</Text>
