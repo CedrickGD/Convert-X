@@ -187,10 +187,18 @@ async function runFfmpegFile(
     gifDither: s.gifDither,
   });
 
-  // Subscribe progress for this session only.
+  // Subscribe progress for this session only. Rate-limit to ~10Hz (always
+  // letting 100% through) so a chatty native emitter doesn't dispatch a
+  // reducer action — and re-render every screen + the Navbar — many times per
+  // displayed percent. The reducer additionally dedupes identical values.
+  let lastEmit = 0;
   const sub = addProgressListener((evt) => {
     if (evt.sessionId !== opts.sessionId) return;
-    opts.onFileProgress(file.id, Math.round(evt.percent));
+    const pct = Math.round(evt.percent);
+    const now = Date.now();
+    if (pct < 100 && now - lastEmit < 100) return;
+    lastEmit = now;
+    opts.onFileProgress(file.id, pct);
   });
 
   try {

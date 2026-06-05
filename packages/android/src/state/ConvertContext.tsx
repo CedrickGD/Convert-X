@@ -97,14 +97,19 @@ function reducer(state: ConvertState, action: Action): ConvertState {
             : f
         ),
       };
-    case 'fileProgress':
+    case 'fileProgress': {
       if (action.sessionId !== state.currentSessionId) return state;
+      // Dedupe: identical rounded progress must not allocate a new state
+      // object — that would re-render every consumer + the Navbar for nothing.
+      const cur = state.files.find((f) => f.id === action.id);
+      if (cur && cur.progress === action.progress) return state;
       return {
         ...state,
         files: state.files.map((f) =>
           f.id === action.id ? { ...f, progress: action.progress } : f
         ),
       };
+    }
     case 'fileResult':
       if (action.sessionId !== state.currentSessionId) return state;
       return {

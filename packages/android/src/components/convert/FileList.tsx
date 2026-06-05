@@ -74,7 +74,7 @@ export function FileList({ files, view, onRemoveFile, onAddFiles }: Props) {
             file={f}
             view={view}
             theme={theme}
-            onRemove={onRemoveFile ? () => onRemoveFile(f.id) : undefined}
+            onRemoveFile={onRemoveFile}
           />
         ))}
       </ScrollView>
@@ -82,16 +82,19 @@ export function FileList({ files, view, onRemoveFile, onAddFiles }: Props) {
   );
 }
 
-function FileRow({
+// Memoized so a progress tick on one file doesn't re-render every other row.
+// The reducer keeps unchanged file objects ref-stable, and onRemoveFile / view
+// / theme are all stable, so unchanged rows skip rendering entirely.
+const FileRow = React.memo(function FileRow({
   file,
   view,
   theme,
-  onRemove,
+  onRemoveFile,
 }: {
   file: FileEntry;
   view: 'ready' | 'converting' | 'done';
   theme: ReturnType<typeof useTheme>['theme'];
-  onRemove?: () => void;
+  onRemoveFile?: (id: string) => void;
 }) {
   const dot = TYPE_DOT[file.mediaType] ?? TYPE_DOT.unknown;
   const isConverting = file.status === 'converting';
@@ -150,10 +153,10 @@ function FileRow({
         >
           <X size={12} strokeWidth={2.4} color={theme.status.error} />
         </View>
-      ) : view === 'ready' && onRemove ? (
+      ) : view === 'ready' && onRemoveFile ? (
         <Pressable
           hitSlop={8}
-          onPress={onRemove}
+          onPress={() => onRemoveFile(file.id)}
           accessibilityRole="button"
           accessibilityLabel={`Remove ${file.name}`}
           style={({ pressed }) => [styles.removeBtn, { opacity: pressed ? 0.5 : 1 }]}
@@ -163,7 +166,7 @@ function FileRow({
       ) : null}
     </View>
   );
-}
+});
 
 const styles = StyleSheet.create({
   container: {
