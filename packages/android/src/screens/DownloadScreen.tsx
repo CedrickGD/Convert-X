@@ -2,8 +2,8 @@ import * as Clipboard from 'expo-clipboard';
 import { Check, Download as DownloadIcon, Link2, Music, Video } from 'lucide-react-native';
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
+  ActivityIndicator,
   Alert,
-  Image,
   Pressable,
   ScrollView,
   StyleSheet,
@@ -11,6 +11,7 @@ import {
   TextInput,
   View,
 } from 'react-native';
+import { Image as ExpoImage } from 'expo-image';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 
 import { ProgressBar } from '../components/convert';
@@ -138,72 +139,88 @@ export function DownloadScreen() {
   );
 
   const allSelected = entries.length > 0 && selectedIds.size === entries.length;
+  const partialCarousel = entries.some((e) => e.partialCarousel);
 
-  const handleDownload = useCallback(async () => {
-    if (selectedEntries.length === 0) return;
-    setError(null);
-    setDone(null);
-    setProgress(0);
-    setCurrentItemIdx(0);
-    setCurrentItemTitle(selectedEntries[0]?.title ?? null);
+  const runDownload = useCallback(
+    async (toDownload: DownloadEntry[]) => {
+      if (toDownload.length === 0) return;
+      setError(null);
+      setDone(null);
+      setProgress(0);
+      setCurrentItemIdx(0);
+      setCurrentItemTitle(toDownload[0]?.title ?? null);
 
-    // Ask for permission up-front. If the user denies, we still download
-    // to app-private storage — but we tell them so they're not surprised
-    // when the file isn't in their Gallery afterwards.
-    const granted = await ensureMediaPermission();
-    if (!granted) {
-      const proceed = await new Promise<boolean>((resolve) => {
-        Alert.alert(
-          'Save to Gallery?',
-          'Without this permission, downloads stay inside Convert-X and won’t show up in your Gallery or Files app. Continue with a private download?',
-          [
-            { text: 'Cancel', style: 'cancel', onPress: () => resolve(false) },
-            { text: 'Continue', onPress: () => resolve(true) },
-          ],
-          { cancelable: true, onDismiss: () => resolve(false) }
-        );
-      });
-      if (!proceed) return;
-    }
-
-    const sessionId = `dl-${Date.now()}`;
-    download.dispatch({ type: 'beginSession', sessionId });
-    try {
-      const result = await downloadBatch({
-        sessionId,
-        entries: selectedEntries,
-        audioOnly: state.settings.category === 'audio',
-        format: state.settings.format,
-        quality: state.settings.quality,
-        spotifyClientId: state.settings.spotifyClientId || undefined,
-        spotifyClientSecret: state.settings.spotifyClientSecret || undefined,
-        cookies: state.settings.cookiesPath || undefined,
-        saveToGallery: granted,
-        onProgress: (overall, idx) => {
-          setProgress(overall);
-          setCurrentItemIdx(idx);
-        },
-        onItemStart: (idx, entry) => {
-          setCurrentItemIdx(idx);
-          setCurrentItemTitle(entry.title);
-        },
-      });
-      if (result.cancelled) {
-        download.dispatch({ type: 'cancelSession' });
-      } else {
-        setDone({
-          publicPath: result.lastPublicPath,
-          completed: result.done,
-          total: selectedEntries.length,
-          errors: result.errors,
+      // Ask for permission up-front. If the user denies, we still download
+      // to app-private storage — but we tell them so they're not surprised
+      // when the file isn't in their Gallery afterwards.
+      const granted = await ensureMediaPermission();
+      if (!granted) {
+        const proceed = await new Promise<boolean>((resolve) => {
+          Alert.alert(
+            'Save to Gallery?',
+            'Without this permission, downloads stay inside Convert-X and won’t show up in your Gallery or Files app. Continue with a private download?',
+            [
+              { text: 'Cancel', style: 'cancel', onPress: () => resolve(false) },
+              { text: 'Continue', onPress: () => resolve(true) },
+            ],
+            { cancelable: true, onDismiss: () => resolve(false) }
+          );
         });
-        download.dispatch({ type: 'finishSession', sessionId });
+        if (!proceed) return;
       }
-    } catch (e) {
-      setError(e instanceof Error ? e.message : String(e));
-      download.dispatch({ type: 'cancelSession' });
-    }
-  }, [download, selectedEntries, state.settings]);
+
+      const sessionId = `dl-${Date.now()}`;
+      download.dispatch({ type: 'beginSession', sessionId });
+      try {
+        const result = await downloadBatch({
+          sessionId,
+          entries: toDownload,
+          audioOnly: state.settings.category === 'audio',
+          format: state.settings.format,
+          quality: state.settings.quality,
+          spotifyClientId: state.settings.spotifyClientId || undefined,
+          spotifyClientSecret: state.settings.spotifyClientSecret || undefined,
+          cookies: state.settings.cookiesPath || undefined,
+          saveToGallery: granted,
+          onProgress: (overall, idx) => {
+            setProgress(overall);
+            setCurrentItemIdx(idx);
+          },
+          onItemStart: (idx, entry) => {
+            setCurrentItemIdx(idx);
+            setCurrentItemTitle(entry.title);
+          },
+        });
+        if (result.cancelled) {
+          download.dispatch({ type: 'cancelSession' });
+        } else {
+          setDone({
+            publicPath: result.lastPublicPath,
+            completed: result.done,
+            total: toDownload.length,
+            errors: result.errors,
+          });
+          download.dispatch({ type: 'finishSession', sessionId });
+        }
+      } catch (e) {
+        setError(e instanceof Error ? e.message : String(e));
+        download.dispatch({ type: 'cancelSession' });
+      }
+    },
+    [download, state.settings]
+  );
+
+  const handleDownload = useCallback(
+    () => runDownload(selectedEntries),
+    [runDownload, selectedEntries]
+  );
+
+  // Re-run only the items that failed last time, preserving prior successes.
+  const handleRetryFailed = useCallback(() => {
+    const failedTitles = new Set((done?.errors ?? []).map((e) => e.title));
+    const failed = entries.filter((e) => failedTitles.has(e.title));
+    if (failed.length > 0) runDownload(failed);
+  }, [done, entries, runDownload]);
 
   const handleCancel = useCallback(() => {
     cancelBatch();
@@ -362,9 +379,13 @@ export function DownloadScreen() {
                 },
               ]}
             >
-              <Text style={[styles.primaryBtnText, { color: theme.accent.onPrimary }]}>
-                {probing ? 'Loading…' : 'Find'}
-              </Text>
+              {probing ? (
+                <ActivityIndicator size="small" color={theme.accent.onPrimary} />
+              ) : (
+                <Text style={[styles.primaryBtnText, { color: theme.accent.onPrimary }]}>
+                  Find
+                </Text>
+              )}
             </Pressable>
           </View>
 
@@ -403,6 +424,12 @@ export function DownloadScreen() {
                 </Pressable>
               ) : null}
             </View>
+            {partialCarousel ? (
+              <Text style={[styles.carouselNotice, { color: theme.status.warning }]}>
+                Only the first item is available without login. Sign in via
+                Credits → Login for the full carousel.
+              </Text>
+            ) : null}
             {entries.map((e, idx) => {
               const isSelected = selectedIds.has(e.id);
               const multi = entries.length > 1;
@@ -432,13 +459,15 @@ export function DownloadScreen() {
                   ) : null}
                   <View style={styles.thumbWrap}>
                     {e.thumbnail ? (
-                      <Image
+                      <ExpoImage
                         source={{ uri: e.thumbnail }}
                         style={[
                           styles.thumbnail,
                           { backgroundColor: theme.bg.surfaceSunken, borderColor: theme.border.subtle },
                         ]}
-                        resizeMode="cover"
+                        contentFit="cover"
+                        cachePolicy="memory-disk"
+                        recyclingKey={e.id}
                       />
                     ) : (
                       <View
@@ -585,6 +614,20 @@ export function DownloadScreen() {
             ) : null}
           </View>
           <View style={styles.actions}>
+            {done && done.errors.length > 0 ? (
+              <Pressable
+                onPress={handleRetryFailed}
+                accessibilityRole="button"
+                style={({ pressed }) => [
+                  styles.ghostBtn,
+                  { borderColor: theme.border.subtle, backgroundColor: pressed ? theme.bg.surfaceHigh : 'transparent' },
+                ]}
+              >
+                <Text style={[styles.ghostBtnText, { color: theme.text.secondary }]}>
+                  Retry failed ({done.errors.length})
+                </Text>
+              </Pressable>
+            ) : null}
             <Pressable
               onPress={handleReset}
               style={({ pressed }) => [
@@ -863,4 +906,5 @@ const styles = StyleSheet.create({
   doneSub: { ...typography.caption, textAlign: 'center' },
 
   errorText: { ...typography.caption, textAlign: 'center' },
+  carouselNotice: { ...typography.caption, lineHeight: 17 },
 });

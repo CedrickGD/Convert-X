@@ -29,6 +29,9 @@ export type DownloadEntry = {
    *  directly — necessary because Instagram's API is locked but its
    *  public CDN media URLs are not. */
   directUrl?: string;
+  /** Set by the anonymous Instagram scraper when the post is a carousel but
+   *  only the first item is retrievable without login. */
+  partialCarousel?: boolean;
 };
 
 export type ProbeResult = {

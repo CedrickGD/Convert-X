@@ -60,17 +60,31 @@ export async function probeInstagramAnonymous(url: string): Promise<ProbeResult>
   if (!shortcode) throw new Error('Not a recognizable Instagram post URL.');
 
   const embedUrl = `https://www.instagram.com/p/${shortcode}/embed/`;
-  const resp = await fetch(embedUrl, {
-    headers: {
-      'User-Agent': MOBILE_UA,
-      Accept: 'text/html,application/xhtml+xml',
-      'Accept-Language': 'en-US,en;q=0.9',
-    },
-  });
-  if (!resp.ok) {
-    throw new Error(`Instagram embed returned HTTP ${resp.status}`);
+  // 15s timeout so a captive portal / slow CDN can't hang "Loading…" forever.
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), 15000);
+  let html: string;
+  try {
+    const resp = await fetch(embedUrl, {
+      headers: {
+        'User-Agent': MOBILE_UA,
+        Accept: 'text/html,application/xhtml+xml',
+        'Accept-Language': 'en-US,en;q=0.9',
+      },
+      signal: controller.signal,
+    });
+    if (!resp.ok) {
+      throw new Error(`Instagram embed returned HTTP ${resp.status}`);
+    }
+    html = await resp.text();
+  } catch (e) {
+    if (controller.signal.aborted) {
+      throw new Error('Instagram took too long to respond — check your connection and try again.');
+    }
+    throw e;
+  } finally {
+    clearTimeout(timeout);
   }
-  const html = await resp.text();
 
   // Walk both possible tag shapes — image and video. Order matters:
   // a video post sometimes also has a poster <img>, so we prefer the
@@ -104,11 +118,10 @@ export async function probeInstagramAnonymous(url: string): Promise<ProbeResult>
   // user before they tap Download expecting all 10 photos.
   const carouselThumbCount = (html.match(/class="CarouselNavThumb"/g) ?? []).length;
   if (carouselThumbCount > 0) {
-    // We still return the first item so a partial download is possible
-    // — but flag the result so the UI can prompt the user to log in
-    // for full carousel access. We use a sentinel field on the title;
-    // the UI surfaces this as an "only item 1 of N" hint.
-    entry.title = `${entry.title}-of-carousel`;
+    // Only the first item is retrievable anonymously; the rest are gated
+    // behind login. Flag it structurally so the UI can show a notice —
+    // without leaking a sentinel into the visible title / saved filename.
+    entry.partialCarousel = true;
   }
 
   return {

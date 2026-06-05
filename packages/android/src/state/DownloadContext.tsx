@@ -1,9 +1,13 @@
+import AsyncStorage from '@react-native-async-storage/async-storage';
+import * as FileSystem from 'expo-file-system/legacy';
 import React, {
   createContext,
   useCallback,
   useContext,
+  useEffect,
   useMemo,
   useReducer,
+  useRef,
 } from 'react';
 
 import {
@@ -12,6 +16,22 @@ import {
   FileEntry,
   ModeView,
 } from './types';
+
+const STORAGE_KEY = '@convertx/download.v1';
+
+/** Only the credential / last-used-default fields persist (not the transient
+ *  url or in-flight session). Previously the cookies pointer + Spotify creds
+ *  reset on every cold start, silently logging the user out of Instagram. */
+function persistableFrom(s: DownloadSettings) {
+  return {
+    spotifyClientId: s.spotifyClientId,
+    spotifyClientSecret: s.spotifyClientSecret,
+    cookiesPath: s.cookiesPath,
+    category: s.category,
+    format: s.format,
+    quality: s.quality,
+  };
+}
 
 /**
  * Download mode — Phase 6 builds the full downloader (yt-dlp wrap, multi-asset
@@ -82,6 +102,42 @@ const DownloadContext = createContext<DownloadContextValue | null>(null);
 
 export function DownloadProvider({ children }: { children: React.ReactNode }) {
   const [state, dispatch] = useReducer(reducer, INITIAL);
+  const hydratedRef = useRef(false);
+
+  // Hydrate persisted creds / cookies / last-used defaults on mount.
+  useEffect(() => {
+    (async () => {
+      try {
+        const raw = await AsyncStorage.getItem(STORAGE_KEY);
+        const patch: Partial<DownloadSettings> = raw ? JSON.parse(raw) : {};
+        // Drop a stale cookies pointer if the file is gone (re-login needed).
+        if (patch.cookiesPath) {
+          const info = await FileSystem.getInfoAsync(patch.cookiesPath).catch(() => null);
+          if (!info || !info.exists) patch.cookiesPath = '';
+        }
+        if (Object.keys(patch).length > 0) dispatch({ type: 'updateSettings', patch });
+      } catch {
+        // ignore — fall back to defaults
+      } finally {
+        hydratedRef.current = true;
+      }
+    })();
+  }, []);
+
+  // Persist the credential / default subset whenever it changes.
+  useEffect(() => {
+    if (!hydratedRef.current) return;
+    AsyncStorage.setItem(STORAGE_KEY, JSON.stringify(persistableFrom(state.settings))).catch(
+      () => {}
+    );
+  }, [
+    state.settings.spotifyClientId,
+    state.settings.spotifyClientSecret,
+    state.settings.cookiesPath,
+    state.settings.category,
+    state.settings.format,
+    state.settings.quality,
+  ]);
 
   const updateSettings = useCallback(
     (patch: Partial<DownloadSettings>) => dispatch({ type: 'updateSettings', patch }),
