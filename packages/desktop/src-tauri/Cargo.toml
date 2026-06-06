@@ -9,6 +9,15 @@ edition = "2021"
 name = "convertx_lib"
 crate-type = ["lib", "cdylib", "staticlib"]
 
+[features]
+# Used for production builds (and any time there is no running dev server).
+# When OFF, Tauri compiles in "dev" mode and the window loads `devUrl`
+# (http://localhost:1420) instead of the embedded frontend — which fails on
+# any machine that isn't running `npm run dev`. `tauri build` enables this
+# automatically; a raw `cargo build --release` must pass --features custom-protocol.
+# DO NOT REMOVE.
+custom-protocol = ["tauri/custom-protocol"]
+
 [build-dependencies]
 tauri-build = { version = "2", features = [] }
 

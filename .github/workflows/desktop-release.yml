@@ -38,7 +38,10 @@ jobs:
       # the app downloads ffmpeg/yt-dlp/spotdl into AppData on first run.
       - name: Build portable exe
         working-directory: packages/desktop/src-tauri
-        run: cargo build --release
+        # --features custom-protocol is REQUIRED: without it Tauri builds in dev
+        # mode and the shipped exe tries to load http://localhost:1420 instead of
+        # the embedded UI. `tauri build` adds this automatically; raw cargo does not.
+        run: cargo build --release --features custom-protocol
 
       - name: Stage the portable exe
         shell: pwsh
