@@ -4,8 +4,8 @@
 // behaviour with a single-character import change.
 import * as FileSystem from 'expo-file-system/legacy';
 import * as ImageManipulator from 'expo-image-manipulator';
-import * as MediaLibrary from 'expo-media-library';
 
+import * as Downloader from '../../modules/convert-x-downloader/src';
 import { FormatDef, FORMATS } from './formats';
 import type { CropSpec } from '../state/types';
 
@@ -141,24 +141,21 @@ export async function imageSize(uri: string): Promise<{ width: number; height: n
 
 export type SaveResult = { ok: boolean; reason?: string };
 
-export async function saveToGallery(uri: string): Promise<SaveResult> {
-  const perm = await MediaLibrary.requestPermissionsAsync();
-  if (!perm.granted) {
-    return { ok: false, reason: 'Permission to save to your gallery was denied.' };
-  }
+/**
+ * Publish a converted file into the user's gallery via a MediaStore
+ * insert the app owns — no permission prompt, no per-file consent
+ * dialog, and the gallery shows `displayName` instead of the cache
+ * file's `<timestamp>-name.ext`.
+ */
+export async function saveToGallery(uri: string, displayName?: string): Promise<SaveResult> {
+  // Cache/export files are written as `<Date.now()>-<name>.<ext>` for
+  // collision safety — strip that prefix when the caller doesn't hand us
+  // the clean output name.
+  const fallbackName = (uri.split('/').pop() ?? '').replace(/^\d{10,}-/, '');
   try {
-    const asset = await MediaLibrary.createAssetAsync(uri);
-    const album = await MediaLibrary.getAlbumAsync('Convert-X');
-    if (album == null) {
-      await MediaLibrary.createAlbumAsync('Convert-X', asset, false);
-    } else {
-      await MediaLibrary.addAssetsToAlbumAsync([asset], album, false);
-    }
+    await Downloader.saveToGallery(uri, displayName?.trim() || fallbackName);
     return { ok: true };
   } catch (e) {
-    // createAssetAsync rejects on Android for non-image/video MIME types
-    // (audio, ICO, TIFF, BMP) even with permission granted — surface the
-    // real reason rather than a misleading "permission denied".
     return {
       ok: false,
       reason: e instanceof Error ? e.message : 'Could not add this file to the gallery.',

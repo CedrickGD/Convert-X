@@ -52,11 +52,13 @@ export function Dropzone({ mode, onPickFiles, onPickFromGallery }: Props) {
       </Text>
 
       <Text style={[styles.sub, { color: theme.text.muted }]} numberOfLines={2}>
-        Images, video, and audio — full FFmpeg pipeline.
+        {isResize
+          ? 'Images — scale, crop, and re-encode.'
+          : 'Images, video, and audio — full FFmpeg pipeline.'}
       </Text>
 
       <View style={styles.chipRow}>
-        {['PNG', 'JPG', 'WebP', 'MP4', 'M4A'].map((label) => (
+        {(isResize ? ['PNG', 'JPG', 'WebP'] : ['PNG', 'JPG', 'WebP', 'MP4', 'M4A']).map((label) => (
           <View key={label} style={[styles.chip, { borderColor: theme.border.subtle }]}>
             <Text style={[styles.chipText, { color: theme.text.muted }]}>{label}</Text>
           </View>

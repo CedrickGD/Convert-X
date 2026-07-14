@@ -208,19 +208,21 @@ async function runFfmpegFile(
       await FileSystem.deleteAsync(outputPath, { idempotent: true }).catch(() => {});
       return;
     }
-    if (result.returnCode !== 0) {
-      // Pull the last meaningful stderr lines so the result panel can show
-      // what FFmpeg actually complained about (codec not found, invalid
-      // input, write-permission denied, …) instead of just an exit code.
-      const tail = (result.logs ?? '')
+    // Last meaningful FFmpeg stderr lines — shows what FFmpeg actually
+    // complained about (codec not found, invalid input, empty stream, …)
+    // instead of just an exit code or a bare "no output".
+    const logTail = (logs?: string): string => {
+      const tail = (logs ?? '')
         .split(/\r?\n/)
         .map((s) => s.trim())
         .filter((s) => s.length > 0)
         .slice(-3)
         .join(' · ');
-      const detail = tail ? ` — ${tail}` : '';
+      return tail ? ` — ${tail}` : '';
+    };
+    if (result.returnCode !== 0) {
       await FileSystem.deleteAsync(outputPath, { idempotent: true }).catch(() => {});
-      opts.onFileError(file.id, `FFmpeg exited ${result.returnCode}${detail}`);
+      opts.onFileError(file.id, `FFmpeg exited ${result.returnCode}${logTail(result.logs)}`);
       return;
     }
     // Read output size for the result panel.
@@ -231,7 +233,7 @@ async function runFfmpegFile(
       // container that never received frames). Don't hand the user a 0-byte
       // file to Save/Share — surface it as a real failure.
       await FileSystem.deleteAsync(outputPath, { idempotent: true }).catch(() => {});
-      opts.onFileError(file.id, 'FFmpeg produced no output (0 bytes).');
+      opts.onFileError(file.id, `FFmpeg produced no output (0 bytes).${logTail(result.logs)}`);
       return;
     }
     opts.onFileDone(file.id, outputPath, outputName, bytes);

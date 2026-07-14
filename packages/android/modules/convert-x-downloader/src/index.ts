@@ -30,10 +30,28 @@ export type DownloadOptions = {
   audioOnly?: boolean;
   /** When audioOnly, the target audio container (mp3, m4a, opus, flac…). */
   audioFormat?: string;
+  /** 1-based yt-dlp `--playlist-items` selector. Required to download a
+   *  single child of an Instagram/TikTok carousel whose entries share the
+   *  parent post URL — without it every "item" resolves to the same file. */
+  playlistItems?: string;
   cookies?: string;
   spotifyClientId?: string;
   spotifyClientSecret?: string;
   userAgent?: string;
+};
+
+export type UpdateResult = {
+  /** youtubedl-android UpdateStatus name: DONE | ALREADY_UP_TO_DATE | UNKNOWN. */
+  status?: string;
+  /** Installed yt-dlp version after the call, e.g. "2026.06.30". */
+  version?: string | null;
+};
+
+export type SaveToGalleryResult = {
+  /** content:// URI (or file:// on API < 29) of the published copy. */
+  uri: string;
+  /** Human-readable location, e.g. "Movies/Convert-X/clip.mp4". */
+  publicPath: string;
 };
 
 export type ProbeResult = {
@@ -55,7 +73,10 @@ interface NativeModule {
    *  payload. Use to recover from a corrupted yt-dlp.zip. */
   resetCache(): Promise<void>;
   /** Pull the latest yt-dlp from GitHub. Optional, not on-init. */
-  updateYtDlp(): Promise<void>;
+  updateYtDlp(): Promise<UpdateResult>;
+  /** Publish a finished file into the gallery via a MediaStore insert the
+   *  app owns — no per-file consent dialog, clean display name. */
+  saveToGallery(filePath: string, displayName: string): Promise<SaveToGalleryResult>;
   probe(url: string, opts: ProbeOptions | null): Promise<string>;
   download(sessionId: string, opts: DownloadOptions): Promise<{
     outputPath?: string;
@@ -111,10 +132,23 @@ export function resetCache(): Promise<void> {
  * Pull the latest yt-dlp from GitHub. Explicit user action — not run on
  * init, since a partial download corrupted the bundled binary on real
  * devices. If this throws, the next probe / download auto-recovers via
- * resetCache.
+ * resetCache. Resolves with the real outcome so the UI can tell
+ * "updated to X" apart from "already up to date".
  */
-export function updateYtDlp(): Promise<void> {
+export function updateYtDlp(): Promise<UpdateResult> {
   return native.updateYtDlp();
+}
+
+/**
+ * Publish a finished file into the user's gallery. Uses a MediaStore
+ * insert owned by this app — no system consent dialog, and the gallery
+ * shows exactly `displayName` instead of a cache-file name.
+ */
+export function saveToGallery(
+  filePath: string,
+  displayName: string
+): Promise<SaveToGalleryResult> {
+  return native.saveToGallery(filePath, displayName);
 }
 
 export function addProgressListener(

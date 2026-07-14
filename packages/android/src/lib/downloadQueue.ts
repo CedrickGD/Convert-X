@@ -11,12 +11,19 @@
 
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import * as FileSystem from 'expo-file-system/legacy';
-import * as MediaLibrary from 'expo-media-library';
 
 import * as Downloader from '../../modules/convert-x-downloader/src';
 import { isInstagramPostUrl, probeInstagramAnonymous } from './instagramScraper';
 
-const YTDLP_FIRST_LAUNCH_KEY = '@convertx/ytdlp-first-launch-updated';
+// Keyed by yt-dlp release cadence (year.month) rather than a one-shot
+// boolean: extractors rot within weeks when sites change their APIs, so
+// re-check for a fresh yt-dlp once per calendar month instead of exactly
+// once in the app's lifetime.
+const YTDLP_FRESHNESS_KEY = '@convertx/ytdlp-freshness';
+function currentFreshnessStamp(): string {
+  const now = new Date();
+  return `${now.getFullYear()}-${now.getMonth() + 1}`;
+}
 
 export type DownloadEntry = {
   id: string;
@@ -24,6 +31,11 @@ export type DownloadEntry = {
   thumbnail?: string;
   duration?: number;
   webpageUrl: string;
+  /** 1-based playlist position, set for carousel/story children that have
+   *  no URL of their own (webpageUrl is the parent post). Downloads pass
+   *  it to yt-dlp as --playlist-items so each child fetches its own
+   *  media instead of the whole carousel resolving to one file N times. */
+  playlistIndex?: number;
   /** Direct CDN URL (set by the anonymous Instagram scraper). When
    *  present, downloadEntry bypasses yt-dlp and fetches this URL
    *  directly — necessary because Instagram's API is locked but its
@@ -53,15 +65,27 @@ export function cancelActive(): void {
   }
 }
 
-let ytdlpUpdateInflight: Promise<{ ok: boolean; error?: string }> | null = null;
+let ytdlpUpdateInflight: Promise<{
+  ok: boolean;
+  status?: string;
+  version?: string | null;
+  error?: string;
+}> | null = null;
 
-export async function updateYtDlp(): Promise<{ ok: boolean; error?: string }> {
+export async function updateYtDlp(): Promise<{
+  ok: boolean;
+  /** DONE = new version installed, ALREADY_UP_TO_DATE = nothing to do. */
+  status?: string;
+  /** Installed yt-dlp version after the call. */
+  version?: string | null;
+  error?: string;
+}> {
   if (ytdlpUpdateInflight) return ytdlpUpdateInflight;
   const run = (async () => {
     try {
       await Downloader.init();
-      await Downloader.updateYtDlp();
-      return { ok: true };
+      const result = await Downloader.updateYtDlp();
+      return { ok: true, status: result?.status, version: result?.version };
     } catch (e) {
       return { ok: false, error: e instanceof Error ? e.message : String(e) };
     }
@@ -76,11 +100,11 @@ export async function updateYtDlp(): Promise<{ ok: boolean; error?: string }> {
 
 export async function runFirstLaunchYtDlpUpdate(): Promise<void> {
   try {
-    const flag = await AsyncStorage.getItem(YTDLP_FIRST_LAUNCH_KEY);
-    if (flag === '1') return;
+    const stamp = await AsyncStorage.getItem(YTDLP_FRESHNESS_KEY);
+    if (stamp === currentFreshnessStamp()) return;
     const result = await updateYtDlp();
     if (result.ok) {
-      await AsyncStorage.setItem(YTDLP_FIRST_LAUNCH_KEY, '1');
+      await AsyncStorage.setItem(YTDLP_FRESHNESS_KEY, currentFreshnessStamp());
     }
   } catch {
     // Silent — will retry on next launch. Probe-time corruption recovery
@@ -142,15 +166,33 @@ export async function probeUrl(
   const entries: DownloadEntry[] = [];
 
   if (isPlaylist && Array.isArray(raw.entries)) {
-    for (const e of raw.entries as Array<Record<string, unknown>>) {
+    const parentUrl = String(raw.url ?? url);
+    (raw.entries as Array<Record<string, unknown>>).forEach((e, i) => {
+      // An entry that carries its own distinct URL (YouTube playlist
+      // videos) downloads directly. Carousel/story children (Instagram,
+      // TikTok, Reddit) share the parent post URL — their only usable
+      // identity is the playlist position, which the download step turns
+      // into --playlist-items so each child fetches its own media.
+      const ownUrl =
+        typeof e.webpage_url === 'string' && e.webpage_url.length > 0
+          ? e.webpage_url
+          : typeof e.url === 'string' && e.url.length > 0
+          ? e.url
+          : undefined;
+      const selfContained = ownUrl !== undefined && ownUrl !== parentUrl;
       entries.push({
-        id: String(e.id ?? e.url ?? Date.now()),
+        id: String(e.id ?? ownUrl ?? `${parentUrl}#${i + 1}`),
         title: String(e.title ?? 'Untitled'),
         thumbnail: typeof e.thumbnail === 'string' ? e.thumbnail : undefined,
         duration: typeof e.duration === 'number' ? e.duration : undefined,
-        webpageUrl: String(e.url ?? raw.url ?? url),
+        webpageUrl: selfContained ? ownUrl : parentUrl,
+        playlistIndex: selfContained
+          ? undefined
+          : typeof e.playlist_index === 'number'
+          ? e.playlist_index
+          : i + 1,
       });
-    }
+    });
   } else {
     entries.push({
       id: String((raw as Record<string, unknown>).id ?? Date.now()),
@@ -189,24 +231,6 @@ export type BatchDownloadResult = {
 };
 
 /**
- * Ask for MediaLibrary permission. Returns true if granted. Cached at
- * module scope so we only ask once per session — Android remembers the
- * decision across launches but checking is free.
- */
-let mediaPermissionGranted: boolean | null = null;
-export async function ensureMediaPermission(): Promise<boolean> {
-  if (mediaPermissionGranted) return true;
-  const cur = await MediaLibrary.getPermissionsAsync();
-  if (cur.granted) {
-    mediaPermissionGranted = true;
-    return true;
-  }
-  const req = await MediaLibrary.requestPermissionsAsync();
-  mediaPermissionGranted = req.granted;
-  return req.granted;
-}
-
-/**
  * Build a yt-dlp format selector that prefers pre-merged streams (no
  * ffmpeg merge step required) and falls back to merging only when that
  * fails. This is what makes downloads work on every site uniformly —
@@ -241,10 +265,14 @@ export async function downloadEntry(opts: {
   cookies?: string;
   onProgress: (pct: number) => void;
   /** When true, promote the finished file to the user's gallery via
-   *  MediaLibrary. When false, leave the file in app-private storage
+   *  MediaStore. When false, leave the file in app-private storage
    *  only. Default true — most users want the download in their
    *  Gallery / Files app. */
   saveToGallery?: boolean;
+  /** Suffix output names with the media id. Set for batches — carousel
+   *  children often share one title, and identical names in the shared
+   *  downloads dir make yt-dlp skip every item after the first. */
+  dedupeNames?: boolean;
 }): Promise<DownloadResult> {
   const outDir = `${FileSystem.documentDirectory}downloads`;
   await FileSystem.makeDirectoryAsync(outDir, { intermediates: true }).catch(() => {});
@@ -252,7 +280,11 @@ export async function downloadEntry(opts: {
   // yt-dlp template — let yt-dlp pick the final extension. Native side
   // passes --restrict-filenames so the resolved path can't contain
   // characters that break the filesystem (slashes in titles, etc.).
-  const outputTemplate = `${outDir.replace(/^file:\/\//, '')}/%(title)s.%(ext)s`;
+  const nameTemplate =
+    opts.dedupeNames || opts.entry.playlistIndex != null
+      ? '%(title)s-%(id)s.%(ext)s'
+      : '%(title)s.%(ext)s';
+  const outputTemplate = `${outDir.replace(/^file:\/\//, '')}/${nameTemplate}`;
 
   // Direct-URL fast path. The anonymous Instagram scraper resolves
   // each carousel child to a CDN URL — we can fetch those over plain
@@ -270,7 +302,11 @@ export async function downloadEntry(opts: {
   }
 
   const sub = Downloader.addProgressListener((evt) => {
-    if (evt.sessionId === opts.sessionId) opts.onProgress(Math.round(evt.percent));
+    // The library reports -1 for lines without a parsable percent —
+    // don't let those knock a progressing bar back to the left edge.
+    if (evt.sessionId === opts.sessionId && evt.percent >= 0) {
+      opts.onProgress(Math.min(100, Math.round(evt.percent)));
+    }
   });
 
   inflight = { sessionId: opts.sessionId, cancel: () => Downloader.cancel(opts.sessionId) };
@@ -294,6 +330,8 @@ export async function downloadEntry(opts: {
       // Quality is now folded into formatString above — keep it for the
       // native side's audio-quality option but otherwise unused.
       quality: opts.audioOnly ? opts.quality ?? undefined : undefined,
+      playlistItems:
+        opts.entry.playlistIndex != null ? String(opts.entry.playlistIndex) : undefined,
       cookies: opts.cookies,
       spotifyClientId: opts.spotifyClientId,
       spotifyClientSecret: opts.spotifyClientSecret,
@@ -301,25 +339,16 @@ export async function downloadEntry(opts: {
 
     if (result.cancelled || !result.outputPath) return result;
 
-    // Promote to user's gallery via MediaStore. Without this the file
-    // sits in app-private storage where users can't easily find it.
+    // Promote to the user's gallery. The native MediaStore insert is
+    // owned by this app, so Android shows no consent dialog — unlike the
+    // old expo-media-library album flow, which popped a per-file
+    // "May Convert-X modify this file?" prompt on every single save.
     let publicPath: string | undefined;
     if (opts.saveToGallery !== false) {
       try {
-        const granted = await ensureMediaPermission();
-        if (granted) {
-          const uri = result.outputPath.startsWith('file://')
-            ? result.outputPath
-            : `file://${result.outputPath}`;
-          const asset = await MediaLibrary.createAssetAsync(uri);
-          const album = await MediaLibrary.getAlbumAsync('Convert-X');
-          if (album == null) {
-            await MediaLibrary.createAlbumAsync('Convert-X', asset, false);
-          } else {
-            await MediaLibrary.addAssetsToAlbumAsync([asset], album, false);
-          }
-          publicPath = asset.uri;
-        }
+        const displayName = result.outputPath.split('/').pop() ?? '';
+        const saved = await Downloader.saveToGallery(result.outputPath, displayName);
+        publicPath = saved.publicPath;
       } catch {
         // Best-effort — keep the app-private file as the fallback.
       }
@@ -387,6 +416,7 @@ export async function downloadBatch(opts: {
         spotifyClientSecret: opts.spotifyClientSecret,
         cookies: opts.cookies,
         saveToGallery: opts.saveToGallery,
+        dedupeNames: total > 1,
         onProgress: (pct) => {
           // Project the per-item 0..100 into the batch 0..100 band so a
           // 50%-complete item 2 of 4 reads as ((1 * 100) + 50) / 4 = 37.5%.
@@ -422,7 +452,7 @@ export function cancelBatch(): void {
 
 /**
  * Fetch a media URL directly (used for Instagram CDN URLs from the
- * anonymous scraper) and run it through the same MediaLibrary
+ * anonymous scraper) and run it through the same MediaStore
  * promotion flow as a yt-dlp download.
  */
 async function downloadDirect(opts: {
@@ -470,17 +500,8 @@ async function downloadDirect(opts: {
     let publicPath: string | undefined;
     if (opts.saveToGallery) {
       try {
-        const granted = await ensureMediaPermission();
-        if (granted) {
-          const asset = await MediaLibrary.createAssetAsync(result.uri);
-          const album = await MediaLibrary.getAlbumAsync('Convert-X');
-          if (album == null) {
-            await MediaLibrary.createAlbumAsync('Convert-X', asset, false);
-          } else {
-            await MediaLibrary.addAssetsToAlbumAsync([asset], album, false);
-          }
-          publicPath = asset.uri;
-        }
+        const saved = await Downloader.saveToGallery(outputPath, `${safeName}.${ext}`);
+        publicPath = saved.publicPath;
       } catch {
         // Best-effort — keep the app-private file as the fallback.
       }

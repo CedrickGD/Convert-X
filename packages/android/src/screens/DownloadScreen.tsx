@@ -15,15 +15,19 @@ import { Image as ExpoImage } from 'expo-image';
 import * as Sharing from 'expo-sharing';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 
+import { useNavigation } from '@react-navigation/native';
+import { NativeStackNavigationProp } from '@react-navigation/native-stack';
+
 import { ProgressBar } from '../components/convert';
 import { detectSite } from '../../modules/convert-x-downloader/src';
 import {
   cancelBatch,
   DownloadEntry,
   downloadBatch,
-  ensureMediaPermission,
   probeUrl,
+  updateYtDlp,
 } from '../lib/downloadQueue';
+import type { RootStackParamList } from '../navigation/types';
 import { mediaTypeFromName } from '../lib/formats';
 import { haptics } from '../lib/haptics';
 import { addHistoryEntry } from '../lib/history';
@@ -65,8 +69,40 @@ export function DownloadScreen() {
   const [error, setError] = useState<string | null>(null);
   const [results, setResults] = useState<{ name: string; uri: string }[]>([]);
   const [recent, setRecent] = useState<string[]>([]);
+  const [engineUpdating, setEngineUpdating] = useState(false);
 
   const site = detectSite(url);
+  const navigation = useNavigation<NativeStackNavigationProp<RootStackParamList>>();
+
+  // Route the two recoverable yt-dlp failures to their in-app fixes.
+  // Without these buttons, users are left with yt-dlp's CLI advice
+  // ("use --cookies", "yt-dlp -U") that they cannot act on in an app.
+  const needsLogin =
+    !!error &&
+    site === 'Instagram' &&
+    /login required|cookies|empty media response|restricted|private|rate.?limit/i.test(error);
+  const suggestsEngineUpdate =
+    !!error && /yt-dlp -U|latest version|unsupported url|Confirm you are on/i.test(error);
+
+  const handleEngineUpdate = useCallback(async () => {
+    setEngineUpdating(true);
+    try {
+      const result = await updateYtDlp();
+      if (result.ok) {
+        const version = result.version ? ` (${result.version})` : '';
+        Alert.alert(
+          'Download engine',
+          result.status === 'ALREADY_UP_TO_DATE'
+            ? `Already up to date${version}. The site may be temporarily blocking downloads — try again later.`
+            : `Updated${version}. Tap Find to retry.`
+        );
+      } else {
+        Alert.alert('Update failed', result.error ?? 'Could not update the download engine.');
+      }
+    } finally {
+      setEngineUpdating(false);
+    }
+  }, []);
 
   useEffect(() => {
     getRecentUrls().then(setRecent);
@@ -179,24 +215,8 @@ export function DownloadScreen() {
       setCurrentItemIdx(0);
       setCurrentItemTitle(toDownload[0]?.title ?? null);
 
-      // Ask for permission up-front. If the user denies, we still download
-      // to app-private storage — but we tell them so they're not surprised
-      // when the file isn't in their Gallery afterwards.
-      const granted = await ensureMediaPermission();
-      if (!granted) {
-        const proceed = await new Promise<boolean>((resolve) => {
-          Alert.alert(
-            'Save to Gallery?',
-            'Without this permission, downloads stay inside Convert-X and won’t show up in your Gallery or Files app. Continue with a private download?',
-            [
-              { text: 'Cancel', style: 'cancel', onPress: () => resolve(false) },
-              { text: 'Continue', onPress: () => resolve(true) },
-            ],
-            { cancelable: true, onDismiss: () => resolve(false) }
-          );
-        });
-        if (!proceed) return;
-      }
+      // No permission gate: the gallery save is a MediaStore insert the
+      // app owns, which Android allows without any permission or dialog.
 
       const sessionId = `dl-${Date.now()}`;
       download.dispatch({ type: 'beginSession', sessionId });
@@ -210,7 +230,7 @@ export function DownloadScreen() {
           spotifyClientId: state.settings.spotifyClientId || undefined,
           spotifyClientSecret: state.settings.spotifyClientSecret || undefined,
           cookies: state.settings.cookiesPath || undefined,
-          saveToGallery: granted,
+          saveToGallery: true,
           onProgress: (overall, idx) => {
             setProgress(overall);
             setCurrentItemIdx(idx);
@@ -455,7 +475,43 @@ export function DownloadScreen() {
           </View>
 
           {error ? (
-            <Text style={[styles.errorText, { color: theme.status.error }]}>{error}</Text>
+            <View style={styles.errorBlock}>
+              <Text style={[styles.errorText, { color: theme.status.error }]}>{error}</Text>
+              {needsLogin ? (
+                <Pressable
+                  onPress={() => navigation.navigate('InstagramLogin')}
+                  style={({ pressed }) => [
+                    styles.errorAction,
+                    { backgroundColor: theme.accent.primary, opacity: pressed ? 0.85 : 1 },
+                  ]}
+                >
+                  <Text style={[styles.errorActionText, { color: theme.accent.onPrimary }]}>
+                    Log in to Instagram
+                  </Text>
+                </Pressable>
+              ) : null}
+              {suggestsEngineUpdate ? (
+                <Pressable
+                  disabled={engineUpdating}
+                  onPress={handleEngineUpdate}
+                  style={({ pressed }) => [
+                    styles.errorAction,
+                    {
+                      backgroundColor: theme.accent.primary,
+                      opacity: engineUpdating ? 0.5 : pressed ? 0.85 : 1,
+                    },
+                  ]}
+                >
+                  {engineUpdating ? (
+                    <ActivityIndicator size="small" color={theme.accent.onPrimary} />
+                  ) : (
+                    <Text style={[styles.errorActionText, { color: theme.accent.onPrimary }]}>
+                      Update download engine
+                    </Text>
+                  )}
+                </Pressable>
+              ) : null}
+            </View>
           ) : null}
         </View>
       ) : null}
@@ -1025,6 +1081,15 @@ const styles = StyleSheet.create({
   doneSub: { ...typography.caption, textAlign: 'center' },
 
   errorText: { ...typography.caption, textAlign: 'center' },
+  errorBlock: { gap: spacing.md, alignItems: 'center' },
+  errorAction: {
+    paddingHorizontal: spacing.xl,
+    paddingVertical: spacing.md,
+    borderRadius: radius.xs,
+    minWidth: 200,
+    alignItems: 'center',
+  },
+  errorActionText: { ...typography.body, fontWeight: '600' },
   carouselNotice: { ...typography.caption, lineHeight: 17 },
   resultRow: {
     flexDirection: 'row',

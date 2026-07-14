@@ -1,4 +1,4 @@
-import { Check, RotateCcw, Save, Share2 } from 'lucide-react-native';
+import { Check, RotateCcw, Save, Share2, X } from 'lucide-react-native';
 import React, { useEffect } from 'react';
 import { Alert, Pressable, ScrollView, StyleSheet, Text, View } from 'react-native';
 import Animated, {
@@ -9,7 +9,7 @@ import Animated, {
 } from 'react-native-reanimated';
 import * as Sharing from 'expo-sharing';
 
-import { mediaTypeFromName, prettyBytes } from '../../lib/formats';
+import { prettyBytes } from '../../lib/formats';
 import { haptics } from '../../lib/haptics';
 import { saveToGallery } from '../../lib/image';
 import type { FileEntry } from '../../state/types';
@@ -72,8 +72,8 @@ export function OutputPanel({ files, actionLabel = 'converted', onStartOver }: P
     await Sharing.shareAsync(uri).catch(() => {});
   };
 
-  const handleSave = async (uri: string) => {
-    const res = await saveToGallery(uri);
+  const handleSave = async (uri: string, displayName?: string) => {
+    const res = await saveToGallery(uri, displayName);
     if (res.ok) haptics.success();
     else haptics.error();
     Alert.alert(
@@ -82,20 +82,29 @@ export function OutputPanel({ files, actionLabel = 'converted', onStartOver }: P
     );
   };
 
+  // A run where nothing succeeded must not celebrate with a checkmark.
+  const allFailed = done.length === 0 && errors.length > 0;
+
   return (
     <View style={styles.wrap}>
       <Animated.View
         style={[
           styles.ring,
-          { backgroundColor: theme.accent.subtle },
+          { backgroundColor: allFailed ? theme.status.errorDim : theme.accent.subtle },
           ringStyle,
         ]}
       >
-        <Check size={28} strokeWidth={2.4} color={theme.accent.primary} />
+        {allFailed ? (
+          <X size={28} strokeWidth={2.4} color={theme.status.error} />
+        ) : (
+          <Check size={28} strokeWidth={2.4} color={theme.accent.primary} />
+        )}
       </Animated.View>
 
       <Text style={[styles.title, { color: theme.text.primary }]}>
-        {done.length} file{done.length !== 1 ? 's' : ''} {actionLabel}
+        {allFailed
+          ? `Nothing ${actionLabel}`
+          : `${done.length} file${done.length !== 1 ? 's' : ''} ${actionLabel}`}
       </Text>
 
       {errors.length > 0 ? (
@@ -129,10 +138,11 @@ export function OutputPanel({ files, actionLabel = 'converted', onStartOver }: P
         showsVerticalScrollIndicator={false}
       >
         {done.map((f, i) => {
-          // Gallery save only works for image/video on Android — MediaLibrary
-          // rejects audio/ICO/TIFF/BMP. Offer Share-only for those.
-          const cat = mediaTypeFromName(f.outputName ?? f.name);
-          const canSave = cat === 'image' || cat === 'video';
+          // The MediaStore save routes by media class (Pictures / Movies /
+          // Music / Downloads), so every output type is saveable now —
+          // including the audio/ICO/TIFF/BMP files the old MediaLibrary
+          // flow rejected.
+          const canSave = true;
           return (
           <View
             key={f.id}
@@ -156,7 +166,7 @@ export function OutputPanel({ files, actionLabel = 'converted', onStartOver }: P
               {canSave ? (
                 <Pressable
                   hitSlop={6}
-                  onPress={() => f.outputUri && handleSave(f.outputUri)}
+                  onPress={() => f.outputUri && handleSave(f.outputUri, f.outputName)}
                   style={({ pressed }) => [
                     styles.iconBtn,
                     {

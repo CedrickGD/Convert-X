@@ -84,15 +84,31 @@ class ConvertXDownloaderModule : Module() {
 
     /** Pull the latest yt-dlp from GitHub. Explicit, not on-init.
      *  If the download corrupts the local zip, the next probe will
-     *  detect "bad local file header" and auto-reset. */
+     *  detect "bad local file header" and auto-reset. Resolves with the
+     *  real outcome ({status, version}) so the UI can distinguish
+     *  "updated to 2026.x" from "already up to date" instead of lying. */
     AsyncFunction("updateYtDlp") { promise: Promise ->
       scope.launch {
         try {
           ensureInitializedSync()
           val ctx = appContext.reactContext
             ?: throw CodedException("NO_CONTEXT", "Application context unavailable", null)
-          YoutubeDL.getInstance().updateYoutubeDL(ctx)
-          promise.resolve(null)
+          // Same one-shot corruption recovery as probe/download — a
+          // half-applied previous update must not brick the updater.
+          val status = try {
+            YoutubeDL.getInstance().updateYoutubeDL(ctx)
+          } catch (first: Throwable) {
+            if (!looksCorrupted(first)) throw first
+            resetCacheSync()
+            ensureInitializedSync()
+            YoutubeDL.getInstance().updateYoutubeDL(ctx)
+          }
+          promise.resolve(
+            mapOf(
+              "status" to (status?.name ?: "UNKNOWN"),
+              "version" to installedYtDlpVersion(ctx)
+            )
+          )
         } catch (e: Throwable) {
           promise.reject(CodedException("UPDATE_FAILED", describe(e), e))
         }
@@ -201,8 +217,27 @@ class ConvertXDownloaderModule : Module() {
           // contains the %(title)s.%(ext)s template — the actual file
           // is only known once the title is sanitized and the extension
           // is chosen by the downloader. The JS side uses this real path
-          // for MediaLibrary.createAssetAsync.
+          // for the gallery save.
           request.addOption("--print", "after_move:filepath")
+          // --print implies --quiet, which also silences the
+          // "[download]  NN.N%" lines the library's progress callback is
+          // parsed from — without these two options onProgress never
+          // fires and the UI bar sits at 0% for the whole download.
+          request.addOption("--progress")
+          request.addOption("--newline")
+          // Carousel / playlist item selection. The probe hands the UI one
+          // entry per carousel child, but Instagram/TikTok children share
+          // the parent post URL — downloading that URL N times yields the
+          // same file N times. The JS side sends the 1-based index instead
+          // and we scope yt-dlp to exactly that child.
+          val playlistItems = opts["playlistItems"] as? String
+          if (!playlistItems.isNullOrBlank()) {
+            request.addOption("--playlist-items", playlistItems)
+          } else {
+            // Single-item download: never fan out into a playlist that the
+            // URL happens to also reference (e.g. watch?v=X&list=Y).
+            request.addOption("--no-playlist")
+          }
           // Single connection / fail-soft on transient network issues
           // instead of giving up at the first hiccup.
           request.addOption("--retries", "10")
@@ -302,6 +337,115 @@ class ConvertXDownloaderModule : Module() {
         }
       }
     }
+
+    /**
+     * Publish a finished file into the user's gallery WITHOUT any system
+     * consent dialog. expo-media-library's album flow modifies an existing
+     * MediaStore row (a move), which on Android 11+ pops the per-file
+     * "May Convert-X modify this photo?" write-request dialog on every
+     * save. Inserting a fresh row that this app owns needs no permission
+     * and no dialog on API 29+ — this is what gallery-writing apps do.
+     *
+     * Resolves { uri, publicPath } — uri is the content:// URI, publicPath
+     * the human-readable RELATIVE_PATH + display name.
+     */
+    AsyncFunction("saveToGallery") { filePath: String, displayName: String, promise: Promise ->
+      scope.launch {
+        try {
+          val ctx = appContext.reactContext
+            ?: throw CodedException("NO_CONTEXT", "Application context unavailable", null)
+          val src = java.io.File(filePath.removePrefix("file://"))
+          if (!src.exists() || src.length() == 0L) {
+            throw CodedException("NO_SOURCE", "Source file missing or empty: $filePath", null)
+          }
+          val safeName = displayName.ifBlank { src.name }
+          val ext = safeName.substringAfterLast('.', "").lowercase()
+          val mime = android.webkit.MimeTypeMap.getSingleton()
+            .getMimeTypeFromExtension(ext) ?: "application/octet-stream"
+
+          // API < 29 has no RELATIVE_PATH / IS_PENDING — publish via the
+          // classic public-directory copy + media scan instead (the
+          // manifest grants WRITE_EXTERNAL_STORAGE up to API 28).
+          if (android.os.Build.VERSION.SDK_INT < 29) {
+            val baseDir = when {
+              mime.startsWith("video/") -> android.os.Environment.DIRECTORY_MOVIES
+              mime.startsWith("audio/") -> android.os.Environment.DIRECTORY_MUSIC
+              mime.startsWith("image/") -> android.os.Environment.DIRECTORY_PICTURES
+              else -> android.os.Environment.DIRECTORY_DOWNLOADS
+            }
+            val destDir = java.io.File(
+              android.os.Environment.getExternalStoragePublicDirectory(baseDir),
+              "Convert-X"
+            )
+            destDir.mkdirs()
+            val dest = java.io.File(destDir, safeName)
+            src.copyTo(dest, overwrite = true)
+            android.media.MediaScannerConnection.scanFile(
+              ctx, arrayOf(dest.absolutePath), arrayOf(mime), null
+            )
+            promise.resolve(
+              mapOf(
+                "uri" to android.net.Uri.fromFile(dest).toString(),
+                "publicPath" to "$baseDir/Convert-X/$safeName"
+              )
+            )
+            return@launch
+          }
+
+          // Route by media class so files land where users expect them:
+          // photos in Pictures, videos in Movies, audio in Music — all
+          // under a Convert-X folder, which galleries show as the album.
+          val (collection, relativeDir) = when {
+            mime.startsWith("image/") ->
+              android.provider.MediaStore.Images.Media.getContentUri(
+                android.provider.MediaStore.VOLUME_EXTERNAL_PRIMARY
+              ) to "${android.os.Environment.DIRECTORY_PICTURES}/Convert-X"
+            mime.startsWith("video/") ->
+              android.provider.MediaStore.Video.Media.getContentUri(
+                android.provider.MediaStore.VOLUME_EXTERNAL_PRIMARY
+              ) to "${android.os.Environment.DIRECTORY_MOVIES}/Convert-X"
+            mime.startsWith("audio/") ->
+              android.provider.MediaStore.Audio.Media.getContentUri(
+                android.provider.MediaStore.VOLUME_EXTERNAL_PRIMARY
+              ) to "${android.os.Environment.DIRECTORY_MUSIC}/Convert-X"
+            else ->
+              android.provider.MediaStore.Downloads.getContentUri(
+                android.provider.MediaStore.VOLUME_EXTERNAL_PRIMARY
+              ) to "${android.os.Environment.DIRECTORY_DOWNLOADS}/Convert-X"
+          }
+
+          val values = android.content.ContentValues().apply {
+            put(android.provider.MediaStore.MediaColumns.DISPLAY_NAME, safeName)
+            put(android.provider.MediaStore.MediaColumns.MIME_TYPE, mime)
+            put(android.provider.MediaStore.MediaColumns.RELATIVE_PATH, relativeDir)
+            put(android.provider.MediaStore.MediaColumns.IS_PENDING, 1)
+          }
+          val resolver = ctx.contentResolver
+          val uri = resolver.insert(collection, values)
+            ?: throw CodedException("INSERT_FAILED", "MediaStore rejected the insert", null)
+          try {
+            resolver.openOutputStream(uri)?.use { out ->
+              src.inputStream().use { input -> input.copyTo(out) }
+            } ?: throw CodedException("OPEN_FAILED", "Could not open output stream", null)
+            values.clear()
+            values.put(android.provider.MediaStore.MediaColumns.IS_PENDING, 0)
+            resolver.update(uri, values, null, null)
+          } catch (e: Throwable) {
+            // Don't leave a pending ghost row behind on a failed copy.
+            resolver.delete(uri, null, null)
+            throw e
+          }
+          promise.resolve(
+            mapOf(
+              "uri" to uri.toString(),
+              "publicPath" to "$relativeDir/$safeName"
+            )
+          )
+        } catch (e: Throwable) {
+          promise.reject(CodedException("SAVE_FAILED", describe(e), e))
+        }
+      }
+    }
   }
 
   @Synchronized
@@ -346,6 +490,26 @@ class ConvertXDownloaderModule : Module() {
     val ctx = appContext.reactContext ?: return
     val root = java.io.File(ctx.noBackupFilesDir, "youtubedl-android")
     if (root.exists()) root.deleteRecursively()
+    // The library tracks the installed yt-dlp version in SharedPreferences
+    // and its updater compares ONLY that value against GitHub's latest tag.
+    // Wiping the binaries above reverts the on-disk yt-dlp to the bundled
+    // version, so the stale prefs entry would make every future update
+    // return ALREADY_UP_TO_DATE without downloading anything — the exact
+    // "update does nothing" dead-end users hit. Clear the bookkeeping so
+    // the next update actually installs.
+    ctx.getSharedPreferences("youtubedl-android", android.content.Context.MODE_PRIVATE)
+      .edit()
+      .remove("dlpVersion")
+      .remove("dlpVersionName")
+      .commit()
+  }
+
+  /** Read the installed yt-dlp version from the library's own bookkeeping
+   *  (SharedPreferences) — avoids depending on version-getter methods whose
+   *  names shift across youtubedl-android releases. */
+  private fun installedYtDlpVersion(ctx: android.content.Context): String? {
+    val prefs = ctx.getSharedPreferences("youtubedl-android", android.content.Context.MODE_PRIVATE)
+    return prefs.getString("dlpVersion", null) ?: prefs.getString("dlpVersionName", null)
   }
 
   /** True when the throwable's chain mentions a corrupted yt-dlp zip. */

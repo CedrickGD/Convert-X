@@ -47,7 +47,12 @@ export function Navbar() {
         const isBusy = busyByMode[tab.key];
         return (
           <Pressable
-            key={tab.key}
+            // Scheme-keyed so a theme toggle remounts the tab. The ripple
+            // wraps the background in a native RippleDrawable whose content
+            // layer doesn't reliably invalidate on a prop-only color change
+            // under Fabric — without the remount, the active pill keeps the
+            // old theme's surface color (white pill in dark mode).
+            key={`${tab.key}-${theme.isDark ? 'dark' : 'light'}`}
             onPress={() => switchMode(tab.key)}
             hitSlop={{ top: 8, bottom: 8 }}
             android_ripple={{ color: theme.accent.glow, borderless: false }}

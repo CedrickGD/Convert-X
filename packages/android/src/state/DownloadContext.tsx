@@ -111,9 +111,22 @@ export function DownloadProvider({ children }: { children: React.ReactNode }) {
         const raw = await AsyncStorage.getItem(STORAGE_KEY);
         const patch: Partial<DownloadSettings> = raw ? JSON.parse(raw) : {};
         // Drop a stale cookies pointer if the file is gone (re-login needed).
+        // cookiesPath is stored WITHOUT the file:// scheme (yt-dlp wants a bare
+        // path), but getInfoAsync treats scheme-less strings as asset lookups
+        // and reports exists:false for real files — re-add the scheme to check.
         if (patch.cookiesPath) {
-          const info = await FileSystem.getInfoAsync(patch.cookiesPath).catch(() => null);
-          if (!info || !info.exists) patch.cookiesPath = '';
+          const asUri = patch.cookiesPath.startsWith('file://')
+            ? patch.cookiesPath
+            : `file://${patch.cookiesPath}`;
+          const info = await FileSystem.getInfoAsync(asUri).catch(() => null);
+          if (!info || !info.exists) {
+            // The app data dir can move (backup/restore, reinstall) — before
+            // logging the user out, look for the file at its canonical spot.
+            const canonical = `${FileSystem.documentDirectory ?? ''}cookies.txt`;
+            const fallback = await FileSystem.getInfoAsync(canonical).catch(() => null);
+            patch.cookiesPath =
+              fallback && fallback.exists ? canonical.replace(/^file:\/\//, '') : '';
+          }
         }
         if (Object.keys(patch).length > 0) dispatch({ type: 'updateSettings', patch });
       } catch {

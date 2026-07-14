@@ -560,7 +560,7 @@ function UpdateCard() {
 type YtDlpState =
   | { kind: 'idle' }
   | { kind: 'updating' }
-  | { kind: 'success' }
+  | { kind: 'success'; message: string }
   | { kind: 'error'; message: string };
 
 function YtDlpUpdateCard() {
@@ -571,13 +571,25 @@ function YtDlpUpdateCard() {
     if (state.kind === 'updating') return;
     setState({ kind: 'updating' });
     const result = await updateYtDlp();
-    if (result.ok) setState({ kind: 'success' });
-    else setState({ kind: 'error', message: result.error ?? 'Update failed' });
+    if (result.ok) {
+      // Tell the user what actually happened — the old card said
+      // "Updated." even when the library skipped the download.
+      const version = result.version ? ` (${result.version})` : '';
+      setState({
+        kind: 'success',
+        message:
+          result.status === 'ALREADY_UP_TO_DATE'
+            ? `Already up to date${version}.`
+            : `Updated${version}. Try the failing URL again.`,
+      });
+    } else {
+      setState({ kind: 'error', message: result.error ?? 'Update failed' });
+    }
   }, [state.kind]);
 
   const subline =
     state.kind === 'updating' ? 'Fetching latest extractors…' :
-    state.kind === 'success' ? 'Updated. Try the failing URL again.' :
+    state.kind === 'success' ? state.message :
     state.kind === 'error' ? state.message :
     'Refresh if a site (Instagram, TikTok…) stopped working.';
 

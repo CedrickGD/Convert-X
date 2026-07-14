@@ -32,7 +32,14 @@ export function AppHeader() {
   };
 
   return (
-    <View style={[styles.container, { paddingTop: insets.top + spacing.md }]}>
+    // Scheme-keyed remount: react-native-svg under Fabric can hold stale
+    // stroke colors on prop-only updates, and Pressable backgrounds captured
+    // by the pre-toggle theme can linger. Remounting the header on scheme
+    // flip repaints every button and icon with the new palette.
+    <View
+      key={theme.isDark ? 'dark' : 'light'}
+      style={[styles.container, { paddingTop: insets.top + spacing.md }]}
+    >
       <Pressable
         onPress={onOpenRepo}
         hitSlop={10}
@@ -61,7 +68,11 @@ export function AppHeader() {
       <View style={styles.rightGroup}>
         <Pressable
           onPress={() => navigation.navigate('History')}
-          hitSlop={10}
+          // 32px buttons sit 8px apart — a symmetric 10px hitSlop makes the
+          // History and theme-toggle touch targets overlap by ~12px, so taps
+          // between them land on the wrong button. Keep the generous outer
+          // edges but stop the two inner edges short of each other.
+          hitSlop={{ top: 10, bottom: 10, left: 10, right: 3 }}
           accessibilityRole="button"
           accessibilityLabel="Output history"
           style={({ pressed }) => [
@@ -76,7 +87,7 @@ export function AppHeader() {
         </Pressable>
         <Pressable
           onPress={onToggleTheme}
-          hitSlop={10}
+          hitSlop={{ top: 10, bottom: 10, left: 3, right: 10 }}
           accessibilityRole="button"
           accessibilityLabel={theme.isDark ? 'Switch to light theme' : 'Switch to dark theme'}
           style={({ pressed }) => [
