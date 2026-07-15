@@ -1,6 +1,6 @@
 import { Check, RotateCcw, Save, Share2, X } from 'lucide-react-native';
 import React, { useEffect } from 'react';
-import { Alert, Pressable, ScrollView, StyleSheet, Text, View } from 'react-native';
+import { Pressable, ScrollView, StyleSheet, Text, View } from 'react-native';
 import Animated, {
   Easing,
   useAnimatedStyle,
@@ -14,6 +14,7 @@ import { haptics } from '../../lib/haptics';
 import { saveToGallery } from '../../lib/image';
 import type { FileEntry } from '../../state/types';
 import { radius, spacing, typography, useTheme } from '../../theme';
+import { useFeedback } from '../Feedback';
 
 type Props = {
   files: FileEntry[];
@@ -31,6 +32,7 @@ type Props = {
  */
 export function OutputPanel({ files, actionLabel = 'converted', onStartOver }: Props) {
   const { theme } = useTheme();
+  const { toast } = useFeedback();
   const ringScale = useSharedValue(0);
   const ringOpacity = useSharedValue(0);
 
@@ -66,7 +68,7 @@ export function OutputPanel({ files, actionLabel = 'converted', onStartOver }: P
   const handleShare = async (uri: string) => {
     const ok = await Sharing.isAvailableAsync();
     if (!ok) {
-      Alert.alert('Share unavailable', 'Sharing is not supported on this device.');
+      toast('Sharing is not supported on this device.', 'error');
       return;
     }
     await Sharing.shareAsync(uri).catch(() => {});
@@ -74,11 +76,9 @@ export function OutputPanel({ files, actionLabel = 'converted', onStartOver }: P
 
   const handleSave = async (uri: string, displayName?: string) => {
     const res = await saveToGallery(uri, displayName);
-    if (res.ok) haptics.success();
-    else haptics.error();
-    Alert.alert(
-      res.ok ? 'Saved' : 'Save failed',
-      res.ok ? 'Saved to your Convert-X album.' : res.reason ?? 'Could not save to gallery.'
+    toast(
+      res.ok ? 'Saved to your Convert-X album' : res.reason ?? 'Could not save to gallery.',
+      res.ok ? 'success' : 'error'
     );
   };
 

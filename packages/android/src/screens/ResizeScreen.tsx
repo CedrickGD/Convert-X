@@ -1,9 +1,10 @@
 import * as DocumentPicker from 'expo-document-picker';
 import * as ImagePicker from 'expo-image-picker';
 import React, { useCallback, useMemo, useState } from 'react';
-import { Alert, Pressable, ScrollView, StyleSheet, Text, View } from 'react-native';
+import { Pressable, ScrollView, StyleSheet, Text, View } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 
+import { useFeedback } from '../components/Feedback';
 import {
   Dropzone,
   FileList,
@@ -30,6 +31,7 @@ import { radius, spacing, typography, useTheme } from '../theme';
  */
 export function ResizeScreen() {
   const { theme } = useTheme();
+  const { toast } = useFeedback();
   const resize = useResize();
   const insets = useSafeAreaInsets();
   const { state } = resize;
@@ -60,16 +62,13 @@ export function ResizeScreen() {
       }));
       resize.addFiles(entries);
     } catch (e) {
-      Alert.alert('Pick failed', e instanceof Error ? e.message : String(e));
+      toast(e instanceof Error ? e.message : String(e), 'error');
     }
-  }, [resize]);
+  }, [resize, toast]);
 
   const handlePickFromGallery = useCallback(async () => {
-    const perm = await ImagePicker.requestMediaLibraryPermissionsAsync();
-    if (!perm.granted) {
-      Alert.alert('Permission needed', 'Grant access to your photos to pick from gallery.');
-      return;
-    }
+    // System Photo Picker (Android 13+) needs no permission; expo requests
+    // one via the OS dialog only where required. No custom gate/prompt.
     const result = await ImagePicker.launchImageLibraryAsync({
       mediaTypes: ImagePicker.MediaTypeOptions.Images,
       allowsMultipleSelection: true,
@@ -103,9 +102,9 @@ export function ResizeScreen() {
       const dims = await imageSize(img.uri);
       setCropTarget({ uri: img.uri, width: dims.width, height: dims.height });
     } catch (e) {
-      Alert.alert('Could not open crop', e instanceof Error ? e.message : String(e));
+      toast(e instanceof Error ? e.message : String(e), 'error');
     }
-  }, [state.files]);
+  }, [state.files, toast]);
 
   const handleApplyCrop = useCallback(
     (crop: CropSpec) => {

@@ -29,6 +29,24 @@ function lineBelongsTo(line: string, base: string): boolean {
   return domain === base || domain.endsWith('.' + base);
 }
 
+/**
+ * The on-disk cookies.txt is the source of truth for "am I logged in".
+ * Returns the bare path if the file exists (and is non-trivial), else
+ * undefined. Probe/download resolve cookies through this so a momentarily
+ * stale `state.settings.cookiesPath` can't make a logged-in user look
+ * logged-out — the bug where the first private-post download failed with
+ * "login required" until the user re-logged in.
+ */
+export async function resolveCookiesPath(): Promise<string | undefined> {
+  try {
+    const info = await FileSystem.getInfoAsync(COOKIES_FILE);
+    if (info.exists && (!('size' in info) || (info.size ?? 1) > 0)) return COOKIES_PATH;
+  } catch {
+    // ignore
+  }
+  return undefined;
+}
+
 async function readLines(): Promise<string[]> {
   try {
     const txt = await FileSystem.readAsStringAsync(COOKIES_FILE);

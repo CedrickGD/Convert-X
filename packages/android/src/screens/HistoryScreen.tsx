@@ -2,12 +2,12 @@ import { Image as ExpoImage } from 'expo-image';
 import * as Sharing from 'expo-sharing';
 import { ArrowDownToLine, Clock, Share2, Trash2, X } from 'lucide-react-native';
 import React, { useCallback, useEffect, useState } from 'react';
-import { Alert, Pressable, ScrollView, StyleSheet, Text, View } from 'react-native';
+import { Pressable, ScrollView, StyleSheet, Text, View } from 'react-native';
 import { useNavigation } from '@react-navigation/native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 
+import { useFeedback } from '../components/Feedback';
 import { mediaTypeFromName, prettyBytes } from '../lib/formats';
-import { haptics } from '../lib/haptics';
 import {
   clearHistory,
   getHistory,
@@ -38,6 +38,7 @@ export function HistoryScreen() {
   const { theme } = useTheme();
   const insets = useSafeAreaInsets();
   const navigation = useNavigation();
+  const { toast, confirm } = useFeedback();
   const [entries, setEntries] = useState<HistoryEntry[]>([]);
   const now = Date.now();
 
@@ -50,30 +51,37 @@ export function HistoryScreen() {
     return subscribeHistory(refresh);
   }, [refresh]);
 
-  const handleShare = useCallback(async (uri: string) => {
-    if (!(await Sharing.isAvailableAsync())) {
-      Alert.alert('Share unavailable', 'Sharing is not supported on this device.');
-      return;
-    }
-    await Sharing.shareAsync(uri).catch(() => {});
-  }, []);
+  const handleShare = useCallback(
+    async (uri: string) => {
+      if (!(await Sharing.isAvailableAsync())) {
+        toast('Sharing is not supported on this device.', 'error');
+        return;
+      }
+      await Sharing.shareAsync(uri).catch(() => {});
+    },
+    [toast]
+  );
 
-  const handleSave = useCallback(async (uri: string) => {
-    const res = await saveToGallery(uri);
-    if (res.ok) haptics.success();
-    else haptics.error();
-    Alert.alert(
-      res.ok ? 'Saved' : 'Save failed',
-      res.ok ? 'Saved to your Convert-X album.' : res.reason ?? 'Could not save to gallery.'
-    );
-  }, []);
+  const handleSave = useCallback(
+    async (uri: string) => {
+      const res = await saveToGallery(uri);
+      toast(
+        res.ok ? 'Saved to your Convert-X album' : res.reason ?? 'Could not save to gallery.',
+        res.ok ? 'success' : 'error'
+      );
+    },
+    [toast]
+  );
 
-  const handleClear = useCallback(() => {
-    Alert.alert('Clear history?', 'This only removes the list — your saved files stay put.', [
-      { text: 'Cancel', style: 'cancel' },
-      { text: 'Clear', style: 'destructive', onPress: () => void clearHistory() },
-    ]);
-  }, []);
+  const handleClear = useCallback(async () => {
+    const ok = await confirm({
+      title: 'Clear history?',
+      message: 'This only removes the list — your saved files stay put.',
+      confirmLabel: 'Clear',
+      destructive: true,
+    });
+    if (ok) void clearHistory();
+  }, [confirm]);
 
   return (
     <View style={[styles.root, { backgroundColor: theme.bg.base, paddingTop: insets.top + spacing.md }]}>

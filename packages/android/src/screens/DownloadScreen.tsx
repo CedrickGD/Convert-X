@@ -1,9 +1,8 @@
 import * as Clipboard from 'expo-clipboard';
-import { ArrowDownToLine, Check, Download as DownloadIcon, Image as ImageIcon, Link2, Music, Share2, Video } from 'lucide-react-native';
+import { Check, Download as DownloadIcon, Image as ImageIcon, Link2, Music, Share2, Video } from 'lucide-react-native';
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
   ActivityIndicator,
-  Alert,
   Pressable,
   ScrollView,
   StyleSheet,
@@ -19,6 +18,7 @@ import { useNavigation } from '@react-navigation/native';
 import { NativeStackNavigationProp } from '@react-navigation/native-stack';
 
 import { ProgressBar } from '../components/convert';
+import { useFeedback } from '../components/Feedback';
 import { detectSite } from '../../modules/convert-x-downloader/src';
 import {
   cancelBatch,
@@ -28,10 +28,7 @@ import {
   updateYtDlp,
 } from '../lib/downloadQueue';
 import type { RootStackParamList } from '../navigation/types';
-import { mediaTypeFromName } from '../lib/formats';
-import { haptics } from '../lib/haptics';
 import { addHistoryEntry } from '../lib/history';
-import { saveToGallery } from '../lib/image';
 import { addRecentUrl, getRecentUrls } from '../lib/recentUrls';
 import { useDownload, useShared } from '../state';
 import { radius, spacing, typography, useTheme } from '../theme';
@@ -48,6 +45,7 @@ const AUDIO_FORMATS = ['mp3', 'm4a', 'wav', 'flac', 'opus'];
  */
 export function DownloadScreen() {
   const { theme } = useTheme();
+  const { toast } = useFeedback();
   const insets = useSafeAreaInsets();
   const download = useDownload();
   const { state } = download;
@@ -89,19 +87,19 @@ export function DownloadScreen() {
       const result = await updateYtDlp();
       if (result.ok) {
         const version = result.version ? ` (${result.version})` : '';
-        Alert.alert(
-          'Download engine',
+        toast(
           result.status === 'ALREADY_UP_TO_DATE'
-            ? `Already up to date${version}. The site may be temporarily blocking downloads — try again later.`
-            : `Updated${version}. Tap Find to retry.`
+            ? `Engine already up to date${version}`
+            : `Engine updated${version} — tap Find to retry`,
+          result.status === 'ALREADY_UP_TO_DATE' ? 'info' : 'success'
         );
       } else {
-        Alert.alert('Update failed', result.error ?? 'Could not update the download engine.');
+        toast(result.error ?? 'Could not update the download engine.', 'error');
       }
     } finally {
       setEngineUpdating(false);
     }
-  }, []);
+  }, [toast]);
 
   useEffect(() => {
     getRecentUrls().then(setRecent);
@@ -110,16 +108,6 @@ export function DownloadScreen() {
   const handleShareItem = useCallback(async (uri: string) => {
     if (!(await Sharing.isAvailableAsync())) return;
     await Sharing.shareAsync(uri).catch(() => {});
-  }, []);
-
-  const handleSaveItem = useCallback(async (uri: string) => {
-    const res = await saveToGallery(uri);
-    if (res.ok) haptics.success();
-    else haptics.error();
-    Alert.alert(
-      res.ok ? 'Saved' : 'Save failed',
-      res.ok ? 'Saved to your Convert-X album.' : res.reason ?? 'Could not save to gallery.'
-    );
   }, []);
 
   // Clear the URL search when the user leaves the Download tab — unless a
@@ -789,8 +777,9 @@ export function DownloadScreen() {
           {results.length > 0 ? (
             <View style={[styles.card, { backgroundColor: theme.bg.surface, borderColor: theme.border.subtle }]}>
               {results.map((res, i) => {
-                const cat = mediaTypeFromName(res.name);
-                const canSave = cat === 'image' || cat === 'video';
+                // No save button here: the download already saved this file
+                // to the gallery. Offering "save" again wrote a duplicate.
+                // Share works off the app-private copy that stays on disk.
                 return (
                   <View
                     key={i}
@@ -799,37 +788,29 @@ export function DownloadScreen() {
                       i > 0 ? { borderTopWidth: StyleSheet.hairlineWidth, borderTopColor: theme.border.subtle } : null,
                     ]}
                   >
-                    <Text numberOfLines={1} style={[styles.resultName, { color: theme.text.primary }]}>
-                      {res.name}
-                    </Text>
-                    <View style={styles.resultActions}>
-                      {canSave ? (
-                        <Pressable
-                          hitSlop={6}
-                          onPress={() => handleSaveItem(res.uri)}
-                          accessibilityRole="button"
-                          accessibilityLabel={`Save ${res.name} to gallery`}
-                          style={({ pressed }) => [
-                            styles.resultIconBtn,
-                            { borderColor: theme.border.subtle, backgroundColor: pressed ? theme.bg.surfaceHigh : 'transparent' },
-                          ]}
-                        >
-                          <ArrowDownToLine size={14} strokeWidth={2} color={theme.text.secondary} />
-                        </Pressable>
-                      ) : null}
-                      <Pressable
-                        hitSlop={6}
-                        onPress={() => handleShareItem(res.uri)}
-                        accessibilityRole="button"
-                        accessibilityLabel={`Share ${res.name}`}
-                        style={({ pressed }) => [
-                          styles.resultIconBtn,
-                          { borderColor: theme.border.subtle, backgroundColor: pressed ? theme.bg.surfaceHigh : 'transparent' },
-                        ]}
-                      >
-                        <Share2 size={14} strokeWidth={2} color={theme.text.secondary} />
-                      </Pressable>
+                    <View style={styles.resultInfo}>
+                      <Text numberOfLines={1} style={[styles.resultName, { color: theme.text.primary }]}>
+                        {res.name}
+                      </Text>
+                      <View style={styles.resultSavedRow}>
+                        <Check size={11} strokeWidth={3} color={theme.status.success} />
+                        <Text style={[styles.resultSaved, { color: theme.text.muted }]}>
+                          Saved to gallery
+                        </Text>
+                      </View>
                     </View>
+                    <Pressable
+                      hitSlop={6}
+                      onPress={() => handleShareItem(res.uri)}
+                      accessibilityRole="button"
+                      accessibilityLabel={`Share ${res.name}`}
+                      style={({ pressed }) => [
+                        styles.resultIconBtn,
+                        { borderColor: theme.border.subtle, backgroundColor: pressed ? theme.bg.surfaceHigh : 'transparent' },
+                      ]}
+                    >
+                      <Share2 size={14} strokeWidth={2} color={theme.text.secondary} />
+                    </Pressable>
                   </View>
                 );
               })}
@@ -1151,7 +1132,10 @@ const styles = StyleSheet.create({
     gap: spacing.md,
     paddingVertical: spacing.md,
   },
-  resultName: { ...typography.bodySm, flex: 1 },
+  resultName: { ...typography.bodySm },
+  resultInfo: { flex: 1, gap: 2 },
+  resultSavedRow: { flexDirection: 'row', alignItems: 'center', gap: 4 },
+  resultSaved: { ...typography.micro },
   resultActions: { flexDirection: 'row', gap: spacing.sm },
   recentRow: { flexDirection: 'row', flexWrap: 'wrap', gap: spacing.sm },
   recentChip: {

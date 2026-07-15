@@ -1,9 +1,10 @@
 import * as DocumentPicker from 'expo-document-picker';
 import * as ImagePicker from 'expo-image-picker';
 import React, { useCallback, useMemo } from 'react';
-import { Alert, Pressable, ScrollView, StyleSheet, Text, View } from 'react-native';
+import { Pressable, ScrollView, StyleSheet, Text, View } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 
+import { useFeedback } from '../components/Feedback';
 import {
   ClipEditor,
   Dropzone,
@@ -35,6 +36,7 @@ import { radius, spacing, typography, useTheme } from '../theme';
  */
 export function ConvertScreen() {
   const { theme } = useTheme();
+  const { toast } = useFeedback();
   const convert = useConvert();
   const insets = useSafeAreaInsets();
   const { state } = convert;
@@ -66,16 +68,14 @@ export function ConvertScreen() {
         if (guess) convert.updateSettings({ format: guess });
       }
     } catch (e) {
-      Alert.alert('Pick failed', e instanceof Error ? e.message : String(e));
+      toast(e instanceof Error ? e.message : String(e), 'error');
     }
-  }, [convert, state.settings.format]);
+  }, [convert, state.settings.format, toast]);
 
   const handlePickFromGallery = useCallback(async () => {
-    const perm = await ImagePicker.requestMediaLibraryPermissionsAsync();
-    if (!perm.granted) {
-      Alert.alert('Permission needed', 'Grant access to your photos to pick from gallery.');
-      return;
-    }
+    // Android 13+ uses the system Photo Picker, which needs no permission —
+    // expo-image-picker requests one via the OS dialog only where actually
+    // required, and Android remembers the choice. No custom gate/prompt.
     const result = await ImagePicker.launchImageLibraryAsync({
       mediaTypes: ImagePicker.MediaTypeOptions.All,
       allowsMultipleSelection: true,
@@ -107,7 +107,7 @@ export function ConvertScreen() {
   const handleStartConvert = useCallback(() => {
     const fmt = state.settings.format;
     if (!fmt) {
-      Alert.alert('Pick a format', 'Choose a target format first.');
+      toast('Choose a target format first', 'info');
       return;
     }
     if (state.files.length === 0) return;

@@ -13,6 +13,7 @@ import AsyncStorage from '@react-native-async-storage/async-storage';
 import * as FileSystem from 'expo-file-system/legacy';
 
 import * as Downloader from '../../modules/convert-x-downloader/src';
+import { resolveCookiesPath } from './cookies';
 import { isInstagramPostUrl, probeInstagramAnonymous } from './instagramScraper';
 
 // Keyed by yt-dlp release cadence (year.month) rather than a one-shot
@@ -154,12 +155,19 @@ export async function probeUrl(
     spotifyClientSecret?: string;
   }
 ): Promise<ProbeResult> {
+  // On-disk cookies.txt is the source of truth for "logged in" — fall back
+  // to it when the caller's cookiesPath is momentarily empty (hydration
+  // race), so a logged-in user's first private-post download doesn't fail
+  // with "login required".
+  const cookies = opts?.cookies || (await resolveCookiesPath());
+  const resolvedOpts = { ...opts, cookies };
+
   // Anonymous Instagram path. Hits the public embed endpoint that
   // snapinsta.to and similar downloaders use — no auth required for
-  // public posts. Carousels resolve all children. On failure (private
-  // post, embed locked) we fall through to the yt-dlp path which will
-  // use stored cookies if the user has logged in.
-  if (isInstagramPostUrl(url) && !opts?.cookies) {
+  // public posts. Carousels resolve all children. Skipped entirely when
+  // the user has Instagram cookies: for a private post the embed returns
+  // a login wall, and using it would mask the working cookied path.
+  if (isInstagramPostUrl(url) && !cookies) {
     try {
       return await probeInstagramAnonymous(url);
     } catch {
@@ -168,7 +176,7 @@ export async function probeUrl(
   }
 
   const site = Downloader.detectSite(url);
-  const raw = await Downloader.probe(url, opts);
+  const raw = await Downloader.probe(url, resolvedOpts);
 
   // The Kotlin probe surfaces yt-dlp's own error (e.g. "Unsupported URL",
   // missing extractor) via raw.error. Treat it as a thrown error so the
@@ -443,6 +451,10 @@ export async function downloadBatch(opts: {
   if (total === 0) {
     return { done: 0, failed: 0, cancelled: false, errors: [] };
   }
+  // Same source-of-truth resolution as probeUrl: use on-disk cookies when
+  // the caller's are empty, so a logged-in download never fails for lack of
+  // a cookie path that exists on disk.
+  const cookies = opts.cookies || (await resolveCookiesPath());
   let done = 0;
   let failed = 0;
   let lastPublicPath: string | undefined;
@@ -469,7 +481,7 @@ export async function downloadBatch(opts: {
         quality: opts.quality,
         spotifyClientId: opts.spotifyClientId,
         spotifyClientSecret: opts.spotifyClientSecret,
-        cookies: opts.cookies,
+        cookies,
         saveToGallery: opts.saveToGallery,
         dedupeNames: total > 1,
         onProgress: (pct) => {

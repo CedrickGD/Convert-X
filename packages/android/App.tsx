@@ -14,6 +14,7 @@ import { GestureHandlerRootView } from 'react-native-gesture-handler';
 import { SafeAreaProvider } from 'react-native-safe-area-context';
 
 import { ErrorBoundary } from './src/components/ErrorBoundary';
+import { FeedbackProvider } from './src/components/Feedback';
 import { runFirstLaunchYtDlpUpdate } from './src/lib/downloadQueue';
 import { purgeOldExports } from './src/lib/storage';
 import { RootNavigator } from './src/navigation/RootNavigator';
@@ -51,15 +52,17 @@ export default function App() {
     <GestureHandlerRootView style={styles.root}>
       <SafeAreaProvider>
         <ThemeProvider>
-          <SharedProvider>
-            <ConvertProvider>
-              <ResizeProvider>
-                <DownloadProvider>
-                  <Root fontsReady={fontsLoaded || !!fontError || fontsTimedOut} />
-                </DownloadProvider>
-              </ResizeProvider>
-            </ConvertProvider>
-          </SharedProvider>
+          <FeedbackProvider>
+            <SharedProvider>
+              <ConvertProvider>
+                <ResizeProvider>
+                  <DownloadProvider>
+                    <Root fontsReady={fontsLoaded || !!fontError || fontsTimedOut} />
+                  </DownloadProvider>
+                </ResizeProvider>
+              </ConvertProvider>
+            </SharedProvider>
+          </FeedbackProvider>
         </ThemeProvider>
       </SafeAreaProvider>
     </GestureHandlerRootView>
