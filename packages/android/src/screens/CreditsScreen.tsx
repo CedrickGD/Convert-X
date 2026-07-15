@@ -1,6 +1,6 @@
 import * as DocumentPicker from 'expo-document-picker';
 import * as FileSystem from 'expo-file-system/legacy';
-import { Check, Code, Cookie, Download, Globe, Heart, Monitor, Package, RefreshCw, SwatchBook } from 'lucide-react-native';
+import { Check, ChevronDown, ChevronRight, Code, Cookie, Download, Globe, Heart, Monitor, Package, Plus, RefreshCw, SwatchBook, X } from 'lucide-react-native';
 // Phase 2 used a static import for the version; the in-app updater (Phase 9)
 // uses the same source of truth.
 import pkg from '../../package.json';
@@ -13,6 +13,7 @@ import {
   Pressable,
   ScrollView,
   StyleSheet,
+  Switch,
   Text,
   TextInput,
   View,
@@ -50,20 +51,6 @@ const OSS = [
 
 /** Default accent (dark-mode emerald). Selecting it resets to the stock look. */
 const DEFAULT_ACCENT = '#10b981';
-
-/** Curated accent presets shown as tappable swatches. */
-const PRESET_ACCENTS: { name: string; hex: string }[] = [
-  { name: 'Emerald', hex: DEFAULT_ACCENT },
-  { name: 'Blue', hex: '#3b82f6' },
-  { name: 'Indigo', hex: '#6366f1' },
-  { name: 'Violet', hex: '#8b5cf6' },
-  { name: 'Pink', hex: '#ec4899' },
-  { name: 'Rose', hex: '#f43f5e' },
-  { name: 'Orange', hex: '#f97316' },
-  { name: 'Amber', hex: '#f59e0b' },
-  { name: 'Cyan', hex: '#06b6d4' },
-  { name: 'Lime', hex: '#84cc16' },
-];
 
 /**
  * Credits & App — Phase 2 placeholder, Phase 7 fills in the rest
@@ -250,10 +237,15 @@ export function CreditsScreen() {
 // Presets reset to the default emerald via setAccentColor(null); custom = any hex.
 
 function AccentColorCard() {
-  const { theme, settings, setAccentColor, previewAccentColor } = useTheme();
+  const { theme, settings, setAccentColor, previewAccentColor, setQuickPicks, setQuickPicksAuto } =
+    useTheme();
   const active = settings.accentColor;
   const isDefault = !active;
   const current = active ?? DEFAULT_ACCENT;
+
+  // Collapsed by default — the picker + swatches only appear on expand.
+  const [expanded, setExpanded] = useState(false);
+  const [editing, setEditing] = useState(false);
 
   // The hex field doubles as a live readout: it mirrors the current color
   // (updating as the picker is dragged) unless the user is editing it.
@@ -284,10 +276,19 @@ function AccentColorCard() {
     setHexError(false);
   }, [setAccentColor]);
 
-  // Recently-picked custom colors, minus any that are already preset swatches.
-  const recents = (settings.recentAccents ?? []).filter(
-    (c) => !PRESET_ACCENTS.some((p) => p.hex.toLowerCase() === c.toLowerCase())
+  const quickPicks = settings.quickPicks;
+  const currentInPicks = quickPicks.some((c) => c.toLowerCase() === current.toLowerCase());
+
+  const removePick = useCallback(
+    (hex: string) => setQuickPicks(quickPicks.filter((c) => c.toLowerCase() !== hex.toLowerCase())),
+    [quickPicks, setQuickPicks]
   );
+  const addCurrentPick = useCallback(
+    () => setQuickPicks([current, ...quickPicks]),
+    [current, quickPicks, setQuickPicks]
+  );
+
+  const summary = isDefault ? 'Default emerald' : `Custom · ${active}`;
 
   return (
     <View
@@ -296,131 +297,162 @@ function AccentColorCard() {
         { backgroundColor: theme.bg.surface, borderColor: theme.border.subtle },
       ]}
     >
-      <View style={styles.cardHeaderRow}>
+      {/* Collapsed header — current color + expand toggle. */}
+      <Pressable
+        onPress={() => setExpanded((e) => !e)}
+        accessibilityRole="button"
+        accessibilityLabel={expanded ? 'Collapse accent color' : 'Expand accent color'}
+        style={styles.accentHeader}
+      >
         <Text style={[styles.cardLabel, { color: theme.text.muted }]}>ACCENT COLOR</Text>
-        {!isDefault ? (
-          <Pressable onPress={reset} hitSlop={8}>
-            <Text style={[styles.linkText, { color: theme.accent.primary }]}>Reset</Text>
-          </Pressable>
-        ) : null}
-      </View>
-      <Text style={[styles.rowSub, { color: theme.text.secondary }]}>
-        {isDefault
-          ? 'Default emerald — drag the picker, tap a swatch, or enter a hex.'
-          : `Custom · ${active}`}
-      </Text>
-
-      <ColorPicker
-        value={active ?? DEFAULT_ACCENT}
-        onPreview={previewAccentColor}
-        onCommit={setAccentColor}
-      />
-
-      {recents.length > 0 ? (
-        <>
-          <Text style={[styles.cardLabel, { color: theme.text.muted, marginTop: spacing.xs }]}>
-            RECENT
+        <View style={styles.accentHeaderRight}>
+          <View style={[styles.accentDot, { backgroundColor: current, borderColor: theme.border.subtle }]} />
+          <Text style={[styles.rowSub, { color: theme.text.secondary, marginTop: 0 }]} numberOfLines={1}>
+            {summary}
           </Text>
+          {expanded ? (
+            <ChevronDown size={18} strokeWidth={2} color={theme.text.muted} />
+          ) : (
+            <ChevronRight size={18} strokeWidth={2} color={theme.text.muted} />
+          )}
+        </View>
+      </Pressable>
+
+      {expanded ? (
+        <>
+          <ColorPicker
+            value={active ?? DEFAULT_ACCENT}
+            onPreview={previewAccentColor}
+            onCommit={setAccentColor}
+          />
+
+          {/* Quick picks — merged recents + presets, editable. */}
+          <View style={[styles.cardHeaderRow, { marginTop: spacing.xs }]}>
+            <Text style={[styles.cardLabel, { color: theme.text.muted }]}>QUICK PICKS</Text>
+            <Pressable onPress={() => setEditing((v) => !v)} hitSlop={8}>
+              <Text style={[styles.linkText, { color: theme.accent.primary }]}>
+                {editing ? 'Done' : 'Edit'}
+              </Text>
+            </Pressable>
+          </View>
+
           <View style={styles.swatchGrid}>
-            {recents.map((hex) => {
-              const selected = active?.toLowerCase() === hex.toLowerCase();
+            {quickPicks.map((hex) => {
+              const selected = current.toLowerCase() === hex.toLowerCase();
               return (
-                <Pressable
-                  key={hex}
-                  accessibilityRole="button"
-                  accessibilityLabel={`Recent color ${hex}`}
-                  onPress={() => setAccentColor(hex)}
-                  style={({ pressed }) => [
-                    styles.swatch,
-                    {
-                      backgroundColor: hex,
-                      borderColor: selected ? theme.text.primary : 'transparent',
-                      opacity: pressed ? 0.8 : 1,
-                    },
-                  ]}
-                >
-                  {selected ? <Check size={16} strokeWidth={3} color={readableOn(hex)} /> : null}
-                </Pressable>
+                <View key={hex}>
+                  <Pressable
+                    accessibilityRole="button"
+                    accessibilityLabel={`Accent ${hex}`}
+                    onPress={() =>
+                      editing
+                        ? removePick(hex)
+                        : setAccentColor(hex.toLowerCase() === DEFAULT_ACCENT ? null : hex)
+                    }
+                    style={({ pressed }) => [
+                      styles.swatch,
+                      {
+                        backgroundColor: hex,
+                        borderColor: selected ? theme.text.primary : 'transparent',
+                        opacity: pressed ? 0.8 : 1,
+                      },
+                    ]}
+                  >
+                    {editing ? (
+                      <View style={[styles.swatchBadge, { backgroundColor: theme.overlay.scrim }]}>
+                        <X size={12} strokeWidth={3} color="#fff" />
+                      </View>
+                    ) : selected ? (
+                      <Check size={16} strokeWidth={3} color={readableOn(hex)} />
+                    ) : null}
+                  </Pressable>
+                </View>
               );
             })}
+            {editing && !currentInPicks ? (
+              <Pressable
+                accessibilityLabel="Add current color to quick picks"
+                onPress={addCurrentPick}
+                style={({ pressed }) => [
+                  styles.swatch,
+                  styles.swatchAdd,
+                  { borderColor: theme.border.strong, opacity: pressed ? 0.6 : 1 },
+                ]}
+              >
+                <Plus size={18} strokeWidth={2.4} color={theme.text.secondary} />
+              </Pressable>
+            ) : null}
           </View>
-        </>
-      ) : null}
 
-      <Text style={[styles.cardLabel, { color: theme.text.muted, marginTop: spacing.xs }]}>
-        QUICK PICKS
-      </Text>
-      <View style={styles.swatchGrid}>
-        {PRESET_ACCENTS.map((p) => {
-          const selected =
-            p.hex === DEFAULT_ACCENT ? isDefault || active === p.hex : active === p.hex;
-          return (
-            <Pressable
-              key={p.hex}
-              accessibilityRole="button"
-              accessibilityLabel={`${p.name} accent`}
-              onPress={() => setAccentColor(p.hex === DEFAULT_ACCENT ? null : p.hex)}
-              style={({ pressed }) => [
-                styles.swatch,
+          {/* Auto-add last used toggle. */}
+          <View style={styles.cardHeaderRow}>
+            <Text style={[styles.rowSub, { color: theme.text.secondary, marginTop: 0 }]}>
+              Auto-add last used color
+            </Text>
+            <Switch
+              value={settings.quickPicksAuto}
+              onValueChange={setQuickPicksAuto}
+              trackColor={{ true: theme.accent.primary, false: theme.bg.surfaceHigh }}
+              thumbColor="#fff"
+            />
+          </View>
+
+          <View
+            style={[
+              styles.hexRow,
+              {
+                backgroundColor: theme.bg.surfaceSunken,
+                borderColor: hexError ? theme.status.error : theme.border.subtle,
+              },
+            ]}
+          >
+            <View
+              style={[
+                styles.hexPreview,
                 {
-                  backgroundColor: p.hex,
-                  borderColor: selected ? theme.text.primary : 'transparent',
-                  opacity: pressed ? 0.8 : 1,
+                  backgroundColor: livePreview ?? active ?? DEFAULT_ACCENT,
+                  borderColor: theme.border.subtle,
                 },
               ]}
+            />
+            <TextInput
+              value={hexInput}
+              onChangeText={(t) => {
+                setHexInput(t);
+                if (hexError) setHexError(false);
+              }}
+              onFocus={() => setHexFocused(true)}
+              onBlur={() => setHexFocused(false)}
+              placeholder="#7c3aed"
+              placeholderTextColor={theme.text.muted}
+              autoCapitalize="none"
+              autoCorrect={false}
+              returnKeyType="done"
+              onSubmitEditing={applyHex}
+              style={[styles.hexInput, { color: theme.text.primary }]}
+            />
+            <Pressable
+              onPress={applyHex}
+              hitSlop={6}
+              style={({ pressed }) => ({ opacity: pressed ? 0.6 : 1 })}
             >
-              {selected ? <Check size={16} strokeWidth={3} color={readableOn(p.hex)} /> : null}
+              <Text style={[styles.linkText, { color: theme.accent.primary }]}>Apply</Text>
             </Pressable>
-          );
-        })}
-      </View>
+          </View>
+          {hexError ? (
+            <Text style={[styles.rowSub, { color: theme.status.error }]}>
+              Enter a valid hex, e.g. #7c3aed.
+            </Text>
+          ) : null}
 
-      <View
-        style={[
-          styles.hexRow,
-          {
-            backgroundColor: theme.bg.surfaceSunken,
-            borderColor: hexError ? theme.status.error : theme.border.subtle,
-          },
-        ]}
-      >
-        <View
-          style={[
-            styles.hexPreview,
-            {
-              backgroundColor: livePreview ?? active ?? DEFAULT_ACCENT,
-              borderColor: theme.border.subtle,
-            },
-          ]}
-        />
-        <TextInput
-          value={hexInput}
-          onChangeText={(t) => {
-            setHexInput(t);
-            if (hexError) setHexError(false);
-          }}
-          onFocus={() => setHexFocused(true)}
-          onBlur={() => setHexFocused(false)}
-          placeholder="#7c3aed"
-          placeholderTextColor={theme.text.muted}
-          autoCapitalize="none"
-          autoCorrect={false}
-          returnKeyType="done"
-          onSubmitEditing={applyHex}
-          style={[styles.hexInput, { color: theme.text.primary }]}
-        />
-        <Pressable
-          onPress={applyHex}
-          hitSlop={6}
-          style={({ pressed }) => ({ opacity: pressed ? 0.6 : 1 })}
-        >
-          <Text style={[styles.linkText, { color: theme.accent.primary }]}>Apply</Text>
-        </Pressable>
-      </View>
-      {hexError ? (
-        <Text style={[styles.rowSub, { color: theme.status.error }]}>
-          Enter a valid hex, e.g. #7c3aed.
-        </Text>
+          {!isDefault ? (
+            <Pressable onPress={reset} hitSlop={8} style={{ alignSelf: 'flex-start' }}>
+              <Text style={[styles.linkText, { color: theme.accent.primary }]}>
+                Reset to default
+              </Text>
+            </Pressable>
+          ) : null}
+        </>
       ) : null}
     </View>
   );
@@ -751,7 +783,7 @@ function PlatformLoginsCard() {
 
       {LOGIN_PLATFORMS.map((p, i) => {
         const isConnected = connected.includes(p.key);
-        const isBusy = busyKey === p.key || (picking && p.method === 'cookies');
+        const isBusy = busyKey === p.key;
         return (
           <View
             key={p.key}
@@ -808,9 +840,7 @@ function PlatformLoginsCard() {
             ) : (
               <Pressable
                 disabled={isBusy}
-                onPress={() =>
-                  p.method === 'cookies' ? onImport() : navigation.navigate('PlatformLogin', { platform: p.key })
-                }
+                onPress={() => navigation.navigate('PlatformLogin', { platform: p.key })}
                 style={({ pressed }) => ({
                   paddingHorizontal: spacing.xl,
                   paddingVertical: spacing.md,
@@ -820,7 +850,7 @@ function PlatformLoginsCard() {
                 })}
               >
                 <Text style={[typography.caption, { color: theme.accent.onPrimary, fontWeight: '600' }]}>
-                  {p.method === 'cookies' ? 'Import' : 'Log in'}
+                  Log in
                 </Text>
               </Pressable>
             )}
@@ -867,6 +897,18 @@ const styles = StyleSheet.create({
     alignItems: 'center',
   },
   linkText: { ...typography.caption, fontWeight: '600' },
+  accentHeader: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+  },
+  accentHeaderRight: { flexDirection: 'row', alignItems: 'center', gap: spacing.sm, flexShrink: 1 },
+  accentDot: {
+    width: 18,
+    height: 18,
+    borderRadius: 9,
+    borderWidth: StyleSheet.hairlineWidth,
+  },
   swatchGrid: { flexDirection: 'row', flexWrap: 'wrap', gap: spacing.md },
   swatch: {
     width: 38,
@@ -875,6 +917,17 @@ const styles = StyleSheet.create({
     borderWidth: 2,
     alignItems: 'center',
     justifyContent: 'center',
+  },
+  swatchBadge: {
+    width: 20,
+    height: 20,
+    borderRadius: 10,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  swatchAdd: {
+    backgroundColor: 'transparent',
+    borderStyle: 'dashed',
   },
   hexRow: {
     flexDirection: 'row',

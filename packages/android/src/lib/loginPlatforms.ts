@@ -6,27 +6,32 @@
  * one file — see cookies.ts for the per-domain merge that keeps them from
  * clobbering each other.
  *
- * Most platforms allow signing in inside an embedded WebView. YouTube is
- * the exception: Google actively blocks embedded-webview sign-in ("this
- * browser or app may not be secure"), so it's import-only.
+ * All platforms use an in-app WebView login. Social "Sign in with Google"
+ * buttons open a popup window and Google refuses embedded webviews — the
+ * login screen sets a real browser user-agent and routes popups into the
+ * main frame to give those the best chance, but email/password is the
+ * reliable path (and Google-account sign-in, incl. YouTube, may still be
+ * refused by Google). The cookies.txt import in Credits is the fallback.
  */
 
-export type LoginMethod = 'webview' | 'cookies';
+export type LoginMethod = 'webview';
 
 export type LoginPlatform = {
   key: string;
   label: string;
   method: LoginMethod;
-  /** WebView entry URL (webview method only). */
-  loginUrl?: string;
-  /** Origin handed to CookieManager.get when harvesting (webview only). */
-  cookieOrigin?: string;
+  /** WebView entry URL. */
+  loginUrl: string;
+  /** Origin handed to CookieManager.get when harvesting. */
+  cookieOrigin: string;
   /** Netscape cookie domain (leading dot) written to cookies.txt. */
   cookieDomain: string;
-  /** Cookie names whose presence means the login completed. */
+  /** Cookie names whose presence means the login completed (all required). */
   requiredCookies: string[];
   /** One-line reason a user would sign in, shown under the platform name. */
   blurb: string;
+  /** Extra hint shown on the login screen (e.g. Google-block caveat). */
+  note?: string;
 };
 
 export const LOGIN_PLATFORMS: LoginPlatform[] = [
@@ -39,6 +44,19 @@ export const LOGIN_PLATFORMS: LoginPlatform[] = [
     cookieDomain: '.instagram.com',
     requiredCookies: ['sessionid'],
     blurb: 'Private posts, stories & full carousels.',
+  },
+  {
+    key: 'youtube',
+    label: 'YouTube',
+    method: 'webview',
+    // Land back on youtube.com after the Google login so the .youtube.com
+    // cookie jar (SAPISID/SID/…) is populated for us to harvest.
+    loginUrl: 'https://accounts.google.com/ServiceLogin?continue=https%3A%2F%2Fwww.youtube.com%2F',
+    cookieOrigin: 'https://www.youtube.com/',
+    cookieDomain: '.youtube.com',
+    requiredCookies: ['SAPISID'],
+    blurb: 'Age-restricted & members-only videos.',
+    note: 'Google may refuse in-app sign-in. If it blocks you, use "Import cookies.txt" in Credits instead.',
   },
   {
     key: 'tiktok',
@@ -59,6 +77,7 @@ export const LOGIN_PLATFORMS: LoginPlatform[] = [
     cookieDomain: '.x.com',
     requiredCookies: ['auth_token'],
     blurb: 'Sensitive or protected posts.',
+    note: 'Email/password works best. "Sign in with Google" may be refused by Google.',
   },
   {
     key: 'reddit',
@@ -69,6 +88,7 @@ export const LOGIN_PLATFORMS: LoginPlatform[] = [
     cookieDomain: '.reddit.com',
     requiredCookies: ['reddit_session'],
     blurb: 'NSFW or quarantined posts.',
+    note: 'Email/password works best. "Sign in with Google" may be refused by Google.',
   },
   {
     key: 'facebook',
@@ -81,14 +101,24 @@ export const LOGIN_PLATFORMS: LoginPlatform[] = [
     blurb: 'Private or friends-only videos.',
   },
   {
-    key: 'youtube',
-    label: 'YouTube',
-    method: 'cookies',
-    cookieDomain: '.youtube.com',
-    requiredCookies: [],
-    blurb: 'Age-restricted / members-only — import cookies.txt (Google blocks in-app login).',
+    key: 'linkedin',
+    label: 'LinkedIn',
+    method: 'webview',
+    loginUrl: 'https://www.linkedin.com/login',
+    cookieOrigin: 'https://www.linkedin.com/',
+    cookieDomain: '.linkedin.com',
+    requiredCookies: ['li_at'],
+    blurb: 'Videos & documents from posts.',
   },
 ];
+
+/**
+ * A recent mobile-Chrome user agent for the login WebView. Presenting a
+ * real browser UA (instead of the Android WebView default) is what makes
+ * several providers — Google especially — willing to render their login.
+ */
+export const LOGIN_USER_AGENT =
+  'Mozilla/5.0 (Linux; Android 14; SM-S948B) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Mobile Safari/537.36';
 
 export function platformByKey(key: string): LoginPlatform | undefined {
   return LOGIN_PLATFORMS.find((p) => p.key === key);

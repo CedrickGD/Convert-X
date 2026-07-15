@@ -8,7 +8,7 @@ import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { WebView, WebViewNavigation } from 'react-native-webview';
 
 import { mergePlatformCookies } from '../lib/cookies';
-import { platformByKey } from '../lib/loginPlatforms';
+import { LOGIN_USER_AGENT, platformByKey } from '../lib/loginPlatforms';
 import { RootStackParamList } from '../navigation/types';
 import { useDownload } from '../state';
 import { spacing, typography, useTheme } from '../theme';
@@ -89,6 +89,11 @@ export function PlatformLoginScreen() {
   );
 
   const accent = error ? theme.status.error : done ? theme.status.success : theme.text.secondary;
+  // Show the platform caveat (e.g. Google-block) until a real status/error
+  // replaces it, so the user isn't surprised if a provider refuses.
+  const subline = error ?? (status === `Sign in to ${platform?.label}.` && platform?.note
+    ? `${status} ${platform.note}`
+    : status);
 
   return (
     <View style={[styles.root, { backgroundColor: theme.bg.base }]}>
@@ -107,8 +112,8 @@ export function PlatformLoginScreen() {
           <Text style={[typography.bodyEmph, { color: theme.text.primary }]}>
             {platform ? `${platform.label} login` : 'Login'}
           </Text>
-          <Text style={[typography.caption, { color: accent, marginTop: 2 }]} numberOfLines={2}>
-            {error ?? status}
+          <Text style={[typography.caption, { color: accent, marginTop: 2 }]} numberOfLines={3}>
+            {subline}
           </Text>
         </View>
         {busy ? (
@@ -122,11 +127,19 @@ export function PlatformLoginScreen() {
         )}
       </View>
 
-      {platform?.loginUrl ? (
+      {platform ? (
         <WebView
           source={{ uri: platform.loginUrl }}
           style={{ flex: 1 }}
           onNavigationStateChange={onNavStateChange}
+          // Present a real mobile-Chrome UA — the default Android WebView UA
+          // makes Google (and others) refuse to render their login page.
+          userAgent={LOGIN_USER_AGENT}
+          // "Sign in with Google/Apple" buttons open a popup; without this
+          // react-native-webview swallows the new window and the tap does
+          // nothing. false routes the popup into the main frame instead.
+          setSupportMultipleWindows={false}
+          javaScriptCanOpenWindowsAutomatically
           sharedCookiesEnabled
           thirdPartyCookiesEnabled
           domStorageEnabled
@@ -136,9 +149,7 @@ export function PlatformLoginScreen() {
       ) : (
         <View style={styles.emptyBody}>
           <Text style={[typography.body, { color: theme.text.muted, textAlign: 'center' }]}>
-            {platform
-              ? `${platform.label} can't be signed into in-app. Import a cookies.txt file from Credits instead.`
-              : 'Unknown platform.'}
+            Unknown platform.
           </Text>
         </View>
       )}
