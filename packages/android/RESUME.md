@@ -1,186 +1,95 @@
 # Convert-X Android — Resume Plan
 
-Snapshot of where we left off, written to drop you back in with zero ramp-up.
+Snapshot of where we left off, written to drop back in with zero ramp-up.
 
 ---
 
 ## Current state
 
-**Production version on GitHub:** v0.6.6 (latest published)
-**CI building:** v0.6.7, then v0.6.8 — both queued after the session ended
-**Latest tag pushed:** `v0.6.8` (commit `aa4e62a`)
-**Installed on user's S26 Ultra (SM-S948B, Android 16):** v0.6.5
+**Latest release:** v0.7.1 (tag `v0.7.1`, built by CI, installed & verified
+on the user's S26 Ultra SM-S948B / Android 16).
+**Prior release:** v0.7.0 (also verified on device).
 
-All releases live at:
-https://github.com/CedrickGD/Convert-X-Android-APK/releases
+Releases live at: https://github.com/CedrickGD/Convert-X/releases
+(Android APKs now ship from the monorepo, not the old separate APK repo.)
 
----
-
-## What works today (v0.6.5 verified on S26)
-
-- App boots, header shows version, theme toggle, tab persistence.
-- **Convert:** PNG/JPG/WebP (manipulator path), BMP/TIFF/ICO/GIF (FFmpeg
-  path), all video formats except WebM, all audio formats except MP3.
-- **Resize:** image-only, works.
-- **Updater:** in-app prompt + install via FileProvider.
-- **ClipEditor:** preview + timeline + trim handles for video sources.
-- **Download:** yt-dlp init works (auto-recovery from bad-zip state),
-  probe + JSON parse path runs.
-
-## What's broken (open work)
-
-### 1. Download probe returns no JSON for Instagram carousels
-**Symptom:** Paste `https://www.instagram.com/p/<id>/?img_index=N`,
-tap **Find**, screen shows red "yt-dlp returned no JSON" with no
-stderr context.
-
-**Root cause (high confidence):** The probe passes `--flat-playlist`
-to yt-dlp, which collapses Instagram / TikTok / Reddit carousels into
-nothing instead of expanding the individual items.
-
-**Fix shipped in v0.6.8:** Dropped `--flat-playlist` from the probe.
-
-**Fix shipped in v0.6.7:** Verbose error reporting — exit code +
-stdout + stderr now propagate up so we can see *why* yt-dlp emitted
-no JSON instead of just "no JSON".
-
-### 2. (Confirmed open) Download itself failed in v0.6.4-and-below
-
-Cause-of-failure was never pinned because probe always succeeded but
-the actual download didn't produce a file. v0.6.5 redesigned the
-download flow (`downloadBatch` + h264_mediacodec format ladder +
-restrict-filenames + retries) but the user only got to the probe
-stage, never confirmed download.
-
-**Open:** After v0.6.8 lands and probe expands the carousel correctly,
-test the actual download. The Done panel surfaces failure cause via
-the FFmpeg log-tail / yt-dlp stderr now.
+Release flow: bump → commit to `main` → push tag `v*` → the "Release Android
+APKs" workflow builds `app-arm64-v8a-release.apk`. CI runs the gradle build
+only (no tsc/lint step), so **typecheck locally** (`npx tsc --noEmit` in
+`packages/android`) before tagging. Local release gradle build fails on this
+machine (CMake 260-char Windows path limit) — CI is the build path.
 
 ---
 
-## Versions / changelog (most recent first)
+## What works today (verified live on S26)
 
-| ver    | what                                                           |
-|--------|----------------------------------------------------------------|
-| 0.6.8  | Drop `--flat-playlist` so carousels expand (Instagram fix)     |
-| 0.6.7  | Verbose probe error: exitCode + stdout + stderr always shown   |
-| 0.6.6  | `?img_index=N` URL → pre-select that item; N/M badge per row   |
-| 0.6.5  | Playlist multi-select + batch download + robust H.264 ladder   |
-| 0.6.4  | yt-dlp `--print after_move:filepath` to resolve real output    |
-| 0.6.3  | Tab-switch clears URL + GIF auto-mute + preview thumbnails +   |
-|        |   permission flow + Save-to-Gallery via MediaLibrary + corrupt |
-|        |   yt-dlp.zip auto-recovery in probe/download                   |
-| 0.6.2  | (failed build — broken Kotlin SAM lambda for callback)         |
-| 0.6.1  | formatKeyFromName skips unsupported formats; AVI audio → AAC   |
-| 0.6.0  | Swap to `ffmpeg-kit-main-min-16kb` (dropping HID-symbol fail)  |
-|        |   + flip `useLegacyPackaging=true` so `.zip.so` libs extract   |
-| 0.5.x  | Visible version in header, FFmpeg load-error banner, downloader|
-|        |   cause-chain `describe()` helper                               |
-| 0.5.0  | ClipEditor: MediaPreview + TimelineTrack + Playhead + TrimHandle |
-
----
-
-## Pick up here — exact next steps
-
-### Step 1: install v0.6.8 on the user's S26
-The user's S26 is wirelessly paired and visible to ADB as
-`adb-RFGL21TZWYB-vukfuD._adb-tls-connect._tcp`. Wait for v0.6.8 CI:
-
-```bash
-gh run list --limit 1
-# wait until "completed success" for v0.6.8
-gh release view v0.6.8
-# then:
-curl -sL -o /tmp/v068.apk "https://github.com/CedrickGD/Convert-X-Android-APK/releases/download/v0.6.8/app-arm64-v8a-release.apk"
-adb -s adb-RFGL21TZWYB-vukfuD._adb-tls-connect._tcp install -r /tmp/v068.apk
-adb -s adb-RFGL21TZWYB-vukfuD._adb-tls-connect._tcp shell am force-stop com.cedrickgd.convertx
-adb -s adb-RFGL21TZWYB-vukfuD._adb-tls-connect._tcp shell am start -n com.cedrickgd.convertx/com.cedrickgd.convertx.MainActivity
-```
-
-### Step 2: reproduce the Instagram probe
-With the app open on the S26, tap Download tab (bounds `[728,378][1032,502]`,
-center **(880, 440)** — NOT (725, 365), that's the theme toggle).
-
-Paste the URL into the EditText (bounds `[244,740][1093,813]`,
-center **(668, 776)**) — `adb shell input text` works for the URL as
-long as you use single-quoted strings to avoid shell escaping:
-
-```bash
-adb -s adb-RFGL21TZWYB-vukfuD._adb-tls-connect._tcp shell input tap 668 776
-adb -s adb-RFGL21TZWYB-vukfuD._adb-tls-connect._tcp shell 'input text "https://www.instagram.com/p/DYenI78nzS1/"'
-adb -s adb-RFGL21TZWYB-vukfuD._adb-tls-connect._tcp shell input keyevent KEYCODE_BACK   # dismiss keyboard
-adb -s adb-RFGL21TZWYB-vukfuD._adb-tls-connect._tcp shell input tap 720 1943            # Find button
-```
-
-### Step 3: screenshot the result
-```bash
-adb -s adb-RFGL21TZWYB-vukfuD._adb-tls-connect._tcp exec-out screencap -p > .claude/screenshots/s26-v068-probe.png
-```
-
-**Expected:** preview card with 10 thumbnails, each showing a `N/10`
-badge. Only item 10 is pre-selected because of `img_index=9`.
-
-**If still broken:** the red error text will now (v0.6.7+) contain
-yt-dlp's actual stderr/stdout — paste that into the next prompt.
-
-### Step 4: try the download
-Tap **Download 1** (it'll be the only enabled action). Grant
-MediaLibrary permission. Wait. If it succeeds → "Saved to Gallery ·
-Convert-X album". File appears in `Gallery → Convert-X`.
-
-### Step 5: tag a v0.7.0 if download works
-If both probe and download work for the Instagram carousel, the v0.6.x
-diagnostic cascade is done and we cut a clean v0.7.0 release marking
-"playlist downloads functional".
+- **Convert / Resize:** image + video + audio pipelines; GIF from video.
+- **Gallery save (v0.7.0):** native MediaStore insert — **no per-file consent
+  dialog**, clean display names, routed by type (Pictures / Movies / Music /
+  Convert-X). Replaced the old expo-media-library album flow.
+- **Theme toggle (v0.7.0):** header buttons + active tab pill repaint
+  correctly on dark/light switch (was white-on-white in dark).
+- **Download (v0.7.0/0.7.1):** yt-dlp probe → type-aware options → download →
+  save. Progress bar moves (was stuck at 0%). Per-carousel-item selection via
+  `--playlist-items` (was N× the same item). Verified: YouTube video → MP4 and
+  → MP3 (Music/Convert-X).
+- **Type-aware options (v0.7.1):** no video/audio question before the probe.
+  After Find: video → Video/Audio toggle + quality/audio-format; audio source
+  → audio-format only; image post → no format controls, button says "Save".
+- **yt-dlp updater (v0.7.0):** real status/version, clears stale
+  `dlpVersion`/`dlpVersionName` prefs on cache reset so post-recovery updates
+  actually install; monthly auto-refresh; in-app "Update download engine" /
+  "Log in" buttons on recoverable errors.
+- **Platform logins (v0.7.1):** clean multi-platform card (Instagram, TikTok,
+  X, Reddit, Facebook via WebView; YouTube via cookies.txt import). One clear
+  action per row, green "Connected". Cookies merge per-domain into one
+  cookies.txt (`src/lib/cookies.ts`), so platforms coexist.
 
 ---
 
-## Files most-recently touched
+## Open / not yet verified
 
-```
-src/lib/downloadQueue.ts                              — downloadBatch, format ladder, MediaLibrary save
-src/screens/DownloadScreen.tsx                        — multi-select UI, checkboxes, N/M badges, img_index
-modules/convert-x-downloader/android/.../Module.kt    — corruption recovery, no auto-update, --flat-playlist removed
-modules/convert-x-ffmpeg/android/build.gradle         — ffmpeg-kit-main-min-16kb
-src/lib/ffmpegArgs.ts                                 — h264_mediacodec, no libmp3lame, no libvorbis
-src/lib/formats.ts                                    — MP3 + WebM marked supported=false; formatKeyFromName fallback
-src/components/AppHeader.tsx                          — version display
-src/components/convert/VideoEditControls.tsx          — audioForcedOff prop for GIF target
-```
+### 1. Instagram (and other) login end-to-end — needs the user's credentials
+Built and code-reviewed but NOT driven end-to-end: WebView sign-in →
+`mergePlatformCookies` → yt-dlp `--cookies` → private/carousel download.
+Requires the user to actually log in (won't do on their behalf).
+**Next:** user does Credits → Platform logins → Instagram → Log in, then
+downloads a private/carousel post. Watch for: cookies written to
+`documentDirectory/cookies.txt`, `connectedPlatforms` gains `instagram`,
+carousel expands with distinct items.
 
----
-
-## Open feature requests (not yet shipped)
-
-- **Carousel position number** on each entry — partially done (the N/M
-  badge is from v0.6.6) but doesn't read carousel-image-N from yt-dlp's
-  output yet; uses array index. Good enough for Instagram, may diverge
-  for sites that reorder.
-- **Cookie support** for sites that require login (Instagram private
-  posts, paywalled YouTube, etc.) — `state.settings.cookiesPath` exists
-  but no UI to set it. Would need an SAF file picker for cookies.txt.
-- **GifSettings + AdvancedSettings panels** (task #46, deferred since
-  v0.4.0). FPS / scale / dither for GIF; bitrate / preset for video.
-  Buildable from `state.settings.gifWidth / gifFps / gifColors /
-  gifDither` which already plumb through to FFmpeg.
+### 2. Other WebView platforms (TikTok / X / Reddit / Facebook)
+`requiredCookies` per platform in `src/lib/loginPlatforms.ts` are best-guess
+session-cookie names — confirm each real login lands the expected cookie and
+the `onNavStateChange` "ready" check fires.
 
 ---
 
-## Active S26 ADB connection
+## Key files (Download / login / save)
 
 ```
-adb-RFGL21TZWYB-vukfuD._adb-tls-connect._tcp    device
+src/lib/downloadQueue.ts     — probeUrl (detectMediaType), downloadEntry/Batch,
+                                --playlist-items, updateYtDlp, MediaStore save
+src/lib/cookies.ts           — per-domain cookies.txt merge/remove (NEW v0.7.1)
+src/lib/loginPlatforms.ts    — platform registry (NEW v0.7.1)
+src/lib/instagramScraper.ts  — anonymous /embed probe (sets mediaType)
+src/screens/DownloadScreen.tsx        — URL form + adaptive options + preview
+src/screens/PlatformLoginScreen.tsx   — generic WebView login (NEW v0.7.1)
+src/screens/CreditsScreen.tsx         — PlatformLoginsCard, YtDlpUpdateCard
+src/state/DownloadContext.tsx         — cookiesPath + connectedPlatforms hydrate
+modules/convert-x-downloader/android/.../ConvertXDownloaderModule.kt
+                              — Kotlin: probe/download/saveToGallery/updateYtDlp
 ```
 
-If it shows offline on reconnect, the user re-enables wireless
-debugging on the phone (Settings → Developer options → Wireless
-debugging) and the mDNS entry returns automatically — no re-pair.
+The Kotlin native module is unchanged since v0.7.0 (v0.7.1 is JS-only).
+youtubedl-android 0.18.1 internals confirmed against the AAR bytecode: prefs
+file `youtubedl-android`, keys `dlpVersion`/`dlpVersionName`, `updateYoutubeDL`
+returns an `UpdateStatus` enum.
 
 ---
 
-## Environment
+## Device / environment
 
+- S26 reconnect + ADB quirks: see the `s26-wireless-adb-reconnect` memory.
 - Java: `C:\Program Files\Android\openjdk\jdk-21.0.8`
 - Android SDK: `C:\Users\cedri\AppData\Local\Android\Sdk`
-- Local Gradle release build fails (CMake 260-char Windows path limit).
-  Use the CI release path — `git push --follow-tags` and `gh run watch`.
