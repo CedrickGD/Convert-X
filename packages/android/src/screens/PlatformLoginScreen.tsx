@@ -2,7 +2,7 @@ import CookieManager from '@react-native-cookies/cookies';
 import { RouteProp, useNavigation, useRoute } from '@react-navigation/native';
 import { NativeStackNavigationProp } from '@react-navigation/native-stack';
 import { CheckCircle2, X } from 'lucide-react-native';
-import React, { useCallback, useRef, useState } from 'react';
+import React, { useCallback, useEffect, useRef, useState } from 'react';
 import { ActivityIndicator, Pressable, StyleSheet, Text, View } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { WebView, WebViewNavigation } from 'react-native-webview';
@@ -38,10 +38,30 @@ export function PlatformLoginScreen() {
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [done, setDone] = useState(false);
+  // Gate the WebView until the previous session is wiped — otherwise it
+  // auto-continues as the last account (esp. via Google), so you can never
+  // switch accounts. Clearing the WebView cookie store here forces a fresh
+  // sign-in every time. Downloads are unaffected (they read cookies.txt,
+  // which this does NOT touch).
+  const [ready, setReady] = useState(false);
   const [status, setStatus] = useState(
-    platform ? `Sign in to ${platform.label}.` : 'Unknown platform.'
+    platform ? 'Preparing a fresh sign-in…' : 'Unknown platform.'
   );
   const sniffedRef = useRef(false);
+
+  useEffect(() => {
+    let active = true;
+    CookieManager.clearAll(true)
+      .catch(() => {})
+      .finally(() => {
+        if (!active) return;
+        setReady(true);
+        if (platform) setStatus(`Sign in to ${platform.label}.`);
+      });
+    return () => {
+      active = false;
+    };
+  }, [platform]);
 
   const finish = useCallback(
     async (cookieMap: Record<string, string>) => {
@@ -127,7 +147,7 @@ export function PlatformLoginScreen() {
         )}
       </View>
 
-      {platform ? (
+      {platform && ready ? (
         <WebView
           source={{ uri: platform.loginUrl }}
           style={{ flex: 1 }}
@@ -146,6 +166,10 @@ export function PlatformLoginScreen() {
           javaScriptEnabled
           incognito={false}
         />
+      ) : platform ? (
+        <View style={styles.emptyBody}>
+          <ActivityIndicator size="large" color={theme.accent.primary} />
+        </View>
       ) : (
         <View style={styles.emptyBody}>
           <Text style={[typography.body, { color: theme.text.muted, textAlign: 'center' }]}>
