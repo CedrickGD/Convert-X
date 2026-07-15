@@ -108,6 +108,8 @@ export async function probeInstagramAnonymous(url: string): Promise<ProbeResult>
     id: `${shortcode}-0`,
     title: `Instagram-${shortcode}`,
     thumbnail: imageMatch ? decodeHtmlEntities(imageMatch[1]) : undefined,
+    // A <video> tag means a reel/video post; otherwise it's a photo.
+    mediaType: videoMatch ? 'video' : 'image',
     webpageUrl: `https://www.instagram.com/p/${shortcode}/`,
     directUrl,
   };

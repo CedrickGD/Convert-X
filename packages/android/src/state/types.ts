@@ -159,6 +159,9 @@ export type DownloadSettings = {
   spotifyClientId: string;
   spotifyClientSecret: string;
   cookiesPath: string;
+  /** Keys (see lib/loginPlatforms) of platforms the user has signed into
+   *  via the in-app WebView. Drives the "Connected" state in Credits. */
+  connectedPlatforms: string[];
 };
 
 export const DOWNLOAD_DEFAULTS: DownloadSettings = {
@@ -169,4 +172,5 @@ export const DOWNLOAD_DEFAULTS: DownloadSettings = {
   spotifyClientId: '',
   spotifyClientSecret: '',
   cookiesPath: '',
+  connectedPlatforms: [],
 };

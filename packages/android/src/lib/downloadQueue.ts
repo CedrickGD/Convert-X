@@ -25,11 +25,18 @@ function currentFreshnessStamp(): string {
   return `${now.getFullYear()}-${now.getMonth() + 1}`;
 }
 
+/** What the probe determined a downloadable item actually is. Drives the
+ *  adaptive options UI (an image post must not offer a "video/audio"
+ *  choice) and the per-item download strategy. */
+export type DownloadMediaType = 'video' | 'audio' | 'image';
+
 export type DownloadEntry = {
   id: string;
   title: string;
   thumbnail?: string;
   duration?: number;
+  /** Detected content type. Absent = unknown (treated as video). */
+  mediaType?: DownloadMediaType;
   webpageUrl: string;
   /** 1-based playlist position, set for carousel/story children that have
    *  no URL of their own (webpageUrl is the parent post). Downloads pass
@@ -112,6 +119,33 @@ export async function runFirstLaunchYtDlpUpdate(): Promise<void> {
   }
 }
 
+const IMAGE_EXTS = ['jpg', 'jpeg', 'png', 'webp', 'heic', 'heif', 'bmp', 'tiff', 'avif', 'gif'];
+const AUDIO_CONTAINERS = ['mp3', 'm4a', 'aac', 'wav', 'flac', 'opus', 'ogg', 'vorbis', 'wma'];
+
+/**
+ * Classify a yt-dlp info entry as video / audio / image. Used to drive the
+ * adaptive options UI and per-item download strategy. yt-dlp reports
+ * `vcodec`/`acodec` = "none" (and no duration) for still images; audio-only
+ * sources (SoundCloud, Bandcamp) have an acodec but no vcodec.
+ */
+function detectMediaType(e: Record<string, unknown>): DownloadMediaType {
+  const ext = String(e.ext ?? '').toLowerCase();
+  const vcodec = String(e.vcodec ?? '').toLowerCase();
+  const acodec = String(e.acodec ?? '').toLowerCase();
+  const hasVideo = vcodec !== '' && vcodec !== 'none';
+  const hasAudio = acodec !== '' && acodec !== 'none';
+  const hasDuration = typeof e.duration === 'number' && (e.duration as number) > 0;
+
+  if (hasVideo) return 'video';
+  if (IMAGE_EXTS.includes(ext)) return 'image';
+  if (hasAudio || hasDuration) return 'audio';
+  // No video codec, not a known image ext, no audio track, no timeline —
+  // this is how yt-dlp presents a still image (vcodec/acodec both "none").
+  if (vcodec === 'none' && acodec === 'none') return 'image';
+  // Genuinely unknown → let the video format ladder try.
+  return 'video';
+}
+
 export async function probeUrl(
   url: string,
   opts?: {
@@ -185,6 +219,7 @@ export async function probeUrl(
         title: String(e.title ?? 'Untitled'),
         thumbnail: typeof e.thumbnail === 'string' ? e.thumbnail : undefined,
         duration: typeof e.duration === 'number' ? e.duration : undefined,
+        mediaType: detectMediaType(e),
         webpageUrl: selfContained ? ownUrl : parentUrl,
         playlistIndex: selfContained
           ? undefined
@@ -194,16 +229,14 @@ export async function probeUrl(
       });
     });
   } else {
+    const single = raw as Record<string, unknown>;
     entries.push({
-      id: String((raw as Record<string, unknown>).id ?? Date.now()),
-      title: String((raw as Record<string, unknown>).title ?? 'Untitled'),
-      thumbnail: typeof (raw as Record<string, unknown>).thumbnail === 'string'
-        ? ((raw as Record<string, unknown>).thumbnail as string)
-        : undefined,
-      duration: typeof (raw as Record<string, unknown>).duration === 'number'
-        ? ((raw as Record<string, unknown>).duration as number)
-        : undefined,
-      webpageUrl: String((raw as Record<string, unknown>).url ?? url),
+      id: String(single.id ?? Date.now()),
+      title: String(single.title ?? 'Untitled'),
+      thumbnail: typeof single.thumbnail === 'string' ? single.thumbnail : undefined,
+      duration: typeof single.duration === 'number' ? single.duration : undefined,
+      mediaType: detectMediaType(single),
+      webpageUrl: String(single.url ?? url),
     });
   }
 
@@ -312,24 +345,46 @@ export async function downloadEntry(opts: {
   inflight = { sessionId: opts.sessionId, cancel: () => Downloader.cancel(opts.sessionId) };
 
   try {
+    // Per-item strategy keys off the detected media type so the UI's
+    // video/audio toggle can't produce an impossible request:
+    //   - image  → no `-f` selector at all (a video selector matches
+    //              nothing on a photo and yt-dlp would error)
+    //   - audio source (SoundCloud track) → always extract audio, even if
+    //              the user left the toggle on "Video"
+    //   - video  → honor the user's video/audio choice
+    const kind = opts.entry.mediaType ?? 'video';
+    const audioOnly = kind === 'image' ? false : kind === 'audio' ? true : opts.audioOnly;
+
     // Resolve the format selector here so the same logic produces the
     // string we send to yt-dlp regardless of audio/video routing. The
     // native side just forwards `format` as the literal `-f` argument.
-    const formatString = opts.audioOnly
-      ? null
-      : opts.format && opts.format !== 'best'
-      ? opts.format
-      : buildVideoFormat(opts.quality);
+    const formatString =
+      kind === 'image'
+        ? null
+        : audioOnly
+        ? null
+        : opts.format && opts.format !== 'best'
+        ? opts.format
+        : buildVideoFormat(opts.quality);
+
+    // When we FORCE audio on an audio-only source, the user's `format` may
+    // still hold a video container (mp4/webm) — never hand that to
+    // --audio-format. Fall back to mp3 unless it's a real audio container.
+    const audioFormat = audioOnly
+      ? opts.format && AUDIO_CONTAINERS.includes(opts.format.toLowerCase())
+        ? opts.format
+        : 'mp3'
+      : undefined;
 
     const result = await Downloader.download(opts.sessionId, {
       url: opts.entry.webpageUrl,
       outputPath: outputTemplate,
-      audioOnly: opts.audioOnly,
-      audioFormat: opts.audioOnly ? opts.format ?? 'mp3' : undefined,
+      audioOnly,
+      audioFormat,
       format: formatString ?? undefined,
       // Quality is now folded into formatString above — keep it for the
       // native side's audio-quality option but otherwise unused.
-      quality: opts.audioOnly ? opts.quality ?? undefined : undefined,
+      quality: audioOnly ? opts.quality ?? undefined : undefined,
       playlistItems:
         opts.entry.playlistIndex != null ? String(opts.entry.playlistIndex) : undefined,
       cookies: opts.cookies,

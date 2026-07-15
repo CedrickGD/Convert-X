@@ -49,6 +49,7 @@ export type Theme = {
   };
   status: {
     success: string;
+    successDim: string;
     warning: string;
     error: string;
     errorDim: string;
@@ -97,6 +98,7 @@ export const DARK_THEME: Theme = {
   },
   status: {
     success: '#22c55e',
+    successDim: 'rgba(34, 197, 94, 0.12)',
     warning: '#f59e0b',
     error: '#ef4444',
     errorDim: 'rgba(239, 68, 68, 0.1)',
@@ -143,6 +145,7 @@ export const LIGHT_THEME: Theme = {
   },
   status: {
     success: '#16a34a',
+    successDim: 'rgba(22, 163, 74, 0.1)',
     warning: '#d97706',
     error: '#dc2626',
     errorDim: 'rgba(220, 38, 38, 0.08)',

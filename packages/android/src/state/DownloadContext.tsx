@@ -27,6 +27,7 @@ function persistableFrom(s: DownloadSettings) {
     spotifyClientId: s.spotifyClientId,
     spotifyClientSecret: s.spotifyClientSecret,
     cookiesPath: s.cookiesPath,
+    connectedPlatforms: s.connectedPlatforms,
     category: s.category,
     format: s.format,
     quality: s.quality,
@@ -128,6 +129,9 @@ export function DownloadProvider({ children }: { children: React.ReactNode }) {
               fallback && fallback.exists ? canonical.replace(/^file:\/\//, '') : '';
           }
         }
+        // No cookie file → no platform is really connected; don't show
+        // stale "Connected" chips for logins whose cookies are gone.
+        if (!patch.cookiesPath) patch.connectedPlatforms = [];
         if (Object.keys(patch).length > 0) dispatch({ type: 'updateSettings', patch });
       } catch {
         // ignore — fall back to defaults
@@ -147,6 +151,7 @@ export function DownloadProvider({ children }: { children: React.ReactNode }) {
     state.settings.spotifyClientId,
     state.settings.spotifyClientSecret,
     state.settings.cookiesPath,
+    state.settings.connectedPlatforms,
     state.settings.category,
     state.settings.format,
     state.settings.quality,

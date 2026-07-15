@@ -8,6 +8,7 @@
 export type RootStackParamList = {
   Root: undefined;
   StyleGuide: undefined;
-  InstagramLogin: undefined;
+  /** platform = a key from lib/loginPlatforms (instagram, tiktok, …). */
+  PlatformLogin: { platform: string };
   History: undefined;
 };

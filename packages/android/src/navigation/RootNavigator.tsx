@@ -2,7 +2,7 @@ import { createNativeStackNavigator } from '@react-navigation/native-stack';
 import React from 'react';
 
 import { HistoryScreen } from '../screens/HistoryScreen';
-import { InstagramLoginScreen } from '../screens/InstagramLoginScreen';
+import { PlatformLoginScreen } from '../screens/PlatformLoginScreen';
 import { ModeRouter } from './ModeRouter';
 import { RootStackParamList } from './types';
 
@@ -37,8 +37,8 @@ export function RootNavigator() {
         />
       ) : null}
       <Stack.Screen
-        name="InstagramLogin"
-        component={InstagramLoginScreen}
+        name="PlatformLogin"
+        component={PlatformLoginScreen}
         options={{
           presentation: 'modal',
           animation: 'slide_from_bottom',

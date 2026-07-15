@@ -1,6 +1,6 @@
 import * as DocumentPicker from 'expo-document-picker';
 import * as FileSystem from 'expo-file-system/legacy';
-import { Check, Code, Cookie, Download, Globe, Heart, Monitor, Package, RefreshCw, SwatchBook, Trash2 } from 'lucide-react-native';
+import { Check, Code, Cookie, Download, Globe, Heart, Monitor, Package, RefreshCw, SwatchBook } from 'lucide-react-native';
 // Phase 2 used a static import for the version; the in-app updater (Phase 9)
 // uses the same source of truth.
 import pkg from '../../package.json';
@@ -19,7 +19,9 @@ import {
 } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 
+import { removePlatformCookies } from '../lib/cookies';
 import { updateYtDlp } from '../lib/downloadQueue';
+import { LOGIN_PLATFORMS, LoginPlatform } from '../lib/loginPlatforms';
 import { useDownload } from '../state';
 import { checkForUpdate, downloadAndInstall, UpdateInfo } from '../lib/updater';
 import { prettyBytes } from '../lib/formats';
@@ -160,7 +162,7 @@ export function CreditsScreen() {
       <YtDlpUpdateCard />
 
       {/* Cookies — required for Instagram and other login-walled sites */}
-      <CookiesCard />
+      <PlatformLoginsCard />
 
       {/* Source */}
       <View
@@ -662,25 +664,26 @@ function YtDlpUpdateCard() {
   );
 }
 
-// ── Cookies ─────────────────────────────────────────────────────────────
-// Instagram + paywalled YouTube + private Reddit/Twitter require an
-// authenticated session. yt-dlp accepts a Netscape-format cookies.txt
-// file (exported from the user's desktop browser via "Get cookies.txt"
-// or similar extensions). We copy the picked file into app-private
-// storage on import so yt-dlp can read it after the picker URI expires.
+// ── Platform logins ─────────────────────────────────────────────────────
+// Private / age-restricted / members-only downloads need an authenticated
+// session. Most platforms can be signed into inside an embedded WebView;
+// the harvested cookies are merged into a single Netscape cookies.txt that
+// yt-dlp reads (see lib/cookies). YouTube is import-only (Google blocks
+// embedded-webview sign-in).
 
 const COOKIES_FILENAME = 'cookies.txt';
 
-function CookiesCard() {
+function PlatformLoginsCard() {
   const { theme } = useTheme();
   const navigation = useNavigation<Nav>();
   const { state, updateSettings } = useDownload();
   const [picking, setPicking] = useState(false);
+  const [busyKey, setBusyKey] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
 
-  const hasCookies = !!state.settings.cookiesPath;
+  const connected = state.settings.connectedPlatforms;
 
-  const onPick = useCallback(async () => {
+  const onImport = useCallback(async () => {
     if (picking) return;
     setError(null);
     setPicking(true);
@@ -696,13 +699,12 @@ function CookiesCard() {
       const src = result.assets[0].uri;
       const dest = `${FileSystem.documentDirectory}${COOKIES_FILENAME}`;
       const destPath = dest.replace(/^file:\/\//, '');
-      try {
-        await FileSystem.deleteAsync(dest, { idempotent: true });
-      } catch {
-        // ignore — file may not exist
-      }
+      await FileSystem.deleteAsync(dest, { idempotent: true }).catch(() => {});
       await FileSystem.copyAsync({ from: src, to: dest });
-      updateSettings({ cookiesPath: destPath });
+      // A manual import REPLACES the whole cookies.txt, so any platform we
+      // thought was connected via in-app login may no longer be in the
+      // file — clear the flags rather than show a false "Connected".
+      updateSettings({ cookiesPath: destPath, connectedPlatforms: [] });
     } catch (e) {
       setError(e instanceof Error ? e.message : String(e));
     } finally {
@@ -710,22 +712,24 @@ function CookiesCard() {
     }
   }, [picking, updateSettings]);
 
-  const onClear = useCallback(async () => {
-    const path = state.settings.cookiesPath;
-    if (!path) return;
-    try {
-      await FileSystem.deleteAsync(`file://${path}`, { idempotent: true });
-    } catch {
-      // best-effort
-    }
-    updateSettings({ cookiesPath: '' });
-  }, [state.settings.cookiesPath, updateSettings]);
-
-  const subline = error
-    ? error
-    : hasCookies
-    ? 'Cookies active. Tap Login to refresh, or trash to disable.'
-    : 'Required for Instagram. Tap Login to sign in inside the app.';
+  const onLogout = useCallback(
+    async (p: LoginPlatform) => {
+      setBusyKey(p.key);
+      try {
+        const remains = await removePlatformCookies(p.cookieDomain);
+        const nextConnected = connected.filter((k) => k !== p.key);
+        updateSettings({
+          connectedPlatforms: nextConnected,
+          cookiesPath: remains ? state.settings.cookiesPath : '',
+        });
+      } catch (e) {
+        setError(e instanceof Error ? e.message : String(e));
+      } finally {
+        setBusyKey(null);
+      }
+    },
+    [connected, state.settings.cookiesPath, updateSettings]
+  );
 
   return (
     <View
@@ -734,66 +738,99 @@ function CookiesCard() {
         { backgroundColor: theme.bg.surface, borderColor: theme.border.subtle },
       ]}
     >
-      <Text style={[styles.cardLabel, { color: theme.text.muted }]}>COOKIES</Text>
-      <View style={styles.row}>
-        <View style={[styles.iconBox, { backgroundColor: theme.accent.subtle }]}>
-          {picking ? (
-            <ActivityIndicator size="small" color={theme.accent.primary} />
-          ) : (
-            <Cookie size={18} strokeWidth={1.8} color={theme.accent.primary} />
-          )}
-        </View>
-        <View style={{ flex: 1 }}>
-          <Text style={[styles.rowTitle, { color: theme.text.primary }]}>
-            Instagram login
-          </Text>
-          <Text
+      <Text style={[styles.cardLabel, { color: theme.text.muted }]}>PLATFORM LOGINS</Text>
+      <Text style={[styles.rowSub, { color: theme.text.secondary }]}>
+        Sign in to download private, age-restricted, or members-only content. Your
+        login stays on this device.
+      </Text>
+      {error ? (
+        <Text style={[styles.rowSub, { color: theme.status.error }]} numberOfLines={2}>
+          {error}
+        </Text>
+      ) : null}
+
+      {LOGIN_PLATFORMS.map((p, i) => {
+        const isConnected = connected.includes(p.key);
+        const isBusy = busyKey === p.key || (picking && p.method === 'cookies');
+        return (
+          <View
+            key={p.key}
             style={[
-              styles.rowSub,
-              { color: error ? theme.status.error : theme.text.secondary },
-            ]}
-            numberOfLines={3}
-          >
-            {subline}
-          </Text>
-        </View>
-        {hasCookies ? (
-          <Pressable
-            onPress={onClear}
-            style={({ pressed }) => ({
-              paddingHorizontal: spacing.md,
-              paddingVertical: spacing.md,
-              borderRadius: radius.xs,
-              opacity: pressed ? 0.6 : 1,
-            })}
-          >
-            <Trash2 size={18} strokeWidth={1.8} color={theme.text.secondary} />
-          </Pressable>
-        ) : null}
-        <Pressable
-          disabled={picking}
-          onPress={() => navigation.navigate('InstagramLogin')}
-          style={({ pressed }) => ({
-            paddingHorizontal: spacing.xl,
-            paddingVertical: spacing.md,
-            borderRadius: radius.xs,
-            backgroundColor: theme.accent.primary,
-            opacity: pressed ? 0.8 : 1,
-          })}
-        >
-          <Text
-            style={[
-              typography.bodyEmph,
-              { color: theme.accent.onPrimary, fontWeight: '600' },
+              styles.row,
+              i > 0
+                ? { borderTopWidth: StyleSheet.hairlineWidth, borderTopColor: theme.border.subtle }
+                : null,
             ]}
           >
-            Login
-          </Text>
-        </Pressable>
-      </View>
-      <Pressable onPress={onPick}>
+            <View
+              style={[
+                styles.iconBox,
+                { backgroundColor: isConnected ? theme.status.successDim : theme.accent.subtle },
+              ]}
+            >
+              {isBusy ? (
+                <ActivityIndicator size="small" color={theme.accent.primary} />
+              ) : isConnected ? (
+                <Check size={18} strokeWidth={2.4} color={theme.status.success} />
+              ) : (
+                <Cookie size={18} strokeWidth={1.8} color={theme.accent.primary} />
+              )}
+            </View>
+            <View style={{ flex: 1 }}>
+              <Text style={[styles.rowTitle, { color: theme.text.primary }]}>{p.label}</Text>
+              <Text
+                style={[
+                  styles.rowSub,
+                  { color: isConnected ? theme.status.success : theme.text.muted },
+                ]}
+                numberOfLines={2}
+              >
+                {isConnected ? 'Connected' : p.blurb}
+              </Text>
+            </View>
+            {isConnected ? (
+              <Pressable
+                disabled={isBusy}
+                onPress={() => onLogout(p)}
+                style={({ pressed }) => ({
+                  paddingHorizontal: spacing.xl,
+                  paddingVertical: spacing.md,
+                  borderRadius: radius.xs,
+                  borderWidth: StyleSheet.hairlineWidth,
+                  borderColor: theme.border.subtle,
+                  opacity: pressed ? 0.7 : 1,
+                })}
+              >
+                <Text style={[typography.caption, { color: theme.text.secondary, fontWeight: '600' }]}>
+                  Log out
+                </Text>
+              </Pressable>
+            ) : (
+              <Pressable
+                disabled={isBusy}
+                onPress={() =>
+                  p.method === 'cookies' ? onImport() : navigation.navigate('PlatformLogin', { platform: p.key })
+                }
+                style={({ pressed }) => ({
+                  paddingHorizontal: spacing.xl,
+                  paddingVertical: spacing.md,
+                  borderRadius: radius.xs,
+                  backgroundColor: theme.accent.primary,
+                  opacity: pressed ? 0.8 : 1,
+                })}
+              >
+                <Text style={[typography.caption, { color: theme.accent.onPrimary, fontWeight: '600' }]}>
+                  {p.method === 'cookies' ? 'Import' : 'Log in'}
+                </Text>
+              </Pressable>
+            )}
+          </View>
+        );
+      })}
+
+      <Pressable onPress={onImport} disabled={picking}>
         <Text style={[styles.rowSub, { color: theme.text.muted, marginTop: spacing.sm }]}>
-          Or import a cookies.txt file from disk →
+          Import a cookies.txt file for another site →
         </Text>
       </Pressable>
     </View>

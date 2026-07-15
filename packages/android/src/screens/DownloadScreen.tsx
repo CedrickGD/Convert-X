@@ -1,5 +1,5 @@
 import * as Clipboard from 'expo-clipboard';
-import { ArrowDownToLine, Check, Download as DownloadIcon, Link2, Music, Share2, Video } from 'lucide-react-native';
+import { ArrowDownToLine, Check, Download as DownloadIcon, Image as ImageIcon, Link2, Music, Share2, Video } from 'lucide-react-native';
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
   ActivityIndicator,
@@ -38,7 +38,6 @@ import { radius, spacing, typography, useTheme } from '../theme';
 
 const VIDEO_QUALITIES = ['best', '1080', '720', '480', '360'];
 const AUDIO_FORMATS = ['mp3', 'm4a', 'wav', 'flac', 'opus'];
-const VIDEO_FORMATS = ['best', 'mp4', 'webm'];
 
 /**
  * Download mode — Phase 6.
@@ -306,6 +305,22 @@ export function DownloadScreen() {
   const showProgress = state.view === 'converting';
   const showDone = done !== null;
 
+  // What did the probe actually find among the SELECTED items? This drives
+  // the adaptive options: a photo post must never offer a "video/audio"
+  // choice, and an audio-only source must never offer a quality ladder.
+  const selectedKinds = useMemo(() => {
+    const src = selectedEntries.length > 0 ? selectedEntries : entries;
+    return {
+      hasVideo: src.some((e) => (e.mediaType ?? 'video') === 'video'),
+      hasAudioSource: src.some((e) => e.mediaType === 'audio'),
+      allImages: src.length > 0 && src.every((e) => e.mediaType === 'image'),
+    };
+  }, [selectedEntries, entries]);
+
+  // Photos are "saved", media is "downloaded" — small wording that makes
+  // the button match what the user actually sees on screen.
+  const actionVerb = selectedKinds.allImages ? 'Save' : 'Download';
+
   return (
     <ScrollView
       contentContainerStyle={[styles.scroll, { paddingBottom: insets.bottom + spacing.giant }]}
@@ -390,68 +405,11 @@ export function DownloadScreen() {
             </View>
           ) : null}
 
-          {/* Category + format + quality */}
-          <View
-            style={[
-              styles.card,
-              { backgroundColor: theme.bg.surface, borderColor: theme.border.subtle },
-            ]}
-          >
-            <Text style={[styles.cardLabel, { color: theme.text.muted }]}>CATEGORY</Text>
-            <View
-              style={[
-                styles.toggle,
-                { backgroundColor: theme.bg.surfaceSunken, borderColor: theme.border.subtle },
-              ]}
-            >
-              <ToggleBtn
-                icon={Video}
-                label="Video"
-                active={state.settings.category === 'video'}
-                onPress={() => download.updateSettings({ category: 'video', format: null })}
-              />
-              <ToggleBtn
-                icon={Music}
-                label="Audio"
-                active={state.settings.category === 'audio'}
-                onPress={() => download.updateSettings({ category: 'audio', format: null })}
-              />
-            </View>
+          {/* Options come AFTER the probe now — we can't know whether this
+              URL is a video, an audio track, or a photo post until yt-dlp
+              tells us, so asking "video or audio?" up front is wrong. */}
 
-            <Text style={[styles.cardLabel, { color: theme.text.muted, marginTop: spacing.md }]}>
-              FORMAT
-            </Text>
-            <View style={styles.chipRow}>
-              {(state.settings.category === 'video' ? VIDEO_FORMATS : AUDIO_FORMATS).map((f) => (
-                <Chip
-                  key={f}
-                  label={f.toUpperCase()}
-                  selected={state.settings.format === f || (state.settings.format === null && f === (state.settings.category === 'video' ? 'best' : 'mp3'))}
-                  onPress={() => download.updateSettings({ format: f })}
-                />
-              ))}
-            </View>
-
-            {state.settings.category === 'video' ? (
-              <>
-                <Text style={[styles.cardLabel, { color: theme.text.muted, marginTop: spacing.md }]}>
-                  MAX QUALITY
-                </Text>
-                <View style={styles.chipRow}>
-                  {VIDEO_QUALITIES.map((q) => (
-                    <Chip
-                      key={q}
-                      label={q === 'best' ? 'Best' : `${q}p`}
-                      selected={state.settings.quality === q}
-                      onPress={() => download.updateSettings({ quality: q })}
-                    />
-                  ))}
-                </View>
-              </>
-            ) : null}
-          </View>
-
-          {/* Probe button */}
+          {/* Find button */}
           <View style={styles.actions}>
             <Pressable
               onPress={handleProbe}
@@ -479,7 +437,7 @@ export function DownloadScreen() {
               <Text style={[styles.errorText, { color: theme.status.error }]}>{error}</Text>
               {needsLogin ? (
                 <Pressable
-                  onPress={() => navigation.navigate('InstagramLogin')}
+                  onPress={() => navigation.navigate('PlatformLogin', { platform: 'instagram' })}
                   style={({ pressed }) => [
                     styles.errorAction,
                     { backgroundColor: theme.accent.primary, opacity: pressed ? 0.85 : 1 },
@@ -632,6 +590,101 @@ export function DownloadScreen() {
             })}
           </View>
 
+          {/* Adaptive options — shaped by what the probe actually found. */}
+          {selectedEntries.length > 0 ? (
+            <View
+              style={[
+                styles.card,
+                { backgroundColor: theme.bg.surface, borderColor: theme.border.subtle },
+              ]}
+            >
+              {selectedKinds.hasVideo ? (
+                <>
+                  <Text style={[styles.cardLabel, { color: theme.text.muted }]}>
+                    DOWNLOAD AS
+                  </Text>
+                  <View
+                    style={[
+                      styles.toggle,
+                      { backgroundColor: theme.bg.surfaceSunken, borderColor: theme.border.subtle },
+                    ]}
+                  >
+                    <ToggleBtn
+                      icon={Video}
+                      label="Video"
+                      active={state.settings.category === 'video'}
+                      onPress={() => download.updateSettings({ category: 'video', format: null })}
+                    />
+                    <ToggleBtn
+                      icon={Music}
+                      label="Audio"
+                      active={state.settings.category === 'audio'}
+                      onPress={() => download.updateSettings({ category: 'audio', format: null })}
+                    />
+                  </View>
+                  {state.settings.category === 'video' ? (
+                    <>
+                      <Text style={[styles.cardLabel, { color: theme.text.muted, marginTop: spacing.md }]}>
+                        MAX QUALITY
+                      </Text>
+                      <View style={styles.chipRow}>
+                        {VIDEO_QUALITIES.map((q) => (
+                          <Chip
+                            key={q}
+                            label={q === 'best' ? 'Best' : `${q}p`}
+                            selected={state.settings.quality === q}
+                            onPress={() => download.updateSettings({ quality: q })}
+                          />
+                        ))}
+                      </View>
+                    </>
+                  ) : (
+                    <>
+                      <Text style={[styles.cardLabel, { color: theme.text.muted, marginTop: spacing.md }]}>
+                        AUDIO FORMAT
+                      </Text>
+                      <View style={styles.chipRow}>
+                        {AUDIO_FORMATS.map((f) => (
+                          <Chip
+                            key={f}
+                            label={f.toUpperCase()}
+                            selected={state.settings.format === f || (state.settings.format === null && f === 'mp3')}
+                            onPress={() => download.updateSettings({ format: f })}
+                          />
+                        ))}
+                      </View>
+                    </>
+                  )}
+                </>
+              ) : selectedKinds.hasAudioSource ? (
+                <>
+                  <Text style={[styles.cardLabel, { color: theme.text.muted }]}>
+                    AUDIO FORMAT
+                  </Text>
+                  <View style={styles.chipRow}>
+                    {AUDIO_FORMATS.map((f) => (
+                      <Chip
+                        key={f}
+                        label={f.toUpperCase()}
+                        selected={state.settings.format === f || (state.settings.format === null && f === 'mp3')}
+                        onPress={() => download.updateSettings({ format: f })}
+                      />
+                    ))}
+                  </View>
+                </>
+              ) : (
+                <View style={styles.optionsInfoRow}>
+                  <ImageIcon size={16} strokeWidth={1.8} color={theme.text.muted} />
+                  <Text style={[styles.optionsInfoText, { color: theme.text.muted }]}>
+                    {selectedEntries.length > 1
+                      ? 'Photos download at full resolution.'
+                      : 'Photo downloads at full resolution.'}
+                  </Text>
+                </View>
+              )}
+            </View>
+          ) : null}
+
           <View style={styles.actions}>
             <Pressable
               onPress={handleReset}
@@ -655,9 +708,8 @@ export function DownloadScreen() {
             >
               <DownloadIcon size={14} strokeWidth={2} color={theme.accent.onPrimary} />
               <Text style={[styles.primaryBtnText, { color: theme.accent.onPrimary }]}>
-                {selectedEntries.length > 1
-                  ? `Download ${selectedEntries.length}`
-                  : 'Download'}
+                {actionVerb}
+                {selectedEntries.length > 1 ? ` ${selectedEntries.length}` : ''}
               </Text>
             </Pressable>
           </View>
@@ -1060,6 +1112,8 @@ const styles = StyleSheet.create({
   previewBody: { flex: 1, gap: 2 },
   previewTitle: { ...typography.body },
   previewMeta: { ...typography.caption, fontVariant: ['tabular-nums'] },
+  optionsInfoRow: { flexDirection: 'row', alignItems: 'center', gap: spacing.sm },
+  optionsInfoText: { ...typography.caption, flex: 1 },
   entryRow: {
     flexDirection: 'row',
     gap: spacing.md,
