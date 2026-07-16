@@ -6,8 +6,18 @@ Snapshot of where we left off, written to drop back in with zero ramp-up.
 
 ## Current state
 
-**Latest release:** v0.7.4 (tag `v0.7.4`, CI green, installed + verified on
+**Latest release:** v0.7.5 (tag `v0.7.5`, CI green, installed + verified on
 the user's S26 Ultra SM-S948B / Android 16).
+
+v0.7.5 = two high-severity bugs an adversarial review caught in the
+v0.7.0–v0.7.4 changes: (1) `download.reset()` (fired by "Download more" /
+"Back") returned INITIAL, silently wiping settings — logins
+(connectedPlatforms), cookiesPath, and Spotify creds — with no recovery on
+next launch; now `reset` preserves `settings`. (2) The anonymous-Instagram
+probe fallback gated on the shared cookies.txt merely existing, so being
+logged into any non-IG platform broke PUBLIC Instagram downloads; now gated
+on `hasCookiesForDomain('instagram.com')`. Fix (1) verified live (download →
+"Download more" → all 5 logins still Connected).
 
 Releases: https://github.com/CedrickGD/Convert-X/releases
 Release flow: bump (`node scripts/bump-version.js <ver>`) → commit to `main`
