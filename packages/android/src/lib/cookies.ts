@@ -47,6 +47,19 @@ export async function resolveCookiesPath(): Promise<string | undefined> {
   return undefined;
 }
 
+/**
+ * Does cookies.txt hold cookies for a specific domain (e.g. "instagram.com")?
+ * The file is shared across every platform, so "a cookie file exists" does
+ * NOT mean "logged into this platform" — probe gates that need per-platform
+ * auth (the anonymous-Instagram fallback) must check the domain, or a user
+ * logged into an unrelated site (YouTube) loses the anonymous path.
+ */
+export async function hasCookiesForDomain(cookieDomain: string): Promise<boolean> {
+  const base = baseDomain(cookieDomain);
+  const lines = await readLines();
+  return lines.some((l) => lineBelongsTo(l, base));
+}
+
 async function readLines(): Promise<string[]> {
   try {
     const txt = await FileSystem.readAsStringAsync(COOKIES_FILE);

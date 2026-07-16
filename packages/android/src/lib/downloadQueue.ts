@@ -13,7 +13,7 @@ import AsyncStorage from '@react-native-async-storage/async-storage';
 import * as FileSystem from 'expo-file-system/legacy';
 
 import * as Downloader from '../../modules/convert-x-downloader/src';
-import { resolveCookiesPath } from './cookies';
+import { hasCookiesForDomain, resolveCookiesPath } from './cookies';
 import { isInstagramPostUrl, probeInstagramAnonymous } from './instagramScraper';
 
 // Keyed by yt-dlp release cadence (year.month) rather than a one-shot
@@ -164,10 +164,13 @@ export async function probeUrl(
 
   // Anonymous Instagram path. Hits the public embed endpoint that
   // snapinsta.to and similar downloaders use — no auth required for
-  // public posts. Carousels resolve all children. Skipped entirely when
-  // the user has Instagram cookies: for a private post the embed returns
-  // a login wall, and using it would mask the working cookied path.
-  if (isInstagramPostUrl(url) && !cookies) {
+  // public posts. Carousels resolve all children. Skipped only when the
+  // user has INSTAGRAM cookies specifically (a private post's embed is a
+  // login wall, so the cookied path is better). Gating on the shared
+  // cookies file's mere existence would wrongly skip this for a user
+  // logged into an unrelated platform (e.g. YouTube) — cookies.txt is
+  // one file across all platforms.
+  if (isInstagramPostUrl(url) && !(await hasCookiesForDomain('instagram.com'))) {
     try {
       return await probeInstagramAnonymous(url);
     } catch {

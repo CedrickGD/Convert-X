@@ -68,7 +68,11 @@ function reducer(state: DownloadState, action: Action): DownloadState {
     case 'updateSettings':
       return { ...state, settings: { ...state.settings, ...action.patch } };
     case 'reset':
-      return { ...INITIAL };
+      // Clear the download SESSION (files / view / url), but keep settings —
+      // "Download more" must not wipe the user's logins, cookiesPath, or
+      // Spotify credentials. Resetting settings here silently logged the
+      // user out (connectedPlatforms → []) and lost their API creds.
+      return { ...INITIAL, settings: state.settings };
     case 'beginSession':
       return {
         ...state,
