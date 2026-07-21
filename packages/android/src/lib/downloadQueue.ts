@@ -147,6 +147,22 @@ function detectMediaType(e: Record<string, unknown>): DownloadMediaType {
   return 'video';
 }
 
+/**
+ * Reduce a page URL to its host+path identity so parent/child comparison
+ * survives the query junk share links carry (?igsh=, ?si=, ?img_index=…).
+ * Query params are dropped deliberately — see the selfContained comment.
+ */
+function canonicalUrlKey(u: string): string {
+  try {
+    const parsed = new URL(u);
+    const host = parsed.hostname.toLowerCase().replace(/^(www|m|mobile)\./, '');
+    const path = parsed.pathname.replace(/\/+$/, '');
+    return `${host}${path}`;
+  } catch {
+    return u;
+  }
+}
+
 export async function probeUrl(
   url: string,
   opts?: {
@@ -218,13 +234,27 @@ export async function probeUrl(
       // TikTok, Reddit) share the parent post URL — their only usable
       // identity is the playlist position, which the download step turns
       // into --playlist-items so each child fetches its own media.
+      //
+      // Only webpage_url / original_url qualify: a full-info entry's `url`
+      // is the resolved MEDIA url (an expiring CDN link), and downloading
+      // that instead of the page bricks the format selector. An entry
+      // with neither field safely falls back to parent + --playlist-items.
       const ownUrl =
         typeof e.webpage_url === 'string' && e.webpage_url.length > 0
           ? e.webpage_url
-          : typeof e.url === 'string' && e.url.length > 0
-          ? e.url
+          : typeof e.original_url === 'string' && e.original_url.length > 0
+          ? e.original_url
           : undefined;
-      const selfContained = ownUrl !== undefined && ownUrl !== parentUrl;
+      // Compare canonical identities, not raw strings: share links carry
+      // query junk (?igsh=, ?si=, ?img_index=) that makes a carousel
+      // child's clean webpage_url differ textually from the pasted parent
+      // URL. Getting this wrong flips the child to "self-contained", so
+      // downloading "item 6" re-fetches the whole carousel and saves the
+      // wrong file. Wrongly classifying as child merely costs one extra
+      // playlist expansion, so the aggressive (query-stripping) compare
+      // is the safe direction.
+      const selfContained =
+        ownUrl !== undefined && canonicalUrlKey(ownUrl) !== canonicalUrlKey(parentUrl);
       entries.push({
         id: String(e.id ?? ownUrl ?? `${parentUrl}#${i + 1}`),
         title: String(e.title ?? 'Untitled'),
@@ -247,7 +277,15 @@ export async function probeUrl(
       thumbnail: typeof single.thumbnail === 'string' ? single.thumbnail : undefined,
       duration: typeof single.duration === 'number' ? single.duration : undefined,
       mediaType: detectMediaType(single),
-      webpageUrl: String(single.url ?? url),
+      // NEVER single.url here: when yt-dlp's probe resolves a premerged
+      // format (X, TikTok, cookied Instagram — and YouTube whenever no
+      // JS runtime is available, i.e. always on-device with 2026.06+
+      // yt-dlp), the top-level `url` is the selected format's expiring
+      // CDN link. Feeding that back into the download step routes it
+      // through the generic extractor, whose single format has no
+      // vcodec/acodec metadata, so every term of the -f chain filters
+      // it out → "Requested format is not available" on every video.
+      webpageUrl: String(single.webpage_url ?? single.original_url ?? url),
     });
   }
 
@@ -393,9 +431,15 @@ export async function downloadEntry(opts: {
       audioOnly,
       audioFormat,
       format: formatString ?? undefined,
-      // Quality is now folded into formatString above — keep it for the
-      // native side's audio-quality option but otherwise unused.
-      quality: audioOnly ? opts.quality ?? undefined : undefined,
+      // Quality is now folded into formatString above — the native side
+      // only forwards it as --audio-quality. Guard the value: the shared
+      // `quality` setting can hold a VIDEO height ("720") left over from
+      // a previous video download, and yt-dlp would pass that straight
+      // to ffmpeg as -q:a 720 (valid range 0-10), wrecking the encode.
+      quality:
+        audioOnly && opts.quality && /^(?:\d|10|\d+[kK])$/.test(opts.quality)
+          ? opts.quality
+          : undefined,
       playlistItems:
         opts.entry.playlistIndex != null ? String(opts.entry.playlistIndex) : undefined,
       cookies: opts.cookies,
