@@ -8,6 +8,15 @@
     "icon": "./assets/icon.png",
     "userInterfaceStyle": "automatic",
     "newArchEnabled": true,
+    "runtimeVersion": "0.7.5",
+    "updates": {
+      "url": "https://u.expo.dev/00000000-0000-0000-0000-000000000000"
+    },
+    "extra": {
+      "eas": {
+        "projectId": "00000000-0000-0000-0000-000000000000"
+      }
+    },
     "splash": {
       "image": "./assets/splash-icon.png",
       "resizeMode": "contain",

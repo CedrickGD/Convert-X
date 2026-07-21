@@ -4,6 +4,30 @@ Snapshot of where we left off, written to drop back in with zero ramp-up.
 
 ---
 
+## In progress: EAS Update live-iteration loop (branch claude/phone-live-convert-x-odpny6)
+
+Goal: iterate on the phone without a Metro tunnel (blocked in the Claude Code
+cloud sandbox — its egress proxy resets ngrok's tunnel protocol). Instead:
+`eas update` publishes JS to Expo's CDN over plain HTTPS; the dev client's
+**Updates** tab loads it on the phone in ~1 min.
+
+Done: `expo-updates@~29.0.19` installed; `app.json` has `runtimeVersion`
+("0.7.5", fixed string — bump on native changes), `updates.url`, and
+`extra.eas.projectId`; committed `android/` manifest wired by hand (CI never
+runs prebuild): updates ENABLED=true, EXPO_RUNTIME_VERSION via
+`@string/expo_runtime_version` (strings.xml), EXPO_UPDATE_URL, plus the
+`exp+convert-x-android` deep-link scheme. Changes derived by diffing a
+scratch `expo prebuild` against the committed project.
+
+**Blocked on:** user's Expo access token (expo.dev → Account settings →
+Access tokens). The projectId/updates URL are `00000000-…` placeholders until
+`EXPO_TOKEN=<token> npx eas-cli init` creates the real project. Then:
+substitute the real id in app.json + AndroidManifest.xml, push, re-run the
+"Build Android dev client" workflow **on this branch**, user reinstalls the
+dev APK once, and each iteration is `npx eas-cli update --branch dev`.
+
+---
+
 ## Current state
 
 **Latest release:** v0.7.5 (tag `v0.7.5`, CI green, installed + verified on
