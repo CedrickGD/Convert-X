@@ -10,12 +10,7 @@
     "newArchEnabled": true,
     "runtimeVersion": "0.7.5",
     "updates": {
-      "url": "https://u.expo.dev/00000000-0000-0000-0000-000000000000"
-    },
-    "extra": {
-      "eas": {
-        "projectId": "00000000-0000-0000-0000-000000000000"
-      }
+      "url": "https://u.expo.dev/008bdeb3-42a2-49ab-8e03-53e67edc0f2c"
     },
     "splash": {
       "image": "./assets/splash-icon.png",
@@ -38,7 +33,11 @@
       "permissions": [
         "android.permission.READ_MEDIA_IMAGES",
         "android.permission.READ_MEDIA_VIDEO",
-        "android.permission.READ_MEDIA_AUDIO"
+        "android.permission.READ_MEDIA_AUDIO",
+        "android.permission.RECORD_AUDIO",
+        "android.permission.READ_EXTERNAL_STORAGE",
+        "android.permission.WRITE_EXTERNAL_STORAGE",
+        "android.permission.READ_MEDIA_VISUAL_USER_SELECTED"
       ]
     },
     "web": {
@@ -58,6 +57,12 @@
         }
       ],
       "expo-video"
-    ]
+    ],
+    "extra": {
+      "eas": {
+        "projectId": "008bdeb3-42a2-49ab-8e03-53e67edc0f2c"
+      }
+    },
+    "owner": "isg-3332"
   }
 }
