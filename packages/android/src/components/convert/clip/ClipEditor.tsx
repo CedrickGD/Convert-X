@@ -39,8 +39,18 @@ export function ClipEditor({ file, settings, isGifTarget, onChange }: Props) {
   const handleLoad = useCallback(
     (meta: { duration: number; width: number; height: number }) => {
       setDuration(meta.duration);
+      // Trim points surviving from a longer clip would render the end
+      // handle past the track (unreachable behind overflow:hidden) and
+      // feed ffmpeg -ss/-to beyond the input — clear anything the loaded
+      // clip can't satisfy.
+      if (
+        (settings.trimEnd != null && settings.trimEnd > meta.duration) ||
+        (settings.trimStart != null && settings.trimStart >= meta.duration)
+      ) {
+        onChange({ trimStart: null, trimEnd: null });
+      }
     },
-    []
+    [settings.trimStart, settings.trimEnd, onChange]
   );
 
   const handleTime = useCallback((t: number) => {

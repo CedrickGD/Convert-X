@@ -15,6 +15,11 @@ import * as FileSystem from 'expo-file-system/legacy';
 import * as Downloader from '../../modules/convert-x-downloader/src';
 import { hasCookiesForDomain, resolveCookiesPath } from './cookies';
 import { isInstagramPostUrl, probeInstagramAnonymous } from './instagramScraper';
+import {
+  isInstagramStoryUrl,
+  probeInstagramPost,
+  probeInstagramStory,
+} from './instagramStories';
 
 // Keyed by yt-dlp release cadence (year.month) rather than a one-shot
 // boolean: extractors rot within weeks when sites change their APIs, so
@@ -61,14 +66,24 @@ export type ProbeResult = {
 };
 
 let inflight: { sessionId: string; cancel: () => void } | null = null;
+// True for the whole life of a downloadBatch call — `inflight` alone can't
+// answer "is a batch running": cancelActive() nulls it synchronously on the
+// Cancel tap while the batch loop is still winding down, which is exactly
+// the window a re-entrancy guard exists for.
+let batchActive = false;
 
 export function isDownloading(): boolean {
-  return inflight !== null;
+  return batchActive || inflight !== null;
 }
 
 export function cancelActive(): void {
   if (inflight) {
-    Downloader.cancel(inflight.sessionId);
+    // Invoke the registered closure, not Downloader.cancel directly: the
+    // direct-CDN path (Instagram scraper/stories) has no native session —
+    // its closure aborts the FileSystem transfer, and calling the native
+    // cancel with its sessionId would be a silent no-op that lets the
+    // "cancelled" download run to completion and report success.
+    inflight.cancel();
     inflight = null;
   }
 }
@@ -162,19 +177,61 @@ export async function probeUrl(
   const cookies = opts?.cookies || (await resolveCookiesPath());
   const resolvedOpts = { ...opts, cookies };
 
-  // Anonymous Instagram path. Hits the public embed endpoint that
-  // snapinsta.to and similar downloaders use — no auth required for
-  // public posts. Carousels resolve all children. Skipped only when the
-  // user has INSTAGRAM cookies specifically (a private post's embed is a
-  // login wall, so the cookied path is better). Gating on the shared
-  // cookies file's mere existence would wrongly skip this for a user
-  // logged into an unrelated platform (e.g. YouTube) — cookies.txt is
-  // one file across all platforms.
-  if (isInstagramPostUrl(url) && !(await hasCookiesForDomain('instagram.com'))) {
-    try {
-      return await probeInstagramAnonymous(url);
-    } catch {
-      // Fall through to yt-dlp.
+  // Instagram stories. yt-dlp's story extractor silently drops photo
+  // items (it only builds formats from video_versions), so a [photo,
+  // video] story would probe as just the video. The cookied JS prober
+  // hits the same reels_media API and returns EVERY item as a direct
+  // CDN entry. On any prober failure fall through to cookied yt-dlp,
+  // which still handles the video items.
+  if (isInstagramStoryUrl(url)) {
+    if (await hasCookiesForDomain('instagram.com')) {
+      try {
+        return await probeInstagramStory(url);
+      } catch (e) {
+        // Fall through to yt-dlp — but leave a trace, or a prober that
+        // rots (API shape change) silently downgrades stories to
+        // videos-only forever with nobody the wiser.
+        console.warn(
+          '[instagramStories] prober failed, falling back to yt-dlp:',
+          e instanceof Error ? e.message : String(e)
+        );
+      }
+    } else {
+      // Without login, both the JS prober and yt-dlp are hard-walled by
+      // Instagram — surface the actionable fix instead of yt-dlp's
+      // cryptic "Restricted Video: You must be 18 years old ..." tail.
+      throw new Error(
+        'Instagram stories require login — connect Instagram under Credits → Platform logins, then try again.'
+      );
+    }
+  }
+
+  // Instagram posts (/p/, /reel/, /tv/).
+  //  - Logged in: hit the cookied media-info API. Cookied yt-dlp drops
+  //    every IMAGE item (its formats come only from video_versions), so a
+  //    photo carousel would probe to nothing — the API returns all
+  //    children with photo AND video CDN URLs.
+  //  - Anonymous: the public embed endpoint (first carousel item only —
+  //    the rest are login-gated). Gating on the instagram.com domain
+  //    specifically, not the shared cookies file's existence, so a user
+  //    logged into an unrelated platform keeps the anonymous path.
+  // Both fall through to yt-dlp on failure.
+  if (isInstagramPostUrl(url)) {
+    if (await hasCookiesForDomain('instagram.com')) {
+      try {
+        return await probeInstagramPost(url);
+      } catch (e) {
+        console.warn(
+          '[instagramStories] post prober failed, falling back to yt-dlp:',
+          e instanceof Error ? e.message : String(e)
+        );
+      }
+    } else {
+      try {
+        return await probeInstagramAnonymous(url);
+      } catch {
+        // Fall through to yt-dlp.
+      }
     }
   }
 
@@ -212,6 +269,23 @@ export async function probeUrl(
 
   if (isPlaylist && Array.isArray(raw.entries)) {
     const parentUrl = String(raw.url ?? url);
+    // Share links carry tracking params (?utm_source=…, ?igsh=…, ?_t=…)
+    // that yt-dlp strips from each entry's webpage_url. Comparing raw
+    // strings would make every carousel child look "self-contained"
+    // (own URL ≠ pasted URL), so each would re-download the parent post
+    // instead of its own --playlist-items slice. Strip ONLY tracking
+    // params — the whole query must survive because for YouTube it IS
+    // the identity (watch?v=A vs watch?v=B share a path; nuking the
+    // query would demote every playlist entry to a carousel child).
+    const TRACKING = /^(utm_.*|igsh|si|_t|_r|fbclid|gclid|mc_cid|mc_eid|feature|ig_mid)$/i;
+    const canonical = (u: string) => {
+      const [path, query = ''] = u.split('#')[0].split('?');
+      const kept = query
+        .split('&')
+        .filter((kv) => kv.length > 0 && !TRACKING.test(kv.split('=')[0]))
+        .join('&');
+      return `${path.replace(/\/+$/, '')}${kept ? `?${kept}` : ''}`;
+    };
     (raw.entries as Array<Record<string, unknown>>).forEach((e, i) => {
       // An entry that carries its own distinct URL (YouTube playlist
       // videos) downloads directly. Carousel/story children (Instagram,
@@ -224,7 +298,8 @@ export async function probeUrl(
           : typeof e.url === 'string' && e.url.length > 0
           ? e.url
           : undefined;
-      const selfContained = ownUrl !== undefined && ownUrl !== parentUrl;
+      const selfContained =
+        ownUrl !== undefined && canonical(ownUrl) !== canonical(parentUrl);
       entries.push({
         id: String(e.id ?? ownUrl ?? `${parentUrl}#${i + 1}`),
         title: String(e.title ?? 'Untitled'),
@@ -241,13 +316,25 @@ export async function probeUrl(
     });
   } else {
     const single = raw as Record<string, unknown>;
+    // NEVER use yt-dlp's top-level `url` here: for sites whose best format
+    // is a single pre-merged file (TikTok, Twitter/X, cookied Instagram,
+    // SoundCloud) it's the selected format's signed, expiring CDN media
+    // URL. Re-running yt-dlp against that hits the generic extractor
+    // (unknown codecs → "Requested format is not available") or a 403
+    // once the signature lapses. webpage_url is the canonical page.
+    const pageUrl =
+      typeof single.webpage_url === 'string' && single.webpage_url.length > 0
+        ? single.webpage_url
+        : typeof single.original_url === 'string' && single.original_url.length > 0
+        ? single.original_url
+        : url;
     entries.push({
       id: String(single.id ?? Date.now()),
       title: String(single.title ?? 'Untitled'),
       thumbnail: typeof single.thumbnail === 'string' ? single.thumbnail : undefined,
       duration: typeof single.duration === 'number' ? single.duration : undefined,
       mediaType: detectMediaType(single),
-      webpageUrl: String(single.url ?? url),
+      webpageUrl: pageUrl,
     });
   }
 
@@ -271,7 +358,9 @@ export type BatchDownloadResult = {
   failed: number;
   cancelled: boolean;
   lastPublicPath?: string;
-  errors: Array<{ title: string; message: string }>;
+  /** id identifies the exact failed entry — titles are NOT unique
+   *  (carousel children share one), so retry flows must match on id. */
+  errors: Array<{ id: string; title: string; message: string }>;
 };
 
 /**
@@ -291,11 +380,21 @@ function buildVideoFormat(quality: string | null): string {
   // (because that's the highest-bitrate single stream available once the
   // pre-merged 720p mp4 stops being served). With this chain, the user
   // who picked "Video" can never get an audio-only file.
+  // The trailing bare `bv*` terms fire only when NO audio stream exists
+  // anywhere (muted Instagram stories, silent tweets) — every earlier
+  // term already claimed anything with audio, and `bv*` still requires a
+  // video codec, so the audio-only-file regression can't come back. A
+  // soundless clip downloads as-is instead of "Requested format is not
+  // available".
   if (!quality || quality === 'best') {
-    return 'best[ext=mp4][acodec!=none][vcodec!=none]/best[acodec!=none][vcodec!=none]/bv*[ext=mp4]+ba[ext=m4a]/bv*+ba';
+    return 'best[ext=mp4][acodec!=none][vcodec!=none]/best[acodec!=none][vcodec!=none]/bv*[ext=mp4]+ba[ext=m4a]/bv*+ba/bv*[ext=mp4]/bv*';
   }
+  // Capped chain: prefer the cap with audio, then ANY size with audio
+  // (`bv*+ba` — a too-strict cap must not silently produce a soundless
+  // file when the source has audio), then audio-less as the true last
+  // resort for sources with no audio stream at all.
   const h = quality;
-  return `best[height<=${h}][ext=mp4][acodec!=none][vcodec!=none]/best[height<=${h}][acodec!=none][vcodec!=none]/bv*[height<=${h}][ext=mp4]+ba[ext=m4a]/bv*[height<=${h}]+ba`;
+  return `best[height<=${h}][ext=mp4][acodec!=none][vcodec!=none]/best[height<=${h}][acodec!=none][vcodec!=none]/bv*[height<=${h}][ext=mp4]+ba[ext=m4a]/bv*[height<=${h}]+ba/bv*+ba/best[acodec!=none][vcodec!=none]/bv*[height<=${h}]/bv*`;
 }
 
 export async function downloadEntry(opts: {
@@ -330,11 +429,14 @@ export async function downloadEntry(opts: {
       : '%(title)s.%(ext)s';
   const outputTemplate = `${outDir.replace(/^file:\/\//, '')}/${nameTemplate}`;
 
-  // Direct-URL fast path. The anonymous Instagram scraper resolves
-  // each carousel child to a CDN URL — we can fetch those over plain
-  // HTTPS without involving yt-dlp at all. Saves a Python + yt-dlp
-  // round trip and works for posts that yt-dlp can't see anonymously.
-  if (opts.entry.directUrl) {
+  // Direct-URL fast path. The Instagram probers resolve each item to a
+  // CDN URL — we can fetch those over plain HTTPS without involving
+  // yt-dlp at all. Saves a Python + yt-dlp round trip and works for
+  // media yt-dlp can't see (photos especially). EXCEPT when the user
+  // asked for Audio from a video item: a raw CDN fetch can't extract
+  // audio, so fall through to yt-dlp (webpageUrl still resolves the
+  // item) and let `-x` do its job.
+  if (opts.entry.directUrl && !(opts.audioOnly && opts.entry.mediaType === 'video')) {
     return downloadDirect({
       sessionId: opts.sessionId,
       entry: opts.entry,
@@ -423,7 +525,10 @@ export async function downloadEntry(opts: {
     return { ...result, publicPath };
   } finally {
     sub.remove();
-    inflight = null;
+    // Ownership check: if a second batch somehow started (or a direct
+    // download registered) while this one wound down, don't null out ITS
+    // handle — that would make its Cancel button a no-op.
+    if (inflight?.sessionId === opts.sessionId) inflight = null;
   }
 }
 
@@ -468,49 +573,55 @@ export async function downloadBatch(opts: {
   // fresh batch isn't aborted on iteration 0. See cancelBatch().
   cancelRequested = false;
 
-  for (let i = 0; i < total; i++) {
-    if (cancelRequested) {
-      cancelRequested = false;
-      return { done, failed, cancelled: true, lastPublicPath, errors };
-    }
-    const entry = opts.entries[i];
-    opts.onItemStart?.(i, entry);
-    try {
-      const r = await downloadEntry({
-        sessionId: `${opts.sessionId}-${i}`,
-        entry,
-        audioOnly: opts.audioOnly,
-        format: opts.format,
-        quality: opts.quality,
-        spotifyClientId: opts.spotifyClientId,
-        spotifyClientSecret: opts.spotifyClientSecret,
-        cookies,
-        saveToGallery: opts.saveToGallery,
-        dedupeNames: total > 1,
-        onProgress: (pct) => {
-          // Project the per-item 0..100 into the batch 0..100 band so a
-          // 50%-complete item 2 of 4 reads as ((1 * 100) + 50) / 4 = 37.5%.
-          const overall = ((i * 100) + pct) / total;
-          opts.onProgress(Math.round(overall), i);
-        },
-      });
-      if (r.cancelled) {
+  batchActive = true;
+  try {
+    for (let i = 0; i < total; i++) {
+      if (cancelRequested) {
         cancelRequested = false;
         return { done, failed, cancelled: true, lastPublicPath, errors };
       }
-      done += 1;
-      if (r.publicPath) lastPublicPath = r.publicPath;
-      opts.onItemDone?.(entry, r);
-    } catch (e) {
-      failed += 1;
-      errors.push({
-        title: entry.title,
-        message: e instanceof Error ? e.message : String(e),
-      });
-      // Keep going — a single bad item shouldn't kill a 30-track playlist.
+      const entry = opts.entries[i];
+      opts.onItemStart?.(i, entry);
+      try {
+        const r = await downloadEntry({
+          sessionId: `${opts.sessionId}-${i}`,
+          entry,
+          audioOnly: opts.audioOnly,
+          format: opts.format,
+          quality: opts.quality,
+          spotifyClientId: opts.spotifyClientId,
+          spotifyClientSecret: opts.spotifyClientSecret,
+          cookies,
+          saveToGallery: opts.saveToGallery,
+          dedupeNames: total > 1,
+          onProgress: (pct) => {
+            // Project the per-item 0..100 into the batch 0..100 band so a
+            // 50%-complete item 2 of 4 reads as ((1 * 100) + 50) / 4 = 37.5%.
+            const overall = ((i * 100) + pct) / total;
+            opts.onProgress(Math.round(overall), i);
+          },
+        });
+        if (r.cancelled) {
+          cancelRequested = false;
+          return { done, failed, cancelled: true, lastPublicPath, errors };
+        }
+        done += 1;
+        if (r.publicPath) lastPublicPath = r.publicPath;
+        opts.onItemDone?.(entry, r);
+      } catch (e) {
+        failed += 1;
+        errors.push({
+          id: entry.id,
+          title: entry.title,
+          message: e instanceof Error ? e.message : String(e),
+        });
+        // Keep going — a single bad item shouldn't kill a 30-track playlist.
+      }
     }
+    return { done, failed, cancelled: false, lastPublicPath, errors };
+  } finally {
+    batchActive = false;
   }
-  return { done, failed, cancelled: false, lastPublicPath, errors };
 }
 
 // Batch-level cancel: cancel the active item AND skip the rest.
@@ -545,9 +656,11 @@ async function downloadDirect(opts: {
   // Hold the resumable so a Cancel tap can actually abort the transfer (not
   // just skip to the next item) and we can clean up the partial on abort.
   let dl: ReturnType<typeof FileSystem.createDownloadResumable> | null = null;
+  let cancelled = false;
   inflight = {
     sessionId: opts.sessionId,
     cancel: () => {
+      cancelled = true;
       dl?.cancelAsync().catch(() => {});
     },
   };
@@ -563,8 +676,23 @@ async function downloadDirect(opts: {
       }
     );
     const result = await dl.downloadAsync();
+    if (cancelled) {
+      // cancelAsync resolves the promise without a uri — report a real
+      // cancellation so the batch stops instead of logging a failure.
+      await FileSystem.deleteAsync(fileUri, { idempotent: true }).catch(() => {});
+      return { cancelled: true };
+    }
     if (!result?.uri) {
       throw new Error('Direct download produced no file.');
+    }
+    // downloadAsync resolves (not rejects) on HTTP errors and writes the
+    // error body to the target file — without this check a 403 from an
+    // expired signed CDN URL would be saved to the gallery as "media"
+    // and reported as a success.
+    if (typeof result.status === 'number' && (result.status < 200 || result.status >= 300)) {
+      throw new Error(
+        `Media URL expired or blocked (HTTP ${result.status}) — tap Find again to refresh it.`
+      );
     }
 
     let publicPath: string | undefined;
@@ -583,6 +711,6 @@ async function downloadDirect(opts: {
     await FileSystem.deleteAsync(fileUri, { idempotent: true }).catch(() => {});
     throw e;
   } finally {
-    inflight = null;
+    if (inflight?.sessionId === opts.sessionId) inflight = null;
   }
 }

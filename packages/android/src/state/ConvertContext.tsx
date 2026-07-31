@@ -53,6 +53,19 @@ type Action =
   | { type: 'finishSession'; sessionId: string }
   | { type: 'cancelSession' };
 
+/** Trim survives file-set changes only while the ClipEditor-bound (first)
+ *  video is still the same file; otherwise it would silently apply to a
+ *  different clip. */
+function clearTrimIfVideoChanged(
+  state: ConvertState,
+  nextFiles: FileEntry[]
+): ConvertState['settings'] {
+  const prevVideo = state.files.find((f) => f.mediaType === 'video')?.id ?? null;
+  const nextVideo = nextFiles.find((f) => f.mediaType === 'video')?.id ?? null;
+  if (prevVideo === nextVideo) return state.settings;
+  return { ...state.settings, trimStart: null, trimEnd: null };
+}
+
 function reducer(state: ConvertState, action: Action): ConvertState {
   switch (action.type) {
     case 'addFiles': {
@@ -61,6 +74,12 @@ function reducer(state: ConvertState, action: Action): ConvertState {
         ...state,
         files: next,
         view: next.length > 0 ? 'ready' : 'idle',
+        // Trim points were set against the ClipEditor-bound video — when
+        // the file-set change swaps WHICH video that is, they'd silently
+        // apply to a different clip (trimEnd=80s inherited by a 30s clip
+        // → empty output). Keep them while the bound video is unchanged
+        // (e.g. appending an image to the batch).
+        settings: clearTrimIfVideoChanged(state, next),
       };
     }
     case 'removeFile': {
@@ -69,6 +88,7 @@ function reducer(state: ConvertState, action: Action): ConvertState {
         ...state,
         files: next,
         view: next.length === 0 ? 'idle' : state.view,
+        settings: clearTrimIfVideoChanged(state, next),
       };
     }
     case 'updateSettings':

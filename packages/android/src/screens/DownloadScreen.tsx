@@ -24,6 +24,7 @@ import {
   cancelBatch,
   DownloadEntry,
   downloadBatch,
+  isDownloading,
   probeUrl,
   updateYtDlp,
 } from '../lib/downloadQueue';
@@ -57,11 +58,14 @@ export function DownloadScreen() {
   const [progress, setProgress] = useState(0);
   const [currentItemIdx, setCurrentItemIdx] = useState(0);
   const [currentItemTitle, setCurrentItemTitle] = useState<string | null>(null);
+  // Size of the batch actually running — a retry re-runs only the failed
+  // subset, so "Item X of N" must not read the original selection's size.
+  const [activeBatchLen, setActiveBatchLen] = useState(0);
   const [done, setDone] = useState<{
     publicPath?: string;
     completed: number;
     total: number;
-    errors: Array<{ title: string; message: string }>;
+    errors: Array<{ id: string; title: string; message: string }>;
   } | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [results, setResults] = useState<{ name: string; uri: string }[]>([]);
@@ -77,7 +81,11 @@ export function DownloadScreen() {
   const needsLogin =
     !!error &&
     site === 'Instagram' &&
-    /login required|cookies|empty media response|restricted|private|rate.?limit/i.test(error);
+    // "require login" covers probeUrl's own stories-need-login message —
+    // that error IS a login problem, so it must surface the one-tap fix.
+    /login required|require login|cookies|empty media response|restricted|private|rate.?limit/i.test(
+      error
+    );
   const suggestsEngineUpdate =
     !!error && /yt-dlp -U|latest version|unsupported url|Confirm you are on/i.test(error);
 
@@ -195,6 +203,11 @@ export function DownloadScreen() {
   const runDownload = useCallback(
     async (toDownload: DownloadEntry[]) => {
       if (toDownload.length === 0) return;
+      // Cancel flips the view back to the preview while the native yt-dlp
+      // process is still dying — without this guard a quick re-tap starts
+      // a second concurrent batch fighting over the shared cancel state.
+      if (isDownloading()) return;
+      setActiveBatchLen(toDownload.length);
       setError(null);
       setDone(null);
       setResults([]);
@@ -262,10 +275,12 @@ export function DownloadScreen() {
     [runDownload, selectedEntries]
   );
 
-  // Re-run only the items that failed last time, preserving prior successes.
+  // Re-run only the items that failed last time, preserving prior
+  // successes. Match on entry id — carousel children share one title, so
+  // a title match would re-download (and re-save) every succeeded sibling.
   const handleRetryFailed = useCallback(() => {
-    const failedTitles = new Set((done?.errors ?? []).map((e) => e.title));
-    const failed = entries.filter((e) => failedTitles.has(e.title));
+    const failedIds = new Set((done?.errors ?? []).map((e) => e.id));
+    const failed = entries.filter((e) => failedIds.has(e.id));
     if (failed.length > 0) runDownload(failed);
   }, [done, entries, runDownload]);
 
@@ -709,8 +724,8 @@ export function DownloadScreen() {
           <ProgressBar
             progress={progress}
             label={
-              selectedEntries.length > 1
-                ? `Item ${currentItemIdx + 1} of ${selectedEntries.length}`
+              activeBatchLen > 1
+                ? `Item ${currentItemIdx + 1} of ${activeBatchLen}`
                 : 'Downloading…'
             }
           />

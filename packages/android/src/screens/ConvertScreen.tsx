@@ -1,6 +1,6 @@
 import * as DocumentPicker from 'expo-document-picker';
 import * as ImagePicker from 'expo-image-picker';
-import React, { useCallback, useMemo } from 'react';
+import React, { useCallback, useMemo, useRef } from 'react';
 import { Pressable, ScrollView, StyleSheet, Text, View } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 
@@ -158,6 +158,10 @@ export function ConvertScreen() {
 
   const isBatch = state.files.length > 1;
   const single = state.files[0];
+  const firstVideo = state.files.find((f) => f.mediaType === 'video');
+  // stripAudio as it was before the user tapped the GIF chip — restored
+  // when they switch to a non-GIF format. null = not currently stashed.
+  const preGifStripAudio = useRef<boolean | null>(null);
   const overallProgress = useMemo(() => {
     const active = state.files.filter((f) => f.status !== 'skipped' && f.status !== 'error');
     if (active.length === 0) return 0;
@@ -253,20 +257,31 @@ export function ConvertScreen() {
             selectedFormat={state.settings.format}
             onSelect={(key) => {
               // GIF has no audio track — auto-strip so the Sound toggle
-              // and the buildArgs path both reflect that. We restore the
-              // previous stripAudio choice if the user switches away.
-              const patch: Partial<typeof state.settings> =
-                key === 'gif'
-                  ? { format: key, stripAudio: true }
-                  : { format: key };
-              convert.updateSettings(patch);
+              // and the buildArgs path both reflect that. Stash the
+              // pre-GIF choice and restore it on the way out, or peeking
+              // at the GIF chip would permanently mute video exports.
+              const wasGif = state.settings.format === 'gif';
+              if (key === 'gif') {
+                if (!wasGif) preGifStripAudio.current = state.settings.stripAudio;
+                convert.updateSettings({ format: key, stripAudio: true });
+              } else {
+                const patch: Partial<typeof state.settings> = { format: key };
+                if (wasGif && preGifStripAudio.current !== null) {
+                  patch.stripAudio = preGifStripAudio.current;
+                  preGifStripAudio.current = null;
+                }
+                convert.updateSettings(patch);
+              }
             }}
           />
 
-          {/* Clip editor — preview + timeline trim — for video sources. */}
-          {sourceTypes.has('video') && single ? (
+          {/* Clip editor — preview + timeline trim — for video sources.
+              Bind the first VIDEO file, not files[0]: a mixed batch like
+              [photo.jpg, clip.mp4] would mount the image URI in the video
+              player and show a dead editor. */}
+          {firstVideo ? (
             <ClipEditor
-              file={single}
+              file={firstVideo}
               settings={state.settings}
               isGifTarget={state.settings.format === 'gif'}
               onChange={(patch) => convert.updateSettings(patch)}

@@ -77,6 +77,47 @@ async function readLines(): Promise<string[]> {
 }
 
 /**
+ * Build a `Cookie:` request-header value from cookies.txt for one domain.
+ * Used by JS-side API probers (Instagram stories) that fetch() private
+ * endpoints directly instead of going through yt-dlp — the header is
+ * assembled from the same on-disk source of truth yt-dlp reads, so "works
+ * in downloads" and "works in the JS prober" can never disagree.
+ * Returns undefined when no cookies exist for the domain.
+ */
+export async function getCookieHeaderForDomain(
+  cookieDomain: string
+): Promise<string | undefined> {
+  const base = baseDomain(cookieDomain);
+  const pairs: string[] = [];
+  for (const line of await readLines()) {
+    if (!lineBelongsTo(line, base)) continue;
+    // domain \t includeSubdomains \t path \t secure \t expiry \t name \t value
+    const fields = line.split('\t');
+    const name = fields[5]?.trim();
+    const value = fields[6]?.trim();
+    if (name && value !== undefined) pairs.push(`${name}=${value}`);
+  }
+  return pairs.length > 0 ? pairs.join('; ') : undefined;
+}
+
+/**
+ * Read a single cookie's value for a domain from cookies.txt (e.g. the
+ * csrftoken Instagram's web API wants echoed in an X-CSRFToken header).
+ */
+export async function getCookieValue(
+  cookieDomain: string,
+  name: string
+): Promise<string | undefined> {
+  const base = baseDomain(cookieDomain);
+  for (const line of await readLines()) {
+    if (!lineBelongsTo(line, base)) continue;
+    const fields = line.split('\t');
+    if (fields[5]?.trim() === name) return fields[6]?.trim();
+  }
+  return undefined;
+}
+
+/**
  * Write `cookieMap` for `cookieDomain` into cookies.txt, replacing only
  * that domain's existing lines. Returns the bare cookies path.
  */

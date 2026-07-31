@@ -91,9 +91,19 @@ export async function getHistory(): Promise<HistoryEntry[]> {
       return info && info.exists ? e : null;
     })
   );
-  const alive = checked.filter((e): e is HistoryEntry => e !== null);
-  if (alive.length !== list.length) await write(alive);
-  return alive;
+  const dead = new Set(
+    checked.map((e, i) => (e === null ? list[i].id : null)).filter((id): id is string => id !== null)
+  );
+  if (dead.size > 0) {
+    // Recompute from the LIVE cache, not the snapshot taken before the N
+    // async existence checks — an addHistoryEntry that landed mid-check
+    // would otherwise be clobbered out of both cache and AsyncStorage.
+    const current = cache ?? list;
+    const alive = current.filter((e) => !dead.has(e.id));
+    await write(alive);
+    return alive;
+  }
+  return list;
 }
 
 export async function removeHistoryEntry(id: string): Promise<void> {

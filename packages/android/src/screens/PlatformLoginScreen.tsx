@@ -48,6 +48,7 @@ export function PlatformLoginScreen() {
     platform ? 'Preparing a fresh sign-in…' : 'Unknown platform.'
   );
   const sniffedRef = useRef(false);
+  const goBackTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   useEffect(() => {
     let active = true;
@@ -60,6 +61,10 @@ export function PlatformLoginScreen() {
       });
     return () => {
       active = false;
+      // The user can swipe-dismiss this modal during the 750ms "Signed in"
+      // window; without this the armed goBack still fires against the root
+      // navigator and pops whatever screen is on top by then.
+      if (goBackTimer.current) clearTimeout(goBackTimer.current);
     };
   }, [platform]);
 
@@ -78,7 +83,10 @@ export function PlatformLoginScreen() {
         setBusy(false);
         setDone(true);
         setStatus(`Signed in to ${platform.label}.`);
-        setTimeout(() => navigation.goBack(), 750);
+        goBackTimer.current = setTimeout(() => {
+          goBackTimer.current = null;
+          if (navigation.isFocused()) navigation.goBack();
+        }, 750);
       } catch (e) {
         sniffedRef.current = false;
         setError(e instanceof Error ? e.message : String(e));

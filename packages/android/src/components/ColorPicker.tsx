@@ -52,24 +52,72 @@ export function ColorPicker({ value, onPreview, onCommit }: Props) {
   // parent echoing our own value back so the sync effect doesn't fight a drag.
   const lastHex = useRef<string>(value);
 
+  // Preview throttle (~30 Hz, trailing edge). Every preview re-themes the
+  // whole app — all four mode screens stay mounted and re-render per emit —
+  // so forwarding raw gesture-event rate (60-120 Hz) drops frames on the
+  // JS thread for no visible gain. The commit path stays unthrottled.
+  const PREVIEW_MS = 33;
+  const previewTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const pendingPreview = useRef<string | null>(null);
+  const lastPreviewAt = useRef(0);
+  // The hex most recently HANDED to the parent (throttle can hold newer
+  // ones back) — the sync effect needs it to recognize stale echoes.
+  const lastDelivered = useRef<string>(value);
+
+  useEffect(
+    () => () => {
+      if (previewTimer.current) clearTimeout(previewTimer.current);
+    },
+    []
+  );
+
   const emit = useCallback(
     (h: number, s: number, v: number, commit: boolean) => {
       const hex = hsvToHex(h, s, v);
       if (commit) {
+        if (previewTimer.current) {
+          clearTimeout(previewTimer.current);
+          previewTimer.current = null;
+        }
+        pendingPreview.current = null;
         lastHex.current = hex;
+        lastDelivered.current = hex;
         onCommit(hex);
       } else if (hex !== lastHex.current) {
         lastHex.current = hex;
-        onPreview(hex);
+        const now = Date.now();
+        if (now - lastPreviewAt.current >= PREVIEW_MS) {
+          lastPreviewAt.current = now;
+          lastDelivered.current = hex;
+          onPreview(hex);
+        } else {
+          pendingPreview.current = hex;
+          if (!previewTimer.current) {
+            previewTimer.current = setTimeout(() => {
+              previewTimer.current = null;
+              if (pendingPreview.current !== null) {
+                lastPreviewAt.current = Date.now();
+                const hexToSend = pendingPreview.current;
+                pendingPreview.current = null;
+                lastDelivered.current = hexToSend;
+                onPreview(hexToSend);
+              }
+            }, PREVIEW_MS);
+          }
+        }
       }
     },
     [onCommit, onPreview]
   );
 
   // External value change (preset tap, reset, typed hex) → move the thumbs.
-  // Skip our own preview echoes (value === lastHex) to avoid a feedback loop.
+  // Skip our own preview echoes (value === lastHex) to avoid a feedback
+  // loop. lastDelivered matters because the throttle advances lastHex
+  // AHEAD of what the parent has actually received — an echo of the
+  // previously delivered hex mid-drag must not snap the thumbs back.
   useEffect(() => {
-    if (value === lastHex.current) return;
+    if (value === lastHex.current || value === lastDelivered.current) return;
+    if (pendingPreview.current !== null) return; // mid-drag, echoes are stale
     const hsv = hexToHsv(value);
     if (!hsv) return;
     hue.value = hsv.h;

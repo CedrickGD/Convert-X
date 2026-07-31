@@ -6,18 +6,48 @@ Snapshot of where we left off, written to drop back in with zero ramp-up.
 
 ## Current state
 
-**Latest release:** v0.7.5 (tag `v0.7.5`, CI green, installed + verified on
-the user's S26 Ultra SM-S948B / Android 16).
+**Latest release:** v0.7.6 (tag `v0.7.6`, verified live via Metro dev build
+on the user's S26 Ultra SM-S948B / Android 16 before tagging).
 
-v0.7.5 = two high-severity bugs an adversarial review caught in the
-v0.7.0–v0.7.4 changes: (1) `download.reset()` (fired by "Download more" /
-"Back") returned INITIAL, silently wiping settings — logins
-(connectedPlatforms), cookiesPath, and Spotify creds — with no recovery on
-next launch; now `reset` preserves `settings`. (2) The anonymous-Instagram
-probe fallback gated on the shared cookies.txt merely existing, so being
-logged into any non-IG platform broke PUBLIC Instagram downloads; now gated
-on `hasCookiesForDomain('instagram.com')`. Fix (1) verified live (download →
-"Download more" → all 5 logins still Connected).
+v0.7.6 = the Instagram-story fix plus 10 adversarially-verified audit fixes.
+The story bug (user report: 2-item story, only the second downloaded):
+yt-dlp's instagram:story extractor keeps only items with `formats` built
+from `video_versions` — photo story items are silently dropped — AND
+`buildVideoFormat`'s chain required an audio stream in every term, so MUTED
+story videos failed with "Requested format is not available". Fixes:
+(1) NEW `src/lib/instagramStories.ts` — cookied JS probers hitting
+Instagram's own web API: stories via `feed/reels_media` (user-id chain:
+topsearch → media/<storyPk>/info → web_profile_info; the last one
+intermittently 400s with "Asset … laser.provider … has been deleted", and
+story-page HTML parsing is deliberately NOT used — browser UAs get a React
+shell with no reel data, plus wrong-account risk), and POSTS via
+`media/<pk>/info` with the shortcode→pk base-64 decode — needed because a
+LOGGED-IN user skips the anonymous embed prober and cookied yt-dlp drops
+every IMAGE item (a 4-photo carousel probed to nothing). All items (photos
+included) become direct-CDN entries for downloadDirect; Audio-toggle on a
+direct video entry falls back to yt-dlp so `-x` still works;
+(2) trailing `bv*` audio-less fallbacks in buildVideoFormat (bv* still
+requires a video codec, so the audio-only-file regression cannot return);
+(3) canonical URL compare (strip query/hash) for playlist-children routing —
+pasted share links carry ?utm_source/?igsh params that made every carousel
+child look "self-contained". Verified live end-to-end on the S26: probe
+lists both story items, both download, both in Movies/Convert-X.
+
+Audit fixes (workflow: 4 find-lenses → adversarial verify, 11 confirmed →
+deduped to 10): single-entry probe now uses webpage_url not yt-dlp's signed
+CDN `url` (broke TikTok/Twitter single videos on re-download); cancelActive
+invokes the registered closure (direct-CDN downloads were uncancellable);
+downloadDirect checks HTTP status (a 403 body was saved to the gallery as
+"media" and reported success) and reports real `cancelled`; batch errors
+carry entry `id` and Retry-failed matches by id (titles collide across
+carousel children); isDownloading() re-entrancy guard + inflight ownership
+checks; retry progress label uses the active batch length; GIF-chip peek no
+longer permanently mutes video exports (pre-GIF stripAudio stashed in a
+ref); ClipEditor binds the first VIDEO file (not files[0]) and clamps stale
+trim on load; ConvertContext clears trim on addFiles/removeFile; ColorPicker
+preview throttled to ~30 Hz (every preview re-renders all four mounted mode
+screens); history prune recomputes from live cache (race dropped fresh
+entries); PlatformLoginScreen clears its goBack timer + isFocused guard.
 
 Releases: https://github.com/CedrickGD/Convert-X/releases
 Release flow: bump (`node scripts/bump-version.js <ver>`) → commit to `main`
@@ -69,7 +99,24 @@ duplicate).
 - Reddit + Facebook logins (WebView built, user hasn't signed in).
 - Google-based logins (YouTube worked live; "Sign in with Google" on X/
   Reddit may still be refused by Google — email/password is reliable).
-- Nothing else outstanding — all 22 tracked tasks complete.
+- v0.7.6 audit fixes verified by typecheck + adversarial diff review (which
+  itself caught 3 majors in the first draft: whole-query canonical() would
+  have collapsed YouTube watch?v=X&list=Y playlists — now only tracking
+  params are stripped; HTML user-id parse could resolve the VIEWER's id —
+  removed; isDownloading() guard was defeated by cancelActive nulling
+  inflight — now a batchActive flag spans the whole downloadBatch call).
+- The cookied POST prober (image carousels while logged in) is implemented
+  + typechecked + bundle-compiled but NOT yet verified live — user hit the
+  4-image-post error right at session end; retest with a /p/ carousel.
+- Convert-side audit fixes (GIF stripAudio stash, trim clamp, first-video
+  ClipEditor) not hand-exercised on-device yet.
+- Dev-build note: `com.cedrickgd.convertx.dev` has its own app data — its
+  logins/cookies.txt are separate from the release app's. Metro loop:
+  `npx expo start --dev-client --port 8081` in packages/android +
+  `adb reverse tcp:8081 tcp:8081`, launch via
+  `adb shell am start -a android.intent.action.VIEW -d
+  "convertx://expo-development-client/?url=http%3A%2F%2Flocalhost%3A8081"
+  com.cedrickgd.convertx.dev`.
 
 ---
 
@@ -78,7 +125,9 @@ duplicate).
 ```
 src/lib/downloadQueue.ts     — probeUrl (detectMediaType, resolveCookiesPath),
                                 downloadEntry/Batch, --playlist-items, updateYtDlp
+src/lib/instagramStories.ts  — cookied story prober (reels_media, direct-CDN entries)
 src/lib/cookies.ts           — per-domain cookies.txt merge/remove + resolveCookiesPath
+                                + getCookieHeaderForDomain (JS API probers)
 src/lib/loginPlatforms.ts    — platform registry + LOGIN_USER_AGENT
 src/components/Feedback.tsx   — Toast + Confirm dialog (useFeedback)
 src/components/Navbar.tsx      — sliding animated tab indicator
