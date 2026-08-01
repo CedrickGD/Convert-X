@@ -16,6 +16,7 @@ import { SafeAreaProvider } from 'react-native-safe-area-context';
 import { ErrorBoundary } from './src/components/ErrorBoundary';
 import { FeedbackProvider } from './src/components/Feedback';
 import { runFirstLaunchYtDlpUpdate } from './src/lib/downloadQueue';
+import { installErrorCapture } from './src/lib/errorLog';
 import { purgeOldExports } from './src/lib/storage';
 import { RootNavigator } from './src/navigation/RootNavigator';
 import {
@@ -29,6 +30,11 @@ import { ThemeProvider, useTheme } from './src/theme';
 SplashScreen.preventAutoHideAsync().catch(() => {
   // already hidden — fine, continue
 });
+
+// Capture uncaught JS errors + unhandled rejections into the local error
+// log (Credits → Error log) — release builds have no adb, this is the
+// only field-diagnostic trail. Must run before anything can throw.
+installErrorCapture();
 
 export default function App() {
   // Inter is the desktop typeface. Splash held until fonts resolved — but

@@ -29,6 +29,12 @@ export type FileEntry = {
   height?: number;
   /** Duration in seconds (for video / audio). Populated by ffprobe. */
   duration?: number;
+  /** Per-file trim in-point (seconds). null = source start. Written by the
+   *  ClipEditor for the bound video only — dies with the file, so it can
+   *  never leak onto a different clip. */
+  trimStart?: number | null;
+  /** Per-file trim out-point (seconds). null = source end. */
+  trimEnd?: number | null;
   status: FileStatus;
   progress: number; // 0..100
   outputUri?: string;
@@ -59,11 +65,13 @@ export type ConvertSettings = {
    *  single-file conversions. null = derive from the source filename. */
   customName: string | null;
 
-  // ── Video editor fields (Phase v0.4 wires the args, v0.5 ships the UI) ──
-  /** Trim in-point (seconds). null = source start. */
-  trimStart: number | null;
-  /** Trim out-point (seconds). null = source end. */
-  trimEnd: number | null;
+  /** Target output size in MB for video targets. null = off. When set (and
+   *  the clip duration is known) the encoder switches from the quality knob
+   *  to a computed bitrate budget — see ffmpegArgs. */
+  targetSizeMb: number | null;
+
+  // ── Video editor fields (Phase v0.4 wires the args, v0.5 ships the UI).
+  //    Trim is per-file — see FileEntry.trimStart/trimEnd. ──
   /** Mute the output (strip the audio track entirely). */
   stripAudio: boolean;
   /** Playback speed multiplier. 1 = unchanged. atempo handles 0.5-2 directly;
@@ -95,8 +103,7 @@ export const CONVERT_DEFAULTS: ConvertSettings = {
   format: null,
   quality: 100,
   customName: null,
-  trimStart: null,
-  trimEnd: null,
+  targetSizeMb: null,
   stripAudio: false,
   speed: 1,
   volume: 100,

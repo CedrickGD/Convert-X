@@ -11,15 +11,19 @@
 
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import * as FileSystem from 'expo-file-system/legacy';
+import { activateKeepAwakeAsync, deactivateKeepAwake } from 'expo-keep-awake';
 
 import * as Downloader from '../../modules/convert-x-downloader/src';
 import { hasCookiesForDomain, resolveCookiesPath } from './cookies';
+import { logError } from './errorLog';
 import { isInstagramPostUrl, probeInstagramAnonymous } from './instagramScraper';
 import {
+  instagramProfileToStoriesUrl,
   isInstagramStoryUrl,
   probeInstagramPost,
   probeInstagramStory,
 } from './instagramStories';
+import { isTwitterStatusUrl, probeTwitterAnonymous } from './twitterScraper';
 
 // Keyed by yt-dlp release cadence (year.month) rather than a one-shot
 // boolean: extractors rot within weeks when sites change their APIs, so
@@ -49,11 +53,14 @@ export type DownloadEntry = {
    *  it to yt-dlp as --playlist-items so each child fetches its own
    *  media instead of the whole carousel resolving to one file N times. */
   playlistIndex?: number;
-  /** Direct CDN URL (set by the anonymous Instagram scraper). When
+  /** Direct CDN URL (set by the Instagram/Twitter probers). When
    *  present, downloadEntry bypasses yt-dlp and fetches this URL
-   *  directly — necessary because Instagram's API is locked but its
-   *  public CDN media URLs are not. */
+   *  directly — necessary because those APIs are locked to yt-dlp but
+   *  their CDN media URLs are not. */
   directUrl?: string;
+  /** All available encodes of a direct video, so the download step can
+   *  honor the user's quality cap instead of always taking the largest. */
+  variants?: Array<{ url: string; width?: number; height?: number }>;
   /** Set by the anonymous Instagram scraper when the post is a carousel but
    *  only the first item is retrievable without login. */
   partialCarousel?: boolean;
@@ -65,27 +72,40 @@ export type ProbeResult = {
   entries: DownloadEntry[];
 };
 
-let inflight: { sessionId: string; cancel: () => void } | null = null;
-// True for the whole life of a downloadBatch call — `inflight` alone can't
-// answer "is a batch running": cancelActive() nulls it synchronously on the
-// Cancel tap while the batch loop is still winding down, which is exactly
-// the window a re-entrancy guard exists for.
+/** Direct-CDN failure that carries the HTTP status — the batch layer
+ *  distinguishes an expired signed URL (re-probe and retry) from a
+ *  genuinely broken one (fail the item). */
+export class HttpStatusError extends Error {
+  status: number;
+  constructor(status: number, message: string) {
+    super(message);
+    this.status = status;
+  }
+}
+
+// Every in-flight unit (yt-dlp session or direct-CDN transfer) registers
+// its cancel closure here. A map, not a single slot: direct-CDN items run
+// CONCURRENTLY, and Cancel must abort all of them, not whichever one
+// registered last.
+const inflightCancels = new Map<string, () => void>();
+// True for the whole life of a downloadBatch call — the map alone can't
+// answer "is a batch running": cancelActive() clears it synchronously on
+// the Cancel tap while the batch loop is still winding down, which is
+// exactly the window a re-entrancy guard exists for.
 let batchActive = false;
 
 export function isDownloading(): boolean {
-  return batchActive || inflight !== null;
+  return batchActive || inflightCancels.size > 0;
 }
 
 export function cancelActive(): void {
-  if (inflight) {
-    // Invoke the registered closure, not Downloader.cancel directly: the
-    // direct-CDN path (Instagram scraper/stories) has no native session —
-    // its closure aborts the FileSystem transfer, and calling the native
-    // cancel with its sessionId would be a silent no-op that lets the
-    // "cancelled" download run to completion and report success.
-    inflight.cancel();
-    inflight = null;
-  }
+  // Invoke the registered closures, not Downloader.cancel directly: the
+  // direct-CDN path (Instagram/Twitter probers) has no native session —
+  // its closure aborts the FileSystem transfer, and calling the native
+  // cancel with its sessionId would be a silent no-op that lets the
+  // "cancelled" download run to completion and report success.
+  for (const cancel of inflightCancels.values()) cancel();
+  inflightCancels.clear();
 }
 
 let ytdlpUpdateInflight: Promise<{
@@ -177,6 +197,31 @@ export async function probeUrl(
   const cookies = opts?.cookies || (await resolveCookiesPath());
   const resolvedOpts = { ...opts, cookies };
 
+  // Twitter/X status URLs: yt-dlp errors on pure-photo tweets ("No video
+  // could be found in this tweet") — the anonymous syndication prober
+  // handles photos, multi-photo posts, and videos alike. Failures
+  // (protected/deleted/NSFW-gated tweets) fall through to yt-dlp, which
+  // can use the user's cookies.
+  if (isTwitterStatusUrl(url)) {
+    try {
+      return await probeTwitterAnonymous(url);
+    } catch (e) {
+      logError('probe', e, url);
+    }
+  }
+
+  // A bare profile link (instagram.com/<username>) while logged in means
+  // "grab their active stories" — the reels_media prober takes the whole
+  // reel. Anonymous profile links keep the old yt-dlp behavior.
+  const profileStories = instagramProfileToStoriesUrl(url);
+  if (profileStories && (await hasCookiesForDomain('instagram.com'))) {
+    try {
+      return await probeInstagramStory(profileStories);
+    } catch (e) {
+      logError('probe', e, url);
+    }
+  }
+
   // Instagram stories. yt-dlp's story extractor silently drops photo
   // items (it only builds formats from video_versions), so a [photo,
   // video] story would probe as just the video. The cookied JS prober
@@ -191,6 +236,7 @@ export async function probeUrl(
         // Fall through to yt-dlp — but leave a trace, or a prober that
         // rots (API shape change) silently downgrades stories to
         // videos-only forever with nobody the wiser.
+        logError('probe', e, url);
         console.warn(
           '[instagramStories] prober failed, falling back to yt-dlp:',
           e instanceof Error ? e.message : String(e)
@@ -221,6 +267,7 @@ export async function probeUrl(
       try {
         return await probeInstagramPost(url);
       } catch (e) {
+        logError('probe', e, url);
         console.warn(
           '[instagramStories] post prober failed, falling back to yt-dlp:',
           e instanceof Error ? e.message : String(e)
@@ -429,18 +476,39 @@ export async function downloadEntry(opts: {
       : '%(title)s.%(ext)s';
   const outputTemplate = `${outDir.replace(/^file:\/\//, '')}/${nameTemplate}`;
 
-  // Direct-URL fast path. The Instagram probers resolve each item to a
-  // CDN URL — we can fetch those over plain HTTPS without involving
-  // yt-dlp at all. Saves a Python + yt-dlp round trip and works for
-  // media yt-dlp can't see (photos especially). EXCEPT when the user
-  // asked for Audio from a video item: a raw CDN fetch can't extract
-  // audio, so fall through to yt-dlp (webpageUrl still resolves the
-  // item) and let `-x` do its job.
+  // Direct-URL fast path. The Instagram/Twitter probers resolve each
+  // item to a CDN URL — we can fetch those over plain HTTPS without
+  // involving yt-dlp at all. Saves a Python + yt-dlp round trip and
+  // works for media yt-dlp can't see (photos especially). EXCEPT when
+  // the user asked for Audio from a video item: a raw CDN fetch can't
+  // extract audio, so fall through to yt-dlp (webpageUrl still resolves
+  // the item) and let `-x` do its job.
   if (opts.entry.directUrl && !(opts.audioOnly && opts.entry.mediaType === 'video')) {
+    // Honor the quality cap when the prober exposed multiple encodes:
+    // largest variant that fits under the cap, or the smallest one when
+    // nothing fits (closest to what the user asked for).
+    let directUrl = opts.entry.directUrl;
+    const variants = opts.entry.variants;
+    if (
+      opts.entry.mediaType === 'video' &&
+      variants &&
+      variants.length > 0 &&
+      opts.quality &&
+      opts.quality !== 'best'
+    ) {
+      const cap = parseInt(opts.quality, 10);
+      const area = (v: { width?: number; height?: number }) => (v.width ?? 0) * (v.height ?? 0);
+      const fitting = variants.filter((v) => (v.height ?? 0) > 0 && (v.height ?? 0) <= cap);
+      const pool = fitting.length > 0 ? fitting : variants.slice();
+      const pick = pool.reduce((a, b) =>
+        fitting.length > 0 ? (area(a) >= area(b) ? a : b) : area(a) <= area(b) ? a : b
+      );
+      if (pick.url) directUrl = pick.url;
+    }
     return downloadDirect({
       sessionId: opts.sessionId,
       entry: opts.entry,
-      directUrl: opts.entry.directUrl,
+      directUrl,
       outDir: outDir.replace(/^file:\/\//, ''),
       onProgress: opts.onProgress,
       saveToGallery: opts.saveToGallery !== false,
@@ -455,7 +523,7 @@ export async function downloadEntry(opts: {
     }
   });
 
-  inflight = { sessionId: opts.sessionId, cancel: () => Downloader.cancel(opts.sessionId) };
+  inflightCancels.set(opts.sessionId, () => Downloader.cancel(opts.sessionId));
 
   try {
     // Per-item strategy keys off the detected media type so the UI's
@@ -525,18 +593,56 @@ export async function downloadEntry(opts: {
     return { ...result, publicPath };
   } finally {
     sub.remove();
-    // Ownership check: if a second batch somehow started (or a direct
-    // download registered) while this one wound down, don't null out ITS
-    // handle — that would make its Cancel button a no-op.
-    if (inflight?.sessionId === opts.sessionId) inflight = null;
+    inflightCancels.delete(opts.sessionId);
   }
 }
 
+/** How many direct-CDN transfers may run at once. Plain HTTPS fetches are
+ *  cheap; 3 keeps a 10-photo carousel fast without saturating the radio.
+ *  yt-dlp items stay strictly sequential — each spawns a python process. */
+const DIRECT_CONCURRENCY = 3;
+
+const PENDING_BATCH_KEY = '@convertx/pending-batch.v1';
+
+export type PendingBatch = {
+  sourceUrl: string;
+  at: number;
+  audioOnly: boolean;
+  format: string | null;
+  quality: string | null;
+  items: Array<{ id: string; title: string }>;
+  remainingIds: string[];
+};
+
+/** The batch descriptor a killed app left behind, if any. */
+export async function getPendingBatch(): Promise<PendingBatch | null> {
+  try {
+    const raw = await AsyncStorage.getItem(PENDING_BATCH_KEY);
+    if (!raw) return null;
+    const parsed = JSON.parse(raw) as PendingBatch;
+    // Stale descriptors (probe data long expired) aren't worth resuming.
+    if (Date.now() - parsed.at > 24 * 60 * 60 * 1000) {
+      await AsyncStorage.removeItem(PENDING_BATCH_KEY).catch(() => {});
+      return null;
+    }
+    return parsed;
+  } catch {
+    return null;
+  }
+}
+
+export async function clearPendingBatch(): Promise<void> {
+  await AsyncStorage.removeItem(PENDING_BATCH_KEY).catch(() => {});
+}
+
 /**
- * Run multiple downloads sequentially. Reports overall progress
+ * Run multiple downloads. Direct-CDN items run a few at a time; yt-dlp
+ * items run sequentially alongside them. Reports overall progress
  * (0..100 across the whole batch) so the UI can show a single bar.
  * Errors per item are collected and returned — one failure doesn't
- * abort the rest of the batch.
+ * abort the rest of the batch. An expired direct URL (4xx) triggers ONE
+ * re-probe of sourceUrl for the whole batch; fresh URLs are matched back
+ * by entry id and the item retried.
  */
 export async function downloadBatch(opts: {
   sessionId: string;
@@ -548,6 +654,9 @@ export async function downloadBatch(opts: {
   spotifyClientSecret?: string;
   cookies?: string;
   saveToGallery?: boolean;
+  /** The URL the entries were probed from — enables the 4xx auto-refresh
+   *  and the killed-app resume descriptor. */
+  sourceUrl?: string;
   /** Called with overall batch percent (0..100) and current item index. */
   onProgress: (overallPct: number, currentIndex: number) => void;
   /** Called when each item starts so the UI can show its title. */
@@ -565,23 +674,65 @@ export async function downloadBatch(opts: {
   const cookies = opts.cookies || (await resolveCookiesPath());
   let done = 0;
   let failed = 0;
+  let cancelled = false;
   let lastPublicPath: string | undefined;
   const errors: BatchDownloadResult['errors'] = [];
+  const perItemPct = new Array<number>(total).fill(0);
+  const remaining = new Set(opts.entries.map((e) => e.id));
 
-  // A previous batch that was cancelled mid-item leaves cancelRequested set
-  // (the r.cancelled early-return below doesn't clear it). Reset here so a
-  // fresh batch isn't aborted on iteration 0. See cancelBatch().
-  cancelRequested = false;
+  const reportOverall = (idx: number) => {
+    const sum = perItemPct.reduce((a, b) => a + b, 0);
+    opts.onProgress(Math.round(sum / total), idx);
+  };
 
-  batchActive = true;
-  try {
-    for (let i = 0; i < total; i++) {
-      if (cancelRequested) {
-        cancelRequested = false;
-        return { done, failed, cancelled: true, lastPublicPath, errors };
+  // Crash/kill insurance: persist what's left so the next launch can offer
+  // to resume. Fire-and-forget — the download must not wait on storage.
+  const persistRemaining = () => {
+    if (!opts.sourceUrl) return;
+    const snapshot: PendingBatch = {
+      sourceUrl: opts.sourceUrl,
+      at: Date.now(),
+      audioOnly: opts.audioOnly,
+      format: opts.format,
+      quality: opts.quality,
+      items: opts.entries.map((e) => ({ id: e.id, title: e.title })),
+      remainingIds: [...remaining],
+    };
+    AsyncStorage.setItem(PENDING_BATCH_KEY, JSON.stringify(snapshot)).catch(() => {});
+  };
+
+  // One re-probe for the whole batch, shared by every worker that hits an
+  // expired URL. Memoized as a promise so concurrent 4xx failures don't
+  // stampede the prober.
+  let refreshPromise: Promise<Map<string, DownloadEntry>> | null = null;
+  const refreshEntries = (): Promise<Map<string, DownloadEntry>> => {
+    if (!refreshPromise) {
+      refreshPromise = (async () => {
+        const probed = await probeUrl(opts.sourceUrl as string, {
+          cookies,
+          spotifyClientId: opts.spotifyClientId,
+          spotifyClientSecret: opts.spotifyClientSecret,
+        });
+        return new Map(probed.entries.map((e) => [e.id, e]));
+      })();
+    }
+    return refreshPromise;
+  };
+
+  const runOne = async (i: number): Promise<void> => {
+    let entry = opts.entries[i];
+    opts.onItemStart?.(i, entry);
+    let refreshed = false;
+    for (;;) {
+      // A Cancel tap can land while this item is between transfers (e.g.
+      // awaiting the 4xx re-probe) — at that moment it has no registered
+      // cancel closure, so the flag check is the ONLY thing standing
+      // between the user's Cancel and a ghost download completing into
+      // the gallery.
+      if (cancelled || cancelRequested) {
+        cancelled = true;
+        return;
       }
-      const entry = opts.entries[i];
-      opts.onItemStart?.(i, entry);
       try {
         const r = await downloadEntry({
           sessionId: `${opts.sessionId}-${i}`,
@@ -595,32 +746,114 @@ export async function downloadBatch(opts: {
           saveToGallery: opts.saveToGallery,
           dedupeNames: total > 1,
           onProgress: (pct) => {
-            // Project the per-item 0..100 into the batch 0..100 band so a
-            // 50%-complete item 2 of 4 reads as ((1 * 100) + 50) / 4 = 37.5%.
-            const overall = ((i * 100) + pct) / total;
-            opts.onProgress(Math.round(overall), i);
+            perItemPct[i] = pct;
+            reportOverall(i);
           },
         });
         if (r.cancelled) {
-          cancelRequested = false;
-          return { done, failed, cancelled: true, lastPublicPath, errors };
+          cancelled = true;
+          return;
         }
+        perItemPct[i] = 100;
+        reportOverall(i);
         done += 1;
+        remaining.delete(entry.id);
+        persistRemaining();
         if (r.publicPath) lastPublicPath = r.publicPath;
         opts.onItemDone?.(entry, r);
+        return;
       } catch (e) {
+        // Expired signed CDN URL → re-probe the source once (batch-wide)
+        // and retry this item with its fresh URL instead of failing it.
+        const expired =
+          e instanceof HttpStatusError && [401, 403, 404, 410, 429].includes(e.status);
+        if (expired && !refreshed && entry.directUrl && opts.sourceUrl) {
+          refreshed = true;
+          try {
+            const fresh = (await refreshEntries()).get(entry.id);
+            if (fresh?.directUrl) {
+              entry = { ...entry, directUrl: fresh.directUrl, variants: fresh.variants };
+              // The failed attempt's error-body transfer may have pushed
+              // this slot toward 100 — reset so the bar doesn't lie, then
+              // let the loop's cancel check gate the actual retry.
+              perItemPct[i] = 0;
+              continue;
+            }
+          } catch (probeErr) {
+            logError('download', probeErr, `refresh of ${opts.sourceUrl}`);
+          }
+        }
         failed += 1;
+        // Count the failed slot as "complete" for the bar — the old
+        // sequential formula did implicitly, and without this a batch
+        // with any failure can never reach 100%.
+        perItemPct[i] = 100;
+        reportOverall(i);
+        remaining.delete(entry.id);
+        persistRemaining();
+        logError('download', e, entry.title);
         errors.push({
           id: entry.id,
           title: entry.title,
           message: e instanceof Error ? e.message : String(e),
         });
         // Keep going — a single bad item shouldn't kill a 30-track playlist.
+        return;
       }
     }
+  };
+
+  // A previous batch that was cancelled mid-item leaves cancelRequested set
+  // (the cancelled early-return path doesn't clear it). Reset here so a
+  // fresh batch isn't aborted on iteration 0. See cancelBatch().
+  cancelRequested = false;
+
+  batchActive = true;
+  // Screen-off must not freeze the JS loop feeding the queue. Best-effort:
+  // keep-awake is cosmetic-level API, never let it break a download.
+  activateKeepAwakeAsync('convertx-batch').catch(() => {});
+  persistRemaining();
+  try {
+    const directIdx: number[] = [];
+    const ytdlpIdx: number[] = [];
+    opts.entries.forEach((e, i) => {
+      const direct = !!e.directUrl && !(opts.audioOnly && e.mediaType === 'video');
+      (direct ? directIdx : ytdlpIdx).push(i);
+    });
+
+    // Direct pool: DIRECT_CONCURRENCY workers pulling from a shared queue.
+    // yt-dlp lane: strictly sequential (python process per item). Both
+    // lanes run at the same time and stop pulling once cancelled.
+    let cursor = 0;
+    const directWorker = async () => {
+      while (!cancelled && !cancelRequested && cursor < directIdx.length) {
+        const idx = directIdx[cursor++];
+        await runOne(idx);
+      }
+    };
+    const ytdlpLane = async () => {
+      for (const idx of ytdlpIdx) {
+        if (cancelled || cancelRequested) return;
+        await runOne(idx);
+      }
+    };
+    await Promise.all([
+      ...Array.from({ length: Math.min(DIRECT_CONCURRENCY, directIdx.length) }, directWorker),
+      ytdlpLane(),
+    ]);
+
+    if (cancelled || cancelRequested) {
+      cancelRequested = false;
+      // A deliberate cancel is not an interruption — don't offer to
+      // resume it on next launch.
+      await clearPendingBatch();
+      return { done, failed, cancelled: true, lastPublicPath, errors };
+    }
+    await clearPendingBatch();
     return { done, failed, cancelled: false, lastPublicPath, errors };
   } finally {
     batchActive = false;
+    deactivateKeepAwake('convertx-batch').catch(() => {});
   }
 }
 
@@ -657,13 +890,10 @@ async function downloadDirect(opts: {
   // just skip to the next item) and we can clean up the partial on abort.
   let dl: ReturnType<typeof FileSystem.createDownloadResumable> | null = null;
   let cancelled = false;
-  inflight = {
-    sessionId: opts.sessionId,
-    cancel: () => {
-      cancelled = true;
-      dl?.cancelAsync().catch(() => {});
-    },
-  };
+  inflightCancels.set(opts.sessionId, () => {
+    cancelled = true;
+    dl?.cancelAsync().catch(() => {});
+  });
 
   try {
     dl = FileSystem.createDownloadResumable(
@@ -690,7 +920,8 @@ async function downloadDirect(opts: {
     // expired signed CDN URL would be saved to the gallery as "media"
     // and reported as a success.
     if (typeof result.status === 'number' && (result.status < 200 || result.status >= 300)) {
-      throw new Error(
+      throw new HttpStatusError(
+        result.status,
         `Media URL expired or blocked (HTTP ${result.status}) — tap Find again to refresh it.`
       );
     }
@@ -711,6 +942,6 @@ async function downloadDirect(opts: {
     await FileSystem.deleteAsync(fileUri, { idempotent: true }).catch(() => {});
     throw e;
   } finally {
-    if (inflight?.sessionId === opts.sessionId) inflight = null;
+    inflightCancels.delete(opts.sessionId);
   }
 }

@@ -20,8 +20,20 @@ import {
 } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 
+import * as Clipboard from 'expo-clipboard';
+
 import { removePlatformCookies } from '../lib/cookies';
 import { updateYtDlp } from '../lib/downloadQueue';
+import {
+  clearErrorLog,
+  ErrorLogEntry,
+  getErrorLog,
+  subscribeErrorLog,
+} from '../lib/errorLog';
+import {
+  checkInstagramSession,
+  invalidateInstagramSessionCache,
+} from '../lib/instagramStories';
 import { LOGIN_PLATFORMS, LoginPlatform } from '../lib/loginPlatforms';
 import { useDownload } from '../state';
 import { checkForUpdate, downloadAndInstall, UpdateInfo } from '../lib/updater';
@@ -150,6 +162,9 @@ export function CreditsScreen() {
 
       {/* Cookies — required for Instagram and other login-walled sites */}
       <PlatformLoginsCard />
+
+      {/* Field diagnostics — last probe/download/crash errors, local only */}
+      <ErrorLogCard />
 
       {/* Source */}
       <View
@@ -705,6 +720,126 @@ function YtDlpUpdateCard() {
 
 const COOKIES_FILENAME = 'cookies.txt';
 
+/**
+ * Local error log viewer. Release builds have no adb — this is the only
+ * way a field failure (probe, download, crash) can be read back and
+ * shared. Collapsed by default; data never leaves the device unless the
+ * user copies it.
+ */
+function ErrorLogCard() {
+  const { theme } = useTheme();
+  const [open, setOpen] = useState(false);
+  const [entries, setEntries] = useState<ErrorLogEntry[]>([]);
+  const [copied, setCopied] = useState(false);
+
+  useEffect(() => {
+    const refresh = () => void getErrorLog().then(setEntries);
+    refresh();
+    return subscribeErrorLog(refresh);
+  }, []);
+
+  const onCopy = useCallback(async () => {
+    const text = entries
+      .map(
+        (e) =>
+          `${new Date(e.at).toISOString()} [${e.scope}] ${e.message}${e.detail ? ` — ${e.detail}` : ''}`
+      )
+      .join('\n');
+    await Clipboard.setStringAsync(text || '(empty)');
+    setCopied(true);
+    setTimeout(() => setCopied(false), 1500);
+  }, [entries]);
+
+  return (
+    <View
+      style={[
+        styles.card,
+        { backgroundColor: theme.bg.surface, borderColor: theme.border.subtle },
+      ]}
+    >
+      <Pressable onPress={() => setOpen((o) => !o)} style={styles.row}>
+        <View style={{ flex: 1 }}>
+          <Text style={[styles.cardLabel, { color: theme.text.muted }]}>ERROR LOG</Text>
+          <Text style={[styles.rowSub, { color: theme.text.secondary }]}>
+            {entries.length === 0
+              ? 'No recorded errors.'
+              : `${entries.length} recorded — stays on this device.`}
+          </Text>
+        </View>
+        {open ? (
+          <ChevronDown size={18} strokeWidth={2} color={theme.text.muted} />
+        ) : (
+          <ChevronRight size={18} strokeWidth={2} color={theme.text.muted} />
+        )}
+      </Pressable>
+
+      {open ? (
+        <>
+          {entries.slice(0, 20).map((e, i) => (
+            <View
+              key={`${e.at}-${i}`}
+              style={
+                i > 0
+                  ? {
+                      borderTopWidth: StyleSheet.hairlineWidth,
+                      borderTopColor: theme.border.subtle,
+                      paddingTop: spacing.sm,
+                      marginTop: spacing.sm,
+                    }
+                  : undefined
+              }
+            >
+              <Text style={[styles.rowSub, { color: theme.text.muted }]}>
+                {new Date(e.at).toLocaleString()} · {e.scope}
+              </Text>
+              <Text style={[styles.rowSub, { color: theme.text.primary }]} numberOfLines={4}>
+                {e.message}
+              </Text>
+              {e.detail ? (
+                <Text style={[styles.rowSub, { color: theme.text.secondary }]} numberOfLines={2}>
+                  {e.detail}
+                </Text>
+              ) : null}
+            </View>
+          ))}
+          {entries.length > 0 ? (
+            <View style={{ flexDirection: 'row', gap: spacing.md }}>
+              <Pressable
+                onPress={onCopy}
+                style={({ pressed }) => ({
+                  paddingVertical: spacing.sm,
+                  paddingHorizontal: spacing.lg,
+                  borderRadius: radius.xs,
+                  borderWidth: StyleSheet.hairlineWidth,
+                  borderColor: theme.border.subtle,
+                  backgroundColor: pressed ? theme.bg.surfaceHigh : 'transparent',
+                })}
+              >
+                <Text style={[styles.rowSub, { color: theme.text.primary }]}>
+                  {copied ? 'Copied ✓' : 'Copy all'}
+                </Text>
+              </Pressable>
+              <Pressable
+                onPress={() => void clearErrorLog()}
+                style={({ pressed }) => ({
+                  paddingVertical: spacing.sm,
+                  paddingHorizontal: spacing.lg,
+                  borderRadius: radius.xs,
+                  borderWidth: StyleSheet.hairlineWidth,
+                  borderColor: theme.border.subtle,
+                  backgroundColor: pressed ? theme.bg.surfaceHigh : 'transparent',
+                })}
+              >
+                <Text style={[styles.rowSub, { color: theme.status.error }]}>Clear</Text>
+              </Pressable>
+            </View>
+          ) : null}
+        </>
+      ) : null}
+    </View>
+  );
+}
+
 function PlatformLoginsCard() {
   const { theme } = useTheme();
   const navigation = useNavigation<Nav>();
@@ -712,8 +847,25 @@ function PlatformLoginsCard() {
   const [picking, setPicking] = useState(false);
   const [busyKey, setBusyKey] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
+  // Is the saved Instagram session still accepted by the API? Without
+  // this, a lapsed login only surfaces as a failed download later.
+  const [igSession, setIgSession] = useState<'ok' | 'expired' | 'unknown'>('unknown');
 
   const connected = state.settings.connectedPlatforms;
+  const igConnected = connected.includes('instagram');
+
+  // Re-check on any cookies change (cookiesPath in deps), not just the
+  // connected flag — a re-import keeps the flag true but swaps the session.
+  useEffect(() => {
+    if (!igConnected) return;
+    let active = true;
+    void checkInstagramSession().then((s) => {
+      if (active) setIgSession(s);
+    });
+    return () => {
+      active = false;
+    };
+  }, [igConnected, state.settings.cookiesPath]);
 
   const onImport = useCallback(async () => {
     if (picking) return;
@@ -736,6 +888,7 @@ function PlatformLoginsCard() {
       // A manual import REPLACES the whole cookies.txt, so any platform we
       // thought was connected via in-app login may no longer be in the
       // file — clear the flags rather than show a false "Connected".
+      invalidateInstagramSessionCache();
       updateSettings({ cookiesPath: destPath, connectedPlatforms: [] });
     } catch (e) {
       setError(e instanceof Error ? e.message : String(e));
@@ -748,6 +901,7 @@ function PlatformLoginsCard() {
     async (p: LoginPlatform) => {
       setBusyKey(p.key);
       try {
+        if (p.key === 'instagram') invalidateInstagramSessionCache();
         const remains = await removePlatformCookies(p.cookieDomain);
         const nextConnected = connected.filter((k) => k !== p.key);
         updateSettings({
@@ -784,6 +938,7 @@ function PlatformLoginsCard() {
       {LOGIN_PLATFORMS.map((p, i) => {
         const isConnected = connected.includes(p.key);
         const isBusy = busyKey === p.key;
+        const sessionDead = p.key === 'instagram' && isConnected && igSession === 'expired';
         return (
           <View
             key={p.key}
@@ -813,11 +968,21 @@ function PlatformLoginsCard() {
               <Text
                 style={[
                   styles.rowSub,
-                  { color: isConnected ? theme.status.success : theme.text.muted },
+                  {
+                    color: sessionDead
+                      ? theme.status.error
+                      : isConnected
+                      ? theme.status.success
+                      : theme.text.muted,
+                  },
                 ]}
                 numberOfLines={2}
               >
-                {isConnected ? 'Connected' : p.blurb}
+                {sessionDead
+                  ? 'Session expired — sign in again'
+                  : isConnected
+                  ? 'Connected'
+                  : p.blurb}
               </Text>
             </View>
             {isConnected ? (

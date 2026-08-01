@@ -1,6 +1,6 @@
 import * as DocumentPicker from 'expo-document-picker';
 import * as ImagePicker from 'expo-image-picker';
-import React, { useCallback, useMemo, useRef } from 'react';
+import React, { useCallback, useMemo, useRef, useState } from 'react';
 import { Pressable, ScrollView, StyleSheet, Text, View } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 
@@ -158,7 +158,16 @@ export function ConvertScreen() {
 
   const isBatch = state.files.length > 1;
   const single = state.files[0];
-  const firstVideo = state.files.find((f) => f.mediaType === 'video');
+  const videoFiles = useMemo(
+    () => state.files.filter((f) => f.mediaType === 'video'),
+    [state.files]
+  );
+  // Which video the ClipEditor is bound to. Defaults to the first video;
+  // multi-video batches can pick another by tapping its FileList row. A
+  // removed selection falls back instead of leaving a dead editor.
+  const [selectedVideoId, setSelectedVideoId] = useState<string | null>(null);
+  const editorVideo =
+    videoFiles.find((f) => f.id === selectedVideoId) ?? videoFiles[0] ?? null;
   // stripAudio as it was before the user tapped the GIF chip — restored
   // when they switch to a non-GIF format. null = not currently stashed.
   const preGifStripAudio = useRef<boolean | null>(null);
@@ -247,6 +256,10 @@ export function ConvertScreen() {
               view="ready"
               onRemoveFile={convert.removeFile}
               onAddFiles={handlePickFiles}
+              // Row selection only exists when there's actually a choice —
+              // a single video is always the editor's clip.
+              selectedFileId={videoFiles.length > 1 ? editorVideo?.id ?? null : null}
+              onSelectFile={videoFiles.length > 1 ? setSelectedVideoId : undefined}
             />
           ) : single ? (
             <FilePreview file={single} />
@@ -276,15 +289,19 @@ export function ConvertScreen() {
           />
 
           {/* Clip editor — preview + timeline trim — for video sources.
-              Bind the first VIDEO file, not files[0]: a mixed batch like
-              [photo.jpg, clip.mp4] would mount the image URI in the video
-              player and show a dead editor. */}
-          {firstVideo ? (
+              Bind the selected (default: first) VIDEO file, not files[0]:
+              a mixed batch like [photo.jpg, clip.mp4] would mount the image
+              URI in the video player and show a dead editor. Keyed by file
+              id so switching clips remounts with fresh duration/playhead
+              state instead of showing the previous clip's timeline. */}
+          {editorVideo ? (
             <ClipEditor
-              file={firstVideo}
+              key={editorVideo.id}
+              file={editorVideo}
               settings={state.settings}
               isGifTarget={state.settings.format === 'gif'}
-              onChange={(patch) => convert.updateSettings(patch)}
+              onTrimChange={(patch) => convert.setFileTrim(editorVideo.id, patch)}
+              onDurationKnown={(d) => convert.setFileDuration(editorVideo.id, d)}
             />
           ) : null}
 
@@ -317,6 +334,11 @@ export function ConvertScreen() {
             onQualityChange={(q) => convert.updateSettings({ quality: q })}
             qualityKind={qualityKind}
             showQuality={state.settings.format !== 'gif'}
+            targetSizeMb={state.settings.targetSizeMb}
+            onTargetSizeChange={(mb) => convert.updateSettings({ targetSizeMb: mb })}
+            // qualityKind is 'video' only for video-category targets, which
+            // is exactly where the bitrate budget applies (GIF is 'image').
+            showTargetSize={qualityKind === 'video'}
           />
 
           <View style={styles.actions}>

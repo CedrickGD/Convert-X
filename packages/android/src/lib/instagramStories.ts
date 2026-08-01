@@ -31,6 +31,67 @@ export function isInstagramStoryUrl(url: string): boolean {
   return STORY_RE.test(url);
 }
 
+/** Path segments that are Instagram features, not usernames. */
+const RESERVED_SEGMENTS = new Set([
+  'p', 'reel', 'reels', 'tv', 'stories', 'explore', 'accounts', 'direct',
+  'about', 'developer', 'legal', 'directory', 'lite', 'challenge', 'graphql',
+  'api', 'oauth', 'emails', 'session', 'nametag', 'invites',
+]);
+
+/**
+ * A bare profile link (instagram.com/<username>) means "grab their active
+ * stories". Returns the equivalent /stories/ URL, or null when the URL
+ * isn't a plain profile path.
+ */
+export function instagramProfileToStoriesUrl(url: string): string | null {
+  // Host-anchored (start of string or right after //) so a lookalike host
+  // or an instagram.com fragment buried in another URL's path can't
+  // silently probe some unrelated account's stories.
+  const m = url.match(
+    /(?:^|\/\/)(?:www\.)?instagram\.com\/([A-Za-z0-9._]+)\/?(?:[?#]|$)/
+  );
+  if (!m) return null;
+  const username = m[1];
+  if (RESERVED_SEGMENTS.has(username.toLowerCase())) return null;
+  return `https://www.instagram.com/stories/${username}/`;
+}
+
+/**
+ * Is the saved Instagram session still accepted? Hits topsearch (the
+ * cheapest authenticated endpoint the probers already rely on). Cached
+ * for 15 minutes — Credits may ask on every expand.
+ */
+let sessionCheck: { at: number; ok: boolean } | null = null;
+
+/** Forget the cached verdict. MUST be called whenever the Instagram
+ *  cookies change (fresh login, cookies.txt import, logout) — otherwise
+ *  the "Session expired" badge outlives the re-login it demanded. */
+export function invalidateInstagramSessionCache(): void {
+  sessionCheck = null;
+}
+
+export async function checkInstagramSession(): Promise<'ok' | 'expired' | 'unknown'> {
+  if (sessionCheck && Date.now() - sessionCheck.at < 15 * 60 * 1000) {
+    return sessionCheck.ok ? 'ok' : 'expired';
+  }
+  try {
+    const data = await igApiFetch(`${API_BASE}/web/search/topsearch/?query=instagram`);
+    // A live session returns result arrays; a dead one bounces to the
+    // login wall (401/403 → igApiFetch throws) or an error payload.
+    const ok = Array.isArray(data.users) || data.status === 'ok';
+    sessionCheck = { at: Date.now(), ok };
+    return ok ? 'ok' : 'expired';
+  } catch (e) {
+    const msg = e instanceof Error ? e.message : String(e);
+    if (/rejected the saved login|HTTP 401|HTTP 403/.test(msg)) {
+      sessionCheck = { at: Date.now(), ok: false };
+      return 'expired';
+    }
+    // Network trouble ≠ dead session — don't scare the user.
+    return 'unknown';
+  }
+}
+
 /** Instagram media ids are the shortcode base-64-decoded with this table
  *  (yt-dlp's _id_to_pk). Shortcodes longer than 28 chars carry a user-id
  *  prefix that must be dropped first. */
@@ -202,6 +263,13 @@ function entryFromItem(
   );
   const media = video ?? image;
   if (!media?.url || !pk) return null;
+  // Expose every video encode so the download step can honor the user's
+  // quality cap instead of always taking the largest.
+  const variants = video
+    ? (item.video_versions as IgMediaVersion[])
+        .filter((v) => typeof v?.url === 'string' && v.url.length > 0)
+        .map((v) => ({ url: v.url as string, width: v.width, height: v.height }))
+    : undefined;
   return {
     id: pk,
     title,
@@ -211,6 +279,7 @@ function entryFromItem(
     mediaType: video ? 'video' : 'image',
     webpageUrl,
     directUrl: media.url,
+    variants,
   };
 }
 

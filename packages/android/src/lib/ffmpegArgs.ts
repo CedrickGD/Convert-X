@@ -2,7 +2,9 @@
  * Build FFmpeg arg arrays for each Convert-X target.
  *
  * Quality is a 0..100 user-facing knob. For video → CRF (lower CRF = better
- * quality). For audio → bitrate (kbps).
+ * quality). For audio → bitrate (kbps). When targetSizeMb is set and the
+ * clip duration is known, video targets switch to a computed bitrate budget
+ * instead — the two rate-control modes are mutually exclusive.
  *
  * Editor fields (trim, stripAudio, speed, volume, rotate, flip, crop) are
  * applied here when the source is a video; image-only conversions ignore
@@ -16,6 +18,12 @@ const VIDEO_CRF_HI = 18; // quality=100
 const VIDEO_CRF_LO = 32; // quality=0
 const AUDIO_BITRATE_HI = 320;
 const AUDIO_BITRATE_LO = 64;
+
+// Target-size mode: the size budget assumes this audio bitrate (0 when
+// stripAudio), and the video bitrate never drops below the floor — a
+// too-small target should degrade, not produce unplayable output.
+const TARGET_SIZE_AUDIO_KBIT = 128;
+const TARGET_SIZE_MIN_VIDEO_KBIT = 100;
 
 function videoCrf(quality: number): number {
   const clamped = Math.max(0, Math.min(100, quality));
@@ -52,9 +60,15 @@ export type FfmpegBuildOpts = {
   resizeHeight?: number | null;
 
   // Video editor fields — applied when the source is video. Optional;
-  // callers can omit to take the defaults (no edits).
+  // callers can omit to take the defaults (no edits). Trim is per-file
+  // (FileEntry.trimStart/trimEnd), not a settings field.
   trimStart?: number | null;
   trimEnd?: number | null;
+  /** Source duration in seconds (editor probe or ffprobe). Enables the
+   *  target-size bitrate computation; unknown = quality mode. */
+  sourceDurationSec?: number | null;
+  /** Target output size in MB for video targets. null/undefined = off. */
+  targetSizeMb?: number | null;
   stripAudio?: boolean;
   speed?: number;
   volume?: number;
@@ -72,17 +86,24 @@ export type FfmpegBuildOpts = {
 
 /**
  * Spread the full ConvertSettings into FfmpegBuildOpts. Saves the caller
- * having to wire each field by hand.
+ * having to wire each field by hand. Trim + duration are per-file, so they
+ * ride in `fields` rather than settings.
  */
 export function fromConvertSettings(
   s: ConvertSettings,
-  fields: { inputPath: string; outputPath: string; target: FormatDef }
+  fields: {
+    inputPath: string;
+    outputPath: string;
+    target: FormatDef;
+    trimStart?: number | null;
+    trimEnd?: number | null;
+    sourceDurationSec?: number | null;
+  }
 ): FfmpegBuildOpts {
   return {
     ...fields,
     quality: s.quality,
-    trimStart: s.trimStart,
-    trimEnd: s.trimEnd,
+    targetSizeMb: s.targetSizeMb,
     stripAudio: s.stripAudio,
     speed: s.speed,
     volume: s.volume,
@@ -106,13 +127,17 @@ export function buildArgs(opts: FfmpegBuildOpts): string[] {
     return buildGifArgs(opts);
   }
 
-  // Trim args go BEFORE -i for fast seek when possible.
+  // Trim args go BEFORE -i for fast seek when possible. Non-GIF image
+  // targets only ever accept image inputs (FORMATS.accepts) — a still frame
+  // has no timeline, so -ss/-to must never reach them.
   const pre: string[] = ['-y', '-hide_banner'];
-  if (opts.trimStart != null && opts.trimStart > 0) {
-    pre.push('-ss', opts.trimStart.toString());
-  }
-  if (opts.trimEnd != null && opts.trimEnd > 0) {
-    pre.push('-to', opts.trimEnd.toString());
+  if (target.category !== 'image') {
+    if (opts.trimStart != null && opts.trimStart > 0) {
+      pre.push('-ss', opts.trimStart.toString());
+    }
+    if (opts.trimEnd != null && opts.trimEnd > 0) {
+      pre.push('-to', opts.trimEnd.toString());
+    }
   }
   pre.push('-i', inputPath);
 
@@ -127,6 +152,42 @@ export function buildArgs(opts: FfmpegBuildOpts): string[] {
 
 // ── Video ──────────────────────────────────────────────────────────────────
 
+/** Seconds of OUTPUT the size budget must cover — the trim window capped to
+ *  the known source duration, stretched by speed (2× speed halves the
+ *  output). null = unknown, which makes the caller keep quality mode. */
+function outputDurationSec(opts: FfmpegBuildOpts): number | null {
+  const start = opts.trimStart != null && opts.trimStart > 0 ? opts.trimStart : 0;
+  const end = opts.trimEnd != null && opts.trimEnd > 0 ? opts.trimEnd : null;
+  const src =
+    opts.sourceDurationSec != null && opts.sourceDurationSec > 0
+      ? opts.sourceDurationSec
+      : null;
+  let clip: number | null = null;
+  if (src != null) {
+    clip = (end != null ? Math.min(end, src) : src) - start;
+  } else if (end != null) {
+    clip = end - start;
+  }
+  if (clip == null || clip <= 0) return null;
+  const speed = opts.speed && opts.speed > 0 ? opts.speed : 1;
+  return clip / speed;
+}
+
+/** -b:v in kbit/s that fits targetSizeMb, or null when target-size mode is
+ *  off / the duration is unknown (silent fallback to the quality knob). */
+function targetVideoKbit(opts: FfmpegBuildOpts): number | null {
+  if (opts.targetSizeMb == null || opts.targetSizeMb <= 0) return null;
+  const seconds = outputDurationSec(opts);
+  if (seconds == null) return null;
+  // 3% shaved off the budget for container overhead.
+  const totalKbit = opts.targetSizeMb * 8192 * 0.97;
+  const audioKbit = opts.stripAudio ? 0 : TARGET_SIZE_AUDIO_KBIT;
+  return Math.max(
+    TARGET_SIZE_MIN_VIDEO_KBIT,
+    Math.round(totalKbit / seconds - audioKbit)
+  );
+}
+
 function buildVideoArgs(opts: FfmpegBuildOpts): string[] {
   const { target, quality } = opts;
   const args: string[] = [];
@@ -138,6 +199,19 @@ function buildVideoArgs(opts: FfmpegBuildOpts): string[] {
   // produces ~12 Mbps which is visually transparent for most footage.
   const h264Bitrate = `${Math.round(2_000_000 + (quality / 100) * 10_000_000)}`;
 
+  // Target-size mode replaces the quality knob entirely — a fixed -b:v and
+  // the quality-derived -q:v / bitrate band are conflicting rate controls,
+  // so exactly one set is emitted per file.
+  const sizeKbit = targetVideoKbit(opts);
+  const sizeRate =
+    sizeKbit != null
+      ? [
+          '-b:v', `${sizeKbit}k`,
+          '-maxrate', `${Math.round(sizeKbit * 1.45)}k`,
+          '-bufsize', `${sizeKbit * 2}k`,
+        ]
+      : null;
+
   // Video codec
   switch (target.key) {
     case 'mp4':
@@ -146,23 +220,23 @@ function buildVideoArgs(opts: FfmpegBuildOpts): string[] {
       // h264_mediacodec is Android's hardware H.264 encoder — built into
       // FFmpeg via the mediacodec wrapper, no libx264 needed. Faster than
       // libx264 (it's hardware) and produces good quality.
-      args.push('-c:v', 'h264_mediacodec', '-b:v', h264Bitrate);
+      args.push('-c:v', 'h264_mediacodec', ...(sizeRate ?? ['-b:v', h264Bitrate]));
       break;
     case 'avi':
-      args.push('-c:v', 'mpeg4', '-q:v', String(mpeg4Qscale(quality)));
+      args.push('-c:v', 'mpeg4', ...(sizeRate ?? ['-q:v', String(mpeg4Qscale(quality))]));
       break;
     case 'flv':
-      args.push('-c:v', 'flv1', '-q:v', String(mpeg4Qscale(quality)));
+      args.push('-c:v', 'flv1', ...(sizeRate ?? ['-q:v', String(mpeg4Qscale(quality))]));
       break;
     case 'wmv':
-      args.push('-c:v', 'msmpeg4v3', '-q:v', String(mpeg4Qscale(quality)));
+      args.push('-c:v', 'msmpeg4v3', ...(sizeRate ?? ['-q:v', String(mpeg4Qscale(quality))]));
       break;
     case 'ts':
-      args.push('-c:v', 'h264_mediacodec', '-b:v', h264Bitrate);
+      args.push('-c:v', 'h264_mediacodec', ...(sizeRate ?? ['-b:v', h264Bitrate]));
       args.push('-f', 'mpegts');
       break;
     default:
-      args.push('-c:v', 'h264_mediacodec', '-b:v', h264Bitrate);
+      args.push('-c:v', 'h264_mediacodec', ...(sizeRate ?? ['-b:v', h264Bitrate]));
   }
 
   // Video filters — resize, crop, rotate, flip — composed into one -vf chain.
@@ -190,10 +264,13 @@ function buildVideoArgs(opts: FfmpegBuildOpts): string[] {
     // Choose audio codec per container — all built-in in ffmpeg-kit-main-min
     // (no external lame / libopus needed). AAC is the default since it's
     // the broadest codec compatibility on Android; WMA pairs with WMV
-    // because legacy players expect that combo.
+    // because legacy players expect that combo. Target-size mode budgets
+    // TARGET_SIZE_AUDIO_KBIT for audio, so emit that instead of the fixed
+    // 160k or the size math wouldn't hold.
+    const abr = sizeKbit != null ? `${TARGET_SIZE_AUDIO_KBIT}k` : '160k';
     const audioCodec =
-      target.key === 'wmv'  ? ['-c:a', 'wmav2', '-b:a', '160k'] :
-                              ['-c:a', 'aac', '-b:a', '160k'];
+      target.key === 'wmv'  ? ['-c:a', 'wmav2', '-b:a', abr] :
+                              ['-c:a', 'aac', '-b:a', abr];
     args.push(...audioCodec);
 
     // Audio filter chain — speed (atempo) + volume.

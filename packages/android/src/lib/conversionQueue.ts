@@ -165,6 +165,11 @@ async function runFfmpegFile(
   const resizeHeight = r?.kind === 'pixels' ? r.height ?? null : null;
 
   const s = opts.settings;
+  // Trim is per-file (set in the ClipEditor against that clip's timeline).
+  // Images have no timeline — never forward trim for them, a stray -ss on a
+  // still would seek past the only frame.
+  const trimStart = file.mediaType === 'image' ? null : file.trimStart ?? null;
+  const trimEnd = file.mediaType === 'image' ? null : file.trimEnd ?? null;
   const args = buildArgs({
     inputPath,
     outputPath: cleanOutput,
@@ -172,8 +177,19 @@ async function runFfmpegFile(
     quality: s.quality,
     resizeWidth,
     resizeHeight,
-    trimStart: s.trimStart,
-    trimEnd: s.trimEnd,
+    trimStart,
+    trimEnd,
+    // Editor-probed duration wins (it matches what the trim was set
+    // against); the ffprobe result covers batch files never opened there.
+    // Positive check, not ??: a stored 0 (duration-less container) must
+    // not shadow a valid ffprobe duration.
+    sourceDurationSec:
+      file.duration && file.duration > 0
+        ? file.duration
+        : durationMs > 0
+        ? durationMs / 1000
+        : null,
+    targetSizeMb: s.targetSizeMb,
     stripAudio: s.stripAudio,
     speed: s.speed,
     volume: s.volume,

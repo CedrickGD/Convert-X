@@ -14,17 +14,23 @@ type Props = {
   settings: ConvertSettings;
   /** True when target format is GIF — hides audio controls in the editor. */
   isGifTarget: boolean;
-  onChange: (patch: Partial<ConvertSettings>) => void;
+  /** Writes trim onto the bound file (ConvertContext setFileTrim). */
+  onTrimChange: (patch: { trimStart?: number | null; trimEnd?: number | null }) => void;
+  /** Reports the probed duration so it lands on the FileEntry (target-size
+   *  export needs it). */
+  onDurationKnown?: (duration: number) => void;
 };
 
 /**
  * The video editor — preview + scrubbable timeline with in/out trim handles.
+ * Trim reads/writes the bound FILE's trimStart/trimEnd, not settings — each
+ * clip in a batch keeps its own points.
  *
  * Audio toggle / speed / volume / rotate / flip live in the existing
  * VideoEditControls card below. ClipEditor focuses on the visual editing
  * surface (preview + timeline) so the two compose cleanly.
  */
-export function ClipEditor({ file, settings, isGifTarget, onChange }: Props) {
+export function ClipEditor({ file, settings, isGifTarget, onTrimChange, onDurationKnown }: Props) {
   const { theme } = useTheme();
   const [duration, setDuration] = useState<number>(0);
   const [trackWidth, setTrackWidth] = useState<number>(0);
@@ -32,25 +38,29 @@ export function ClipEditor({ file, settings, isGifTarget, onChange }: Props) {
   const previewRef = useRef<MediaPreviewHandle>(null);
 
   // Resolve actual trim points (fall back to full clip).
-  const trimStart = settings.trimStart ?? 0;
-  const trimEnd = settings.trimEnd ?? duration;
+  const trimStart = file.trimStart ?? 0;
+  const trimEnd = file.trimEnd ?? duration;
   const clipLength = Math.max(0, trimEnd - trimStart);
 
   const handleLoad = useCallback(
     (meta: { duration: number; width: number; height: number }) => {
       setDuration(meta.duration);
+      // ExoPlayer reports 0 for duration-less containers (MPEG-TS) — a
+      // stored 0 would shadow the queue's own ffprobe fallback and
+      // silently disable target-size mode for the file.
+      if (meta.duration > 0) onDurationKnown?.(meta.duration);
       // Trim points surviving from a longer clip would render the end
       // handle past the track (unreachable behind overflow:hidden) and
       // feed ffmpeg -ss/-to beyond the input — clear anything the loaded
       // clip can't satisfy.
       if (
-        (settings.trimEnd != null && settings.trimEnd > meta.duration) ||
-        (settings.trimStart != null && settings.trimStart >= meta.duration)
+        (file.trimEnd != null && file.trimEnd > meta.duration) ||
+        (file.trimStart != null && file.trimStart >= meta.duration)
       ) {
-        onChange({ trimStart: null, trimEnd: null });
+        onTrimChange({ trimStart: null, trimEnd: null });
       }
     },
-    [settings.trimStart, settings.trimEnd, onChange]
+    [file.trimStart, file.trimEnd, onTrimChange, onDurationKnown]
   );
 
   const handleTime = useCallback((t: number) => {
@@ -76,9 +86,9 @@ export function ClipEditor({ file, settings, isGifTarget, onChange }: Props) {
   }, []);
   const handleTrimStartCommit = useCallback(
     (t: number) => {
-      onChange({ trimStart: t > 0 ? t : null });
+      onTrimChange({ trimStart: t > 0 ? t : null });
     },
-    [onChange]
+    [onTrimChange]
   );
 
   const handleTrimEndScrub = useCallback((t: number) => {
@@ -86,9 +96,9 @@ export function ClipEditor({ file, settings, isGifTarget, onChange }: Props) {
   }, []);
   const handleTrimEndCommit = useCallback(
     (t: number) => {
-      onChange({ trimEnd: t < duration ? t : null });
+      onTrimChange({ trimEnd: t < duration ? t : null });
     },
-    [onChange, duration]
+    [onTrimChange, duration]
   );
 
   // Pause preview when the editor leaves the screen.
@@ -117,8 +127,8 @@ export function ClipEditor({ file, settings, isGifTarget, onChange }: Props) {
       <MediaPreview
         ref={previewRef}
         uri={file.uri}
-        trimStart={settings.trimStart}
-        trimEnd={settings.trimEnd}
+        trimStart={file.trimStart ?? null}
+        trimEnd={file.trimEnd ?? null}
         stripAudio={settings.stripAudio || isGifTarget}
         volume={settings.volume}
         speed={settings.speed}

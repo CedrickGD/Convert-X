@@ -40,10 +40,18 @@ const INITIAL: ConvertState = {
   currentSessionId: null,
 };
 
+/** Trim fields the ClipEditor writes onto its bound file. */
+export type FileTrimPatch = {
+  trimStart?: number | null;
+  trimEnd?: number | null;
+};
+
 type Action =
   | { type: 'addFiles'; files: FileEntry[] }
   | { type: 'removeFile'; id: string }
   | { type: 'updateSettings'; patch: Partial<ConvertSettings> }
+  | { type: 'setFileTrim'; id: string; patch: FileTrimPatch }
+  | { type: 'setFileDuration'; id: string; duration: number }
   | { type: 'reset' }
   | { type: 'beginSession'; sessionId: string }
   | { type: 'fileStatus'; sessionId: string; id: string; status: FileEntry['status']; progress?: number }
@@ -53,33 +61,16 @@ type Action =
   | { type: 'finishSession'; sessionId: string }
   | { type: 'cancelSession' };
 
-/** Trim survives file-set changes only while the ClipEditor-bound (first)
- *  video is still the same file; otherwise it would silently apply to a
- *  different clip. */
-function clearTrimIfVideoChanged(
-  state: ConvertState,
-  nextFiles: FileEntry[]
-): ConvertState['settings'] {
-  const prevVideo = state.files.find((f) => f.mediaType === 'video')?.id ?? null;
-  const nextVideo = nextFiles.find((f) => f.mediaType === 'video')?.id ?? null;
-  if (prevVideo === nextVideo) return state.settings;
-  return { ...state.settings, trimStart: null, trimEnd: null };
-}
-
 function reducer(state: ConvertState, action: Action): ConvertState {
   switch (action.type) {
     case 'addFiles': {
+      // Trim lives on each FileEntry, so file-set changes can't make trim
+      // points silently apply to a different clip — no settings cleanup.
       const next = [...state.files, ...action.files];
       return {
         ...state,
         files: next,
         view: next.length > 0 ? 'ready' : 'idle',
-        // Trim points were set against the ClipEditor-bound video — when
-        // the file-set change swaps WHICH video that is, they'd silently
-        // apply to a different clip (trimEnd=80s inherited by a 30s clip
-        // → empty output). Keep them while the bound video is unchanged
-        // (e.g. appending an image to the batch).
-        settings: clearTrimIfVideoChanged(state, next),
       };
     }
     case 'removeFile': {
@@ -88,23 +79,40 @@ function reducer(state: ConvertState, action: Action): ConvertState {
         ...state,
         files: next,
         view: next.length === 0 ? 'idle' : state.view,
-        settings: clearTrimIfVideoChanged(state, next),
       };
     }
     case 'updateSettings':
       return { ...state, settings: { ...state.settings, ...action.patch } };
+    case 'setFileTrim':
+      return {
+        ...state,
+        files: state.files.map((f) =>
+          f.id === action.id ? { ...f, ...action.patch } : f
+        ),
+      };
+    case 'setFileDuration': {
+      // The editor re-reports duration on every mount — skip the no-op so
+      // reopening a clip doesn't allocate new state and re-render everything.
+      const cur = state.files.find((f) => f.id === action.id);
+      if (!cur || cur.duration === action.duration) return state;
+      return {
+        ...state,
+        files: state.files.map((f) =>
+          f.id === action.id ? { ...f, duration: action.duration } : f
+        ),
+      };
+    }
     case 'reset':
-      // Keep the user's format / quality / transform / gif preferences
-      // ("convert again with the same settings"); only the per-file editing
-      // fields (custom name, crop, trim) don't carry to the next batch.
+      // Keep the user's format / quality / target-size / transform / gif
+      // preferences ("convert again with the same settings"); only the
+      // per-file editing fields (custom name, crop) don't carry to the next
+      // batch. Trim lives on the files, which are cleared here anyway.
       return {
         ...INITIAL,
         settings: {
           ...state.settings,
           customName: null,
           crop: null,
-          trimStart: null,
-          trimEnd: null,
         },
       };
     case 'beginSession':
@@ -193,6 +201,10 @@ type ConvertContextValue = {
   addFiles: (files: FileEntry[]) => void;
   removeFile: (id: string) => void;
   updateSettings: (patch: Partial<ConvertSettings>) => void;
+  /** Set trim points on one file (the ClipEditor-bound video). */
+  setFileTrim: (id: string, patch: FileTrimPatch) => void;
+  /** Record a file's probed duration once the editor learns it. */
+  setFileDuration: (id: string, duration: number) => void;
   reset: () => void;
   /** Called by the conversion queue — not from UI. */
   dispatch: React.Dispatch<Action>;
@@ -217,6 +229,14 @@ export function ConvertProvider({ children }: { children: React.ReactNode }) {
     (patch: Partial<ConvertSettings>) => dispatch({ type: 'updateSettings', patch }),
     []
   );
+  const setFileTrim = useCallback(
+    (id: string, patch: FileTrimPatch) => dispatch({ type: 'setFileTrim', id, patch }),
+    []
+  );
+  const setFileDuration = useCallback(
+    (id: string, duration: number) => dispatch({ type: 'setFileDuration', id, duration }),
+    []
+  );
   const reset = useCallback(() => dispatch({ type: 'reset' }), []);
   const beginSession = useCallback(() => {
     const id = `convert-${Date.now()}-${nextSessionId++}`;
@@ -232,12 +252,14 @@ export function ConvertProvider({ children }: { children: React.ReactNode }) {
       addFiles,
       removeFile,
       updateSettings,
+      setFileTrim,
+      setFileDuration,
       reset,
       dispatch,
       beginSession,
       cancel,
     }),
-    [state, addFiles, removeFile, updateSettings, reset, beginSession, cancel]
+    [state, addFiles, removeFile, updateSettings, setFileTrim, setFileDuration, reset, beginSession, cancel]
   );
 
   return <ConvertContext.Provider value={value}>{children}</ConvertContext.Provider>;

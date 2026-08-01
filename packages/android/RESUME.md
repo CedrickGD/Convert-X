@@ -6,8 +6,55 @@ Snapshot of where we left off, written to drop back in with zero ramp-up.
 
 ## Current state
 
-**Latest release:** v0.7.6 (tag `v0.7.6`, verified live via Metro dev build
-on the user's S26 Ultra SM-S948B / Android 16 before tagging).
+**Latest release:** v0.8.0 (tag `v0.8.0`) — the feature wave on top of
+v0.7.6, all requested by the user in one "do all of em" session:
+
+- **Parallel downloads**: direct-CDN entries run 3-wide alongside a
+  sequential yt-dlp lane (`downloadBatch` worker pool); the old single
+  `inflight` slot became an `inflightCancels` Map so Cancel aborts every
+  concurrent transfer; progress = per-item pct array, label = "N of M done".
+- **Self-healing URLs**: expired signed CDN URL (401/403/404/410/429 via
+  `HttpStatusError`) triggers ONE memoized re-probe of `sourceUrl`; fresh
+  URLs matched by entry id, item retried; cancel-checked between attempts.
+- **Kill-proof batches**: `PendingBatch` descriptor persisted per item;
+  next launch shows a Resume banner (re-probes, downloads only remaining
+  ids, uses the PERSISTED audioOnly/format/quality). Keep-awake held for
+  the batch duration (expo-keep-awake, ships inside every expo build).
+- **Error log + crash capture** (`src/lib/errorLog.ts`): AsyncStorage ring
+  buffer; explicit logError at probe/download catch sites; ErrorUtils
+  crash hook; Hermes-native promise-rejection tracker (the npm `promise`
+  polyfill hook is a no-op on Hermes — fallback only). Credits →
+  collapsible "Error log" card with Copy/Clear. Fatal-crash persistence is
+  best-effort (AsyncStorage is async; process may die first).
+- **Session health**: `checkInstagramSession` (topsearch, 15-min cache,
+  invalidated on login/import/logout via
+  `invalidateInstagramSessionCache`); Credits shows "Session expired —
+  sign in again" on the Instagram row.
+- **Twitter/X images+videos** (`src/lib/twitterScraper.ts`): anonymous
+  syndication-CDN prober (photos at `name=orig`, videos with mp4
+  variants + dims parsed from the `/WxH/` URL path, playlistIndex for
+  yt-dlp fallbacks). Live-tested: single/multi photo, multi-video,
+  mixed, GIF, tombstone, 404, text-only. Tombstoned (NSFW/protected)
+  tweets fall through to cookied yt-dlp.
+- **Profile links** → active stories (host-anchored regex, reserved
+  segments excluded); **quality cap honored** for direct video entries
+  via `DownloadEntry.variants`.
+- **Per-file trim** (convert): trim lives on `FileEntry`, ClipEditor
+  binds the selected video (FileList rows selectable when 2+ videos),
+  clamps stale trim, reports duration (>0 guard). **Target-size export**:
+  `targetSizeMb` setting → `-b:v/-maxrate/-bufsize` bitrate mode
+  (speed-adjusted duration, 128k audio, silent quality-mode fallback
+  when duration unknown).
+
+Verified live on the S26 dev build: Twitter photo end-to-end (probe →
+gallery save), story 2-item batch downloading IN PARALLEL, Error log card,
+green session badge. Verified by typecheck+bundle+adversarial review only:
+resume flow, convert-side per-file trim / target size. A 3-lens regression
+review of the diff raised 16 issues (2 major: cancel-ignoring 4xx retry,
+Twitter quality cap) — all fixed except two accepted nits (fatal-crash
+persistence best-effort; ErrorLogCard could paginate past 20).
+
+**Previous release v0.7.6:**
 
 v0.7.6 = the Instagram-story fix plus 10 adversarially-verified audit fixes.
 The story bug (user report: 2-item story, only the second downloaded):

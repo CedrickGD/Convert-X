@@ -22,12 +22,16 @@ import { useFeedback } from '../components/Feedback';
 import { detectSite } from '../../modules/convert-x-downloader/src';
 import {
   cancelBatch,
+  clearPendingBatch,
   DownloadEntry,
   downloadBatch,
+  getPendingBatch,
   isDownloading,
+  PendingBatch,
   probeUrl,
   updateYtDlp,
 } from '../lib/downloadQueue';
+import { logError } from '../lib/errorLog';
 import type { RootStackParamList } from '../navigation/types';
 import { addHistoryEntry } from '../lib/history';
 import { addRecentUrl, getRecentUrls } from '../lib/recentUrls';
@@ -71,6 +75,12 @@ export function DownloadScreen() {
   const [results, setResults] = useState<{ name: string; uri: string }[]>([]);
   const [recent, setRecent] = useState<string[]>([]);
   const [engineUpdating, setEngineUpdating] = useState(false);
+  // Batch descriptor a killed app left behind — offered for resume once.
+  const [pendingResume, setPendingResume] = useState<PendingBatch | null>(null);
+  // The URL the current entries came from. Distinct from `url` (the user
+  // can edit the field after probing) — the batch layer needs the REAL
+  // source to refresh expired CDN URLs and persist the resume descriptor.
+  const probedUrlRef = useRef<string | null>(null);
 
   const site = detectSite(url);
   const navigation = useNavigation<NativeStackNavigationProp<RootStackParamList>>();
@@ -139,6 +149,17 @@ export function DownloadScreen() {
     }
   }, [activeMode, state.view, entries.length, probing, done]);
 
+  // Offer to resume a batch a killed app left unfinished (once, on mount).
+  useEffect(() => {
+    let active = true;
+    void getPendingBatch().then((p) => {
+      if (active && p && p.remainingIds.length > 0) setPendingResume(p);
+    });
+    return () => {
+      active = false;
+    };
+  }, []);
+
   const handlePaste = useCallback(async () => {
     const txt = await Clipboard.getStringAsync();
     if (txt) setUrl(txt.trim());
@@ -165,6 +186,7 @@ export function DownloadScreen() {
         spotifyClientSecret: state.settings.spotifyClientSecret || undefined,
         cookies: state.settings.cookiesPath || undefined,
       });
+      probedUrlRef.current = trimmed;
       setEntries(result.entries);
       void addRecentUrl(trimmed).then(setRecent);
       // If the URL targeted a specific carousel item (Instagram does
@@ -177,6 +199,7 @@ export function DownloadScreen() {
         setSelectedIds(new Set(result.entries.map((e) => e.id)));
       }
     } catch (e) {
+      logError('probe', e, trimmed);
       setError(e instanceof Error ? e.message : String(e));
     } finally {
       setProbing(false);
@@ -201,12 +224,20 @@ export function DownloadScreen() {
   const partialCarousel = entries.some((e) => e.partialCarousel);
 
   const runDownload = useCallback(
-    async (toDownload: DownloadEntry[]) => {
+    async (
+      toDownload: DownloadEntry[],
+      // A resumed batch must run with the settings it was STARTED with,
+      // not whatever the user flipped to since the app was killed.
+      settingsOverride?: { audioOnly: boolean; format: string | null; quality: string | null }
+    ) => {
       if (toDownload.length === 0) return;
       // Cancel flips the view back to the preview while the native yt-dlp
       // process is still dying — without this guard a quick re-tap starts
       // a second concurrent batch fighting over the shared cancel state.
       if (isDownloading()) return;
+      // Any banner still describing an OLDER interrupted batch is now
+      // obsolete — this batch owns the persistence slot.
+      setPendingResume(null);
       setActiveBatchLen(toDownload.length);
       setError(null);
       setDone(null);
@@ -224,13 +255,14 @@ export function DownloadScreen() {
         const result = await downloadBatch({
           sessionId,
           entries: toDownload,
-          audioOnly: state.settings.category === 'audio',
-          format: state.settings.format,
-          quality: state.settings.quality,
+          audioOnly: settingsOverride?.audioOnly ?? state.settings.category === 'audio',
+          format: settingsOverride ? settingsOverride.format : state.settings.format,
+          quality: settingsOverride ? settingsOverride.quality : state.settings.quality,
           spotifyClientId: state.settings.spotifyClientId || undefined,
           spotifyClientSecret: state.settings.spotifyClientSecret || undefined,
           cookies: state.settings.cookiesPath || undefined,
           saveToGallery: true,
+          sourceUrl: probedUrlRef.current ?? undefined,
           onProgress: (overall, idx) => {
             setProgress(overall);
             setCurrentItemIdx(idx);
@@ -284,6 +316,49 @@ export function DownloadScreen() {
     if (failed.length > 0) runDownload(failed);
   }, [done, entries, runDownload]);
 
+  // Resume a batch a killed app left behind: re-probe the source (direct
+  // CDN URLs are long stale), then download only what never finished.
+  const handleResume = useCallback(async () => {
+    const p = pendingResume;
+    if (!p) return;
+    setPendingResume(null);
+    setUrl(p.sourceUrl);
+    setProbing(true);
+    setError(null);
+    try {
+      const result = await probeUrl(p.sourceUrl, {
+        spotifyClientId: state.settings.spotifyClientId || undefined,
+        spotifyClientSecret: state.settings.spotifyClientSecret || undefined,
+        cookies: state.settings.cookiesPath || undefined,
+      });
+      probedUrlRef.current = p.sourceUrl;
+      const remaining = new Set(p.remainingIds);
+      const toDownload = result.entries.filter((e) => remaining.has(e.id));
+      if (toDownload.length === 0) {
+        await clearPendingBatch();
+        setError('Nothing left to resume — the interrupted items are no longer available.');
+        return;
+      }
+      setEntries(result.entries);
+      setSelectedIds(new Set(toDownload.map((e) => e.id)));
+      await runDownload(toDownload, {
+        audioOnly: p.audioOnly,
+        format: p.format,
+        quality: p.quality,
+      });
+    } catch (e) {
+      logError('probe', e, p.sourceUrl);
+      setError(e instanceof Error ? e.message : String(e));
+    } finally {
+      setProbing(false);
+    }
+  }, [pendingResume, state.settings, runDownload]);
+
+  const handleDismissResume = useCallback(() => {
+    setPendingResume(null);
+    void clearPendingBatch();
+  }, []);
+
   const handleCancel = useCallback(() => {
     cancelBatch();
     download.dispatch({ type: 'cancelSession' });
@@ -332,6 +407,52 @@ export function DownloadScreen() {
     >
       {showInput ? (
         <View style={styles.stack}>
+          {pendingResume ? (
+            <View
+              style={[
+                styles.card,
+                { backgroundColor: theme.bg.surface, borderColor: theme.accent.primary },
+              ]}
+            >
+              <Text style={[styles.cardLabel, { color: theme.text.muted }]}>
+                INTERRUPTED DOWNLOAD
+              </Text>
+              <Text style={{ color: theme.text.secondary, fontSize: 13, lineHeight: 18 }}>
+                {pendingResume.remainingIds.length} of {pendingResume.items.length} items never
+                finished. Resume where it left off?
+              </Text>
+              <View style={styles.actions}>
+                <Pressable
+                  onPress={handleDismissResume}
+                  style={({ pressed }) => [
+                    styles.ghostBtn,
+                    {
+                      borderColor: theme.border.subtle,
+                      backgroundColor: pressed ? theme.bg.surfaceHigh : 'transparent',
+                    },
+                  ]}
+                >
+                  <Text style={[styles.ghostBtnText, { color: theme.text.secondary }]}>
+                    Dismiss
+                  </Text>
+                </Pressable>
+                <Pressable
+                  onPress={handleResume}
+                  style={({ pressed }) => [
+                    styles.primaryBtn,
+                    {
+                      backgroundColor: theme.accent.primary,
+                      opacity: pressed ? 0.85 : 1,
+                    },
+                  ]}
+                >
+                  <Text style={[styles.primaryBtnText, { color: theme.accent.onPrimary }]}>
+                    Resume
+                  </Text>
+                </Pressable>
+              </View>
+            </View>
+          ) : null}
           {/* URL input card */}
           <View
             style={[
@@ -724,8 +845,11 @@ export function DownloadScreen() {
           <ProgressBar
             progress={progress}
             label={
+              // Completed count, not "current index" — items download
+              // CONCURRENTLY now, so there is no single current item and
+              // an index-based label would flip between workers.
               activeBatchLen > 1
-                ? `Item ${currentItemIdx + 1} of ${activeBatchLen}`
+                ? `${Math.min(results.length, activeBatchLen)} of ${activeBatchLen} done`
                 : 'Downloading…'
             }
           />

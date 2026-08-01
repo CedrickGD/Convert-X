@@ -12,6 +12,11 @@ type Props = {
   view: 'ready' | 'converting' | 'done';
   onRemoveFile?: (id: string) => void;
   onAddFiles?: () => void;
+  /** Highlighted row — the video currently bound to the ClipEditor. */
+  selectedFileId?: string | null;
+  /** When set (multi-video batches), tapping a video row picks it as the
+   *  ClipEditor's clip. Non-video rows stay inert. */
+  onSelectFile?: (id: string) => void;
 };
 
 // Media-type indicator dot — these are NOT theme tokens; they're informational
@@ -30,7 +35,14 @@ const TYPE_DOT: Record<string, string> = {
  * Compact rows, scrollable. Per-row: color dot, name + meta, status pill
  * or inline progress bar, remove button (ready view only).
  */
-export function FileList({ files, view, onRemoveFile, onAddFiles }: Props) {
+export function FileList({
+  files,
+  view,
+  onRemoveFile,
+  onAddFiles,
+  selectedFileId,
+  onSelectFile,
+}: Props) {
   const { theme } = useTheme();
 
   return (
@@ -75,6 +87,8 @@ export function FileList({ files, view, onRemoveFile, onAddFiles }: Props) {
             view={view}
             theme={theme}
             onRemoveFile={onRemoveFile}
+            onSelectFile={onSelectFile}
+            selected={f.id === selectedFileId}
           />
         ))}
       </ScrollView>
@@ -83,26 +97,52 @@ export function FileList({ files, view, onRemoveFile, onAddFiles }: Props) {
 }
 
 // Memoized so a progress tick on one file doesn't re-render every other row.
-// The reducer keeps unchanged file objects ref-stable, and onRemoveFile / view
-// / theme are all stable, so unchanged rows skip rendering entirely.
+// The reducer keeps unchanged file objects ref-stable, and onRemoveFile /
+// onSelectFile / view / theme are all stable, so a selection change only
+// re-renders the two rows whose `selected` flag flipped.
 const FileRow = React.memo(function FileRow({
   file,
   view,
   theme,
   onRemoveFile,
+  onSelectFile,
+  selected,
 }: {
   file: FileEntry;
   view: 'ready' | 'converting' | 'done';
   theme: ReturnType<typeof useTheme>['theme'];
   onRemoveFile?: (id: string) => void;
+  onSelectFile?: (id: string) => void;
+  selected?: boolean;
 }) {
   const dot = TYPE_DOT[file.mediaType] ?? TYPE_DOT.unknown;
   const isConverting = file.status === 'converting';
   const isDone = file.status === 'done';
   const isError = file.status === 'error';
+  const selectable = view === 'ready' && !!onSelectFile && file.mediaType === 'video';
 
   return (
-    <View style={styles.row}>
+    <Pressable
+      onPress={selectable ? () => onSelectFile?.(file.id) : undefined}
+      disabled={!selectable}
+      accessibilityRole={selectable ? 'button' : undefined}
+      accessibilityState={selectable ? { selected: !!selected } : undefined}
+      accessibilityLabel={selectable ? `Edit ${file.name} in the clip editor` : undefined}
+      style={[
+        styles.row,
+        // Reserve the border on every row while selection mode is active so
+        // picking a clip doesn't shift the layout of its neighbours.
+        onSelectFile
+          ? [
+              styles.selectableRow,
+              {
+                borderColor: selected ? theme.accent.primary : 'transparent',
+                backgroundColor: selected ? theme.accent.subtle : 'transparent',
+              },
+            ]
+          : null,
+      ]}
+    >
       <View style={[styles.dot, { backgroundColor: dot }]} />
       <View style={styles.rowBody}>
         <Text
@@ -164,7 +204,7 @@ const FileRow = React.memo(function FileRow({
           <X size={14} strokeWidth={2} color={theme.text.muted} />
         </Pressable>
       ) : null}
-    </View>
+    </Pressable>
   );
 });
 
@@ -201,6 +241,11 @@ const styles = StyleSheet.create({
     gap: spacing.md,
     paddingHorizontal: spacing.xl,
     paddingVertical: spacing.md,
+  },
+  selectableRow: {
+    marginHorizontal: spacing.xs,
+    borderRadius: radius.xs,
+    borderWidth: StyleSheet.hairlineWidth,
   },
   dot: { width: 8, height: 8, borderRadius: 4 },
   rowBody: { flex: 1, gap: 2 },
