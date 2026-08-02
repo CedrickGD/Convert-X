@@ -6,7 +6,33 @@ Snapshot of where we left off, written to drop back in with zero ramp-up.
 
 ## Current state
 
-**Latest release:** v0.8.1 (tag `v0.8.1`) — icon pipeline repair.
+**Latest release:** v0.8.2 (tag `v0.8.2`) — icon recolour: **white on black**.
+
+v0.8.1's silver gradient (`#f2f4f7` → `#9aa1ab`) on a `#2a2a2e` plate topped out
+around 4:1 contrast and read as washed out at launcher size. Now flat
+`#ffffff` on flat `#000000` (~21:1). Changed in the SVG sources, not the
+rasters — `source-cx.svg` / `source-cx-fg.svg` in
+`../desktop/src-tauri/icons/` — then regenerated via `npm run icons`.
+
+The background colour is declared in THREE places that must agree:
+`icon-manifest.json` `bg_color` (tints the knockout gap baked into the
+foreground PNGs), `res/values/colors.xml` `@iconBackground` (what the launcher
+paints), and `app.json` `adaptiveIcon.backgroundColor` (what `expo prebuild`
+would regenerate colors.xml from). If they drift, the knockout stops matching
+the background and a visible seam appears through the glyph, so
+`gen-icons.js` now asserts all three match and exits non-zero if not.
+
+Known trade-off, accepted deliberately: a pure-black plate has no silhouette
+on pure-dark surfaces (the Settings app-info screen, a black wallpaper) — only
+the white glyph shows. It looks right in the app drawer over a wallpaper,
+which is where it actually gets launched from. If that ever grates, bump
+`bg_color` to `#0d0d0f` and re-run `npm run icons`; nothing else needs to change.
+
+> NOTE: the SVG sources are shared with the DESKTOP Tauri icon set, so
+> `packages/desktop/src-tauri/icons/*.png` are now stale relative to them.
+> Regenerate the desktop set before the next desktop release.
+
+**Previous release v0.8.1** (tag `v0.8.1`) — icon pipeline repair.
 
 The new silver-CX icon had been rendered into `assets/` and `res/mipmap-*`
 by hand, and that ad-hoc process left two real defects in the shipped APK:

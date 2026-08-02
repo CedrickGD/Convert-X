@@ -1,0 +1,6 @@
+{
+  "default": "source-cx.svg",
+  "android_fg": "source-cx-fg.svg",
+  "android_fg_scale": 62,
+  "bg_color": "#000000"
+}

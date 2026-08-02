@@ -57,7 +57,42 @@ const FG_SVG = fs.readFileSync(path.join(ICONS, manifest.android_fg), 'utf8');
 // plate, so the foreground's knockout gap has to be repainted to match or it
 // shows up as a lighter seam through the glyph.
 const SPLASH_BG = '#0a0a0a';
-const ICON_BG = manifest.bg_color; // #2a2a2e, mirrors @color/iconBackground
+const ICON_BG = manifest.bg_color; // mirrors @color/iconBackground
+
+/**
+ * The adaptive icon's background is a flat colour declared in THREE places
+ * that must agree: the manifest (which tints the knockout gap baked into the
+ * foreground PNGs), res/values/colors.xml (what the launcher actually paints),
+ * and app.json (what `expo prebuild` would regenerate colors.xml from). If
+ * they drift, the knockout stops matching the background and a visible seam
+ * appears through the glyph. Fail loudly rather than emit a broken icon.
+ */
+function assertBackgroundInSync() {
+  const norm = (c) => String(c || '').trim().toLowerCase();
+  const colorsXml = fs.readFileSync(
+    path.join(RES, 'values', 'colors.xml'),
+    'utf8'
+  );
+  const m = colorsXml.match(/<color name="iconBackground">\s*([^<]+)</);
+  const appJson = JSON.parse(fs.readFileSync(path.join(ROOT, 'app.json'), 'utf8'));
+  const declared = appJson.expo?.android?.adaptiveIcon?.backgroundColor;
+  const problems = [];
+  if (!m || norm(m[1]) !== norm(ICON_BG)) {
+    problems.push(
+      `res/values/colors.xml @iconBackground is ${m ? m[1].trim() : '(missing)'}, expected ${ICON_BG}`
+    );
+  }
+  if (norm(declared) !== norm(ICON_BG)) {
+    problems.push(
+      `app.json expo.android.adaptiveIcon.backgroundColor is ${declared}, expected ${ICON_BG}`
+    );
+  }
+  if (problems.length) {
+    console.error(`Background colour out of sync with ${manifest.default}'s manifest:`);
+    problems.forEach((p) => console.error('  ' + p));
+    process.exit(1);
+  }
+}
 
 /** Fraction of the fg SVG's 1024 canvas actually covered by the glyph. */
 const GLYPH_EXTENT = 0.637;
@@ -193,6 +228,8 @@ async function glyph(size, bg, opts = {}) {
 }
 
 (async () => {
+  assertBackgroundInSync();
+
   for (let i = 0; i < DENSITIES.length; i++) {
     const d = DENSITIES[i];
     await emit(
