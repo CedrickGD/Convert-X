@@ -5,6 +5,18 @@
   export let view = "ready"; // ready | converting | done
   export let onRemoveFile;
   export let onAddFiles;
+  // Highlighted row — the video currently bound to the ClipEditor. Only set
+  // for multi-video batches (a single video is always the editor's clip).
+  export let selectedFileId = null;
+  // When set, clicking a video row picks it as the ClipEditor's clip.
+  // Non-video rows stay inert.
+  export let onSelectFile = null;
+
+  $: selectionActive = view === "ready" && typeof onSelectFile === "function";
+
+  function isSelectable(file) {
+    return selectionActive && file.detectedType === "video";
+  }
 
   function fmtSize(bytes) {
     if (!bytes) return "";
@@ -47,7 +59,17 @@
 
   <div class="list-body">
     {#each files as file (file.id)}
-      <div class="file-row" class:done={file.status === "done"} class:error={file.status === "error" || file.status === "skipped"}>
+      <!-- svelte-ignore a11y-click-events-have-key-events -->
+      <!-- svelte-ignore a11y-no-static-element-interactions -->
+      <div
+        class="file-row"
+        class:done={file.status === "done"}
+        class:error={file.status === "error" || file.status === "skipped"}
+        class:selectmode={selectionActive}
+        class:selectable={isSelectable(file)}
+        class:selected={selectionActive && file.id === selectedFileId}
+        on:click={() => { if (isSelectable(file)) onSelectFile(file.id); }}
+      >
         <div class="type-dot {typeIcon(file.detectedType)}"></div>
 
         <div class="file-info">
@@ -62,7 +84,7 @@
           {:else if file.status === "done"}
             <span class="status-text done-text">{fmtSize(file.outputSize)}</span>
           {:else if file.status === "error"}
-            <span class="status-text error-text">Failed</span>
+            <span class="status-text error-text" title={file.error || "Failed"}>{file.error || "Failed"}</span>
           {:else if file.status === "skipped"}
             <span class="status-text skip-text">Skipped</span>
           {:else if file.status === "detecting"}
@@ -83,7 +105,7 @@
             <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
           </div>
         {:else if view === "ready" && onRemoveFile}
-          <button class="remove-btn" on:click={() => onRemoveFile(file.id)}>
+          <button class="remove-btn" on:click|stopPropagation={() => onRemoveFile(file.id)}>
             <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
           </button>
         {/if}
@@ -152,6 +174,21 @@
   .file-row:last-child { border-bottom: none; }
   .file-row:hover { background: var(--bg-hover); }
 
+  /* Selection mode (multi-video batches): reserve the border on every row so
+     picking a clip doesn't shift the layout of its neighbours. */
+  .file-row.selectmode {
+    border: 1px solid transparent;
+    border-radius: var(--radius-xs);
+    margin: 2px 6px;
+  }
+
+  .file-row.selectable { cursor: pointer; }
+
+  .file-row.selectmode.selected {
+    border-color: var(--accent);
+    background: var(--accent-subtle);
+  }
+
   .type-dot {
     width: 8px;
     height: 8px;
@@ -188,7 +225,17 @@
   }
 
   .done-text { color: var(--success); }
-  .error-text { color: var(--error); }
+  .error-text {
+    color: var(--error);
+    /* Real error messages can be long — keep them one-line ellipsized;
+       the full text lives in the title tooltip. */
+    flex-shrink: 1;
+    min-width: 0;
+    max-width: 60%;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
   .skip-text { color: var(--text-muted); }
   .detect-text { color: var(--text-muted); animation: pulse 1.5s infinite; }
   .queue-text { color: var(--text-muted); }

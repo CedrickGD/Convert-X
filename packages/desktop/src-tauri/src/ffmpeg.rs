@@ -30,6 +30,13 @@ pub struct FfmpegOptions {
     pub strip_audio: bool,
     pub bitrate: Option<String>,
     pub preset: Option<String>,
+    /// Target output size in MB for video targets. None/<=0 = off. When set
+    /// (and the duration is known) it replaces the quality/CRF rate control
+    /// with a computed bitrate budget — the two modes are mutually exclusive.
+    pub target_size_mb: Option<f64>,
+    /// Known source duration in seconds (ffprobe). Enables the target-size
+    /// bitrate computation; unknown = silent fallback to quality mode.
+    pub source_duration: Option<f64>,
     pub gif_colors: Option<u32>,
     pub gif_dither: Option<String>,
     pub gif_width: Option<u32>,
@@ -54,6 +61,8 @@ impl Default for FfmpegOptions {
             strip_audio: false,
             bitrate: None,
             preset: None,
+            target_size_mb: None,
+            source_duration: None,
             gif_colors: None,
             gif_dither: None,
             gif_width: None,
@@ -182,22 +191,30 @@ pub fn build_ffmpeg_args(
 ) -> Vec<String> {
     let mut args = vec!["-y".to_string()];
 
+    // A still frame has no timeline — stale trim values against an image input
+    // can produce empty output, so seek args must never reach image sources.
+    let allow_trim = file_type != "image";
+
     // Trim: -ss before -i for fast seeking
-    if let Some(start) = opts.trim_start {
-        if start > 0.0 {
-            args.extend(["-ss".to_string(), format!("{:.3}", start)]);
+    if allow_trim {
+        if let Some(start) = opts.trim_start {
+            if start > 0.0 {
+                args.extend(["-ss".to_string(), format!("{:.3}", start)]);
+            }
         }
     }
 
     args.extend(["-i".to_string(), input_path.to_string()]);
 
     // Trim end: use -t (duration) since -ss before -i makes -to relative to output start
-    if let Some(end) = opts.trim_end {
-        if end > 0.0 {
-            let start = opts.trim_start.unwrap_or(0.0);
-            let duration = end - start;
-            if duration > 0.0 {
-                args.extend(["-t".to_string(), format!("{:.3}", duration)]);
+    if allow_trim {
+        if let Some(end) = opts.trim_end {
+            if end > 0.0 {
+                let start = opts.trim_start.unwrap_or(0.0);
+                let duration = end - start;
+                if duration > 0.0 {
+                    args.extend(["-t".to_string(), format!("{:.3}", duration)]);
+                }
             }
         }
     }
@@ -300,7 +317,71 @@ fn build_gif_args(args: &mut Vec<String>, opts: &FfmpegOptions) {
     args.extend(["-loop".to_string(), "0".to_string()]);
 }
 
+// Target-size mode: the size budget assumes this audio bitrate (0 when
+// stripAudio), and the video bitrate never drops below the floor — a
+// too-small target should degrade, not produce unplayable output.
+const TARGET_SIZE_AUDIO_KBIT: u64 = 128;
+const TARGET_SIZE_MIN_VIDEO_KBIT: i64 = 100;
+
+/// Seconds of OUTPUT the size budget must cover — the trim window capped to
+/// the known source duration, stretched by speed (2× speed halves the
+/// output). None = unknown, which makes the caller keep quality mode.
+fn output_duration_sec(opts: &FfmpegOptions) -> Option<f64> {
+    let start = opts.trim_start.filter(|s| *s > 0.0).unwrap_or(0.0);
+    let end = opts.trim_end.filter(|e| *e > 0.0);
+    let src = opts.source_duration.filter(|d| *d > 0.0);
+    let clip = match (src, end) {
+        (Some(src), Some(end)) => Some(end.min(src) - start),
+        (Some(src), None) => Some(src - start),
+        (None, Some(end)) => Some(end - start),
+        (None, None) => None,
+    }?;
+    if clip <= 0.0 {
+        return None;
+    }
+    let speed = opts.speed.filter(|s| *s > 0.0).unwrap_or(1.0);
+    Some(clip / speed)
+}
+
+/// -b:v in kbit/s that fits target_size_mb, or None when target-size mode is
+/// off / the duration is unknown (silent fallback to the quality knob).
+fn target_video_kbit(opts: &FfmpegOptions) -> Option<u64> {
+    let mb = opts.target_size_mb.filter(|m| *m > 0.0)?;
+    let seconds = output_duration_sec(opts)?;
+    // 3% shaved off the budget for container overhead.
+    let total_kbit = mb * 8192.0 * 0.97;
+    let audio_kbit = if opts.strip_audio {
+        0.0
+    } else {
+        TARGET_SIZE_AUDIO_KBIT as f64
+    };
+    Some(((total_kbit / seconds - audio_kbit).round() as i64).max(TARGET_SIZE_MIN_VIDEO_KBIT) as u64)
+}
+
 fn build_video_args(args: &mut Vec<String>, format: &str, opts: &FfmpegOptions) {
+    // Target-size mode replaces the quality knob entirely — a fixed -b:v and
+    // the quality-derived -crf / -q:v band are conflicting rate controls, so
+    // exactly one set is emitted per file.
+    let size_kbit = target_video_kbit(opts);
+    let size_rate: Option<Vec<String>> = size_kbit.map(|k| {
+        vec![
+            "-b:v".to_string(),
+            format!("{}k", k),
+            "-maxrate".to_string(),
+            format!("{}k", (k as f64 * 1.45).round() as u64),
+            "-bufsize".to_string(),
+            format!("{}k", k * 2),
+        ]
+    });
+    let size_mode = size_rate.is_some();
+    // Size mode budgets TARGET_SIZE_AUDIO_KBIT for audio, so emit that
+    // explicitly or the size math wouldn't hold.
+    let audio_extra: Vec<String> = if size_mode {
+        vec!["-b:a".to_string(), format!("{}k", TARGET_SIZE_AUDIO_KBIT)]
+    } else {
+        Vec::new()
+    };
+
     if opts.strip_audio {
         args.push("-an".to_string());
     } else if let Some(chain) = build_audio_filter_chain(opts) {
@@ -321,132 +402,119 @@ fn build_video_args(args: &mut Vec<String>, format: &str, opts: &FfmpegOptions) 
 
     let preset = opts.preset.as_deref().unwrap_or("medium");
 
+    // Rate control per codec family. Size mode wins over both the manual
+    // bitrate field and the quality-derived knobs.
+    let x264_rate = |args: &mut Vec<String>| {
+        if let Some(rate) = &size_rate {
+            args.extend(rate.iter().cloned());
+        } else {
+            let crf = ((100 - opts.quality) as f64 * 51.0 / 100.0) as u32;
+            args.extend(["-crf".to_string(), crf.to_string()]);
+        }
+    };
+    let qscale_rate = |args: &mut Vec<String>| {
+        if let Some(rate) = &size_rate {
+            args.extend(rate.iter().cloned());
+        } else {
+            let q = ((100 - opts.quality) as f64 * 31.0 / 100.0) as u32 + 1;
+            args.extend(["-q:v".to_string(), q.to_string()]);
+        }
+    };
+
     match format {
         "mp4" | "m4v" => {
-            if let Some(ref br) = opts.bitrate {
-                args.extend([
-                    "-c:v".to_string(),
-                    "libx264".to_string(),
-                    "-b:v".to_string(),
-                    br.clone(),
-                    "-preset".to_string(),
-                    preset.to_string(),
-                    "-c:a".to_string(),
-                    "aac".to_string(),
-                ]);
+            args.extend(["-c:v".to_string(), "libx264".to_string()]);
+            if let Some(rate) = &size_rate {
+                args.extend(rate.iter().cloned());
+            } else if let Some(ref br) = opts.bitrate {
+                args.extend(["-b:v".to_string(), br.clone()]);
             } else {
                 let crf = ((100 - opts.quality) as f64 * 51.0 / 100.0) as u32;
-                args.extend([
-                    "-c:v".to_string(),
-                    "libx264".to_string(),
-                    "-crf".to_string(),
-                    crf.to_string(),
-                    "-preset".to_string(),
-                    preset.to_string(),
-                    "-c:a".to_string(),
-                    "aac".to_string(),
-                ]);
+                args.extend(["-crf".to_string(), crf.to_string()]);
             }
+            args.extend(["-preset".to_string(), preset.to_string()]);
+            args.extend(["-c:a".to_string(), "aac".to_string()]);
+            args.extend(audio_extra.iter().cloned());
         }
         "mkv" => {
-            let crf = ((100 - opts.quality) as f64 * 51.0 / 100.0) as u32;
-            args.extend([
-                "-c:v".to_string(),
-                "libx264".to_string(),
-                "-crf".to_string(),
-                crf.to_string(),
-                "-preset".to_string(),
-                preset.to_string(),
-                "-c:a".to_string(),
-                "copy".to_string(),
-            ]);
+            args.extend(["-c:v".to_string(), "libx264".to_string()]);
+            x264_rate(args);
+            args.extend(["-preset".to_string(), preset.to_string()]);
+            // Stream-copied audio has a fixed size the budget can't control —
+            // size mode re-encodes at the budgeted bitrate instead.
+            if size_mode {
+                args.extend(["-c:a".to_string(), "aac".to_string()]);
+                args.extend(audio_extra.iter().cloned());
+            } else {
+                args.extend(["-c:a".to_string(), "copy".to_string()]);
+            }
         }
         "avi" => {
-            let q = ((100 - opts.quality) as f64 * 31.0 / 100.0) as u32 + 1;
-            args.extend([
-                "-c:v".to_string(),
-                "mpeg4".to_string(),
-                "-q:v".to_string(),
-                q.to_string(),
-                "-c:a".to_string(),
-                "mp3".to_string(),
-            ]);
+            args.extend(["-c:v".to_string(), "mpeg4".to_string()]);
+            qscale_rate(args);
+            args.extend(["-c:a".to_string(), "mp3".to_string()]);
+            args.extend(audio_extra.iter().cloned());
         }
         "webm" => {
-            let crf = ((100 - opts.quality) as f64 * 63.0 / 100.0) as u32;
-            args.extend([
-                "-c:v".to_string(),
-                "libvpx-vp9".to_string(),
-                "-crf".to_string(),
-                crf.to_string(),
-                "-b:v".to_string(),
-                "0".to_string(),
-                "-c:a".to_string(),
-                "libopus".to_string(),
-            ]);
+            args.extend(["-c:v".to_string(), "libvpx-vp9".to_string()]);
+            if let Some(rate) = &size_rate {
+                args.extend(rate.iter().cloned());
+            } else {
+                let crf = ((100 - opts.quality) as f64 * 63.0 / 100.0) as u32;
+                args.extend([
+                    "-crf".to_string(),
+                    crf.to_string(),
+                    "-b:v".to_string(),
+                    "0".to_string(),
+                ]);
+            }
+            args.extend(["-c:a".to_string(), "libopus".to_string()]);
+            args.extend(audio_extra.iter().cloned());
         }
         "mov" => {
-            let crf = ((100 - opts.quality) as f64 * 51.0 / 100.0) as u32;
-            args.extend([
-                "-c:v".to_string(),
-                "libx264".to_string(),
-                "-crf".to_string(),
-                crf.to_string(),
-                "-preset".to_string(),
-                preset.to_string(),
-                "-c:a".to_string(),
-                "aac".to_string(),
-            ]);
+            args.extend(["-c:v".to_string(), "libx264".to_string()]);
+            x264_rate(args);
+            args.extend(["-preset".to_string(), preset.to_string()]);
+            args.extend(["-c:a".to_string(), "aac".to_string()]);
+            args.extend(audio_extra.iter().cloned());
         }
         "flv" => {
-            let crf = ((100 - opts.quality) as f64 * 51.0 / 100.0) as u32;
-            args.extend([
-                "-c:v".to_string(),
-                "libx264".to_string(),
-                "-crf".to_string(),
-                crf.to_string(),
-                "-c:a".to_string(),
-                "aac".to_string(),
-                "-f".to_string(),
-                "flv".to_string(),
-            ]);
+            args.extend(["-c:v".to_string(), "libx264".to_string()]);
+            x264_rate(args);
+            args.extend(["-c:a".to_string(), "aac".to_string()]);
+            args.extend(audio_extra.iter().cloned());
+            args.extend(["-f".to_string(), "flv".to_string()]);
         }
         "wmv" => {
-            let q = ((100 - opts.quality) as f64 * 31.0 / 100.0) as u32 + 1;
-            args.extend([
-                "-c:v".to_string(),
-                "wmv2".to_string(),
-                "-q:v".to_string(),
-                q.to_string(),
-                "-c:a".to_string(),
-                "wmav2".to_string(),
-            ]);
+            args.extend(["-c:v".to_string(), "wmv2".to_string()]);
+            qscale_rate(args);
+            args.extend(["-c:a".to_string(), "wmav2".to_string()]);
+            args.extend(audio_extra.iter().cloned());
         }
         "ts" => {
-            let crf = ((100 - opts.quality) as f64 * 51.0 / 100.0) as u32;
-            args.extend([
-                "-c:v".to_string(),
-                "libx264".to_string(),
-                "-crf".to_string(),
-                crf.to_string(),
-                "-c:a".to_string(),
-                "aac".to_string(),
-                "-f".to_string(),
-                "mpegts".to_string(),
-            ]);
+            args.extend(["-c:v".to_string(), "libx264".to_string()]);
+            x264_rate(args);
+            args.extend(["-c:a".to_string(), "aac".to_string()]);
+            args.extend(audio_extra.iter().cloned());
+            args.extend(["-f".to_string(), "mpegts".to_string()]);
         }
         _ => {}
     }
 
     if let Some(ref br) = opts.bitrate {
-        if format != "mp4" && format != "m4v" {
-            // Bitrate already set for mp4/m4v above
+        if format != "mp4" && format != "m4v" && !size_mode {
+            // Bitrate already set for mp4/m4v above; size mode owns -b:v.
             args.extend(["-b:v".to_string(), br.clone()]);
         }
     }
 
     if !filters.is_empty() {
         args.extend(["-vf".to_string(), filters.join(",")]);
+    }
+
+    // Streamable moov atom up front for QuickTime-family containers.
+    if matches!(format, "mp4" | "m4v" | "mov") {
+        args.extend(["-movflags".to_string(), "+faststart".to_string()]);
     }
 }
 
@@ -566,6 +634,22 @@ fn parse_time_to_seconds(time_str: &str) -> Option<f64> {
     }
 }
 
+/// Keep at most the last 3 non-empty lines — enough context to diagnose
+/// without dumping the whole log (matches the Android error-tail format).
+pub fn push_tail_line(tail: &mut Vec<String>, line: &str) {
+    let trimmed = line.trim();
+    if trimmed.is_empty() {
+        return;
+    }
+    if tail.len() == 3 {
+        tail.remove(0);
+    }
+    tail.push(trimmed.to_string());
+}
+
+/// Runs FFmpeg to completion. On success returns the last-3-lines stderr tail
+/// (joined with " · ") so callers can attach it to post-run checks like the
+/// 0-byte-output error.
 pub async fn run_ffmpeg(
     app: tauri::AppHandle,
     ffmpeg_path: &Path,
@@ -573,7 +657,7 @@ pub async fn run_ffmpeg(
     total_duration: f64,
     file_id: String,
     process_holder: std::sync::Arc<std::sync::Mutex<Option<u32>>>,
-) -> Result<(), String> {
+) -> Result<String, String> {
     let mut cmd = Command::new(ffmpeg_path);
     cmd.args(&args)
         .stderr(Stdio::piped())
@@ -597,7 +681,7 @@ pub async fn run_ffmpeg(
     let mut lines = reader.lines();
 
     let start_time = std::time::Instant::now();
-    let mut last_error_line = String::new();
+    let mut tail: Vec<String> = Vec::new();
 
     while let Ok(Some(line)) = lines.next_line().await {
         if let Some(progress) = parse_progress_line(&line, total_duration) {
@@ -617,11 +701,8 @@ pub async fn run_ffmpeg(
                 },
             );
         }
-        // Keep the last non-empty line for error reporting
-        let trimmed = line.trim().to_string();
-        if !trimmed.is_empty() {
-            last_error_line = trimmed;
-        }
+        // Keep the last 3 non-empty lines for error reporting
+        push_tail_line(&mut tail, &line);
     }
 
     let status = child
@@ -631,13 +712,14 @@ pub async fn run_ffmpeg(
 
     *process_holder.lock().unwrap() = None;
 
+    let tail_str = tail.join(" · ");
     if status.success() {
-        Ok(())
+        Ok(tail_str)
     } else {
-        let detail = if last_error_line.is_empty() {
+        let detail = if tail_str.is_empty() {
             String::new()
         } else {
-            format!(": {}", last_error_line)
+            format!(": {}", tail_str)
         };
         Err(format!(
             "FFmpeg failed (code {}){}",

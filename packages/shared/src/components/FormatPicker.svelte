@@ -16,7 +16,8 @@
     const s = [];
     if (fileTypes.has("video")) s.push({ label: "Video", formats: FORMATS.video });
     if (fileTypes.has("image")) s.push({ label: "Image", formats: FORMATS.image });
-    if (fileTypes.has("audio")) s.push({ label: "Audio", formats: FORMATS.audio });
+    // Video sources can also target audio formats (track extraction).
+    if (fileTypes.has("audio") || fileTypes.has("video")) s.push({ label: "Audio", formats: FORMATS.audio });
     // If only one type, don't show the label
     return s;
   })();

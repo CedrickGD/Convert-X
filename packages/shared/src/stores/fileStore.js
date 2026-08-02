@@ -4,13 +4,14 @@ import {
   normalizeExt,
   extOf,
   settingsHaveEdits,
+  fileHasTrimEdits,
 } from "../core/formats.js";
 
 // The pure format catalog, compatibility check, source-extension
 // normalization, and edit-detection now live in the framework-agnostic
 // core (../core/formats.js) so Android can share them too. Re-exported here
 // so existing web/desktop imports from this store path keep working.
-export { isFormatCompatible, normalizeExt, settingsHaveEdits };
+export { isFormatCompatible, normalizeExt, settingsHaveEdits, fileHasTrimEdits };
 
 // Per-file entry
 export function createFileEntry(filePath, fileObj = null) {
@@ -27,6 +28,14 @@ export function createFileEntry(filePath, fileObj = null) {
     outputPath: null,
     outputSize: 0,
     error: null,
+    // Trim lives on the file entry — points set against clip A can never
+    // silently truncate clips B..N, and they die with the file on remove.
+    trimStart: null,
+    trimEnd: null,
+    // Duration as reported by the clip editor's media element. ffprobe
+    // metadata.duration stays authoritative; this is a fallback for
+    // containers ffprobe couldn't time.
+    duration: null,
   };
 }
 
@@ -42,7 +51,8 @@ function saveOutputDir(dir) {
   try { localStorage.setItem(SAVED_OUTPUT_DIR_KEY, dir || ""); } catch {}
 }
 
-// Shared settings
+// Shared settings. Trim is NOT here — it lives on each file entry (see
+// createFileEntry) so per-file points can't leak across the batch.
 export const settingsStore = writable({
   selectedFormat: null,
   quality: 75,
@@ -50,11 +60,12 @@ export const settingsStore = writable({
   // Convert options
   resolution: null,
   fps: null,
-  trimStart: null,
-  trimEnd: null,
   stripAudio: false,
   bitrate: null,
   preset: "medium",
+  // Target output size in MB for video exports. null = off (quality/bitrate
+  // drive the encode). Desktop-only downstream; web ignores it.
+  targetSizeMb: null,
   // GIF options
   gifColors: 256,
   gifDither: "sierra2_4a",
@@ -154,8 +165,28 @@ export const fileCounts = derived(filesStore, ($files) => ({
   converting: $files.filter((f) => f.status === "converting").length,
 }));
 
+// Session reset ("Back" / "Convert more files"): clears the loaded files and
+// per-run state but KEEPS the user's encode preferences — format, quality,
+// target size, strip-audio, speed, volume, rotate/flip, gif* — so "convert
+// again with the same settings" works. Only crop is cleared: it's per-file
+// editing state that must not leak onto the next batch (trim lives on the
+// files, which are wiped here anyway).
 export function resetAll() {
   filesStore.set([]);
+  settingsStore.update((s) => ({
+    ...s,
+    outputDir: getSavedOutputDir(),
+    crop: null,
+  }));
+  convertOp.set("idle");
+  resizeOp.set("idle");
+  convertCancelled.set(false);
+  resizeCancelled.set(false);
+}
+
+// Full settings reset back to factory defaults. Not part of the session
+// flow — kept for an explicit "reset settings" affordance.
+export function resetSettings() {
   settingsStore.update((s) => ({
     ...s,
     selectedFormat: null,
@@ -163,11 +194,10 @@ export function resetAll() {
     outputDir: getSavedOutputDir(),
     resolution: null,
     fps: null,
-    trimStart: null,
-    trimEnd: null,
     stripAudio: false,
     bitrate: null,
     preset: "medium",
+    targetSizeMb: null,
     gifColors: 256,
     gifDither: "sierra2_4a",
     gifWidth: 480,
@@ -186,10 +216,6 @@ export function resetAll() {
     speed: 1,
     volume: 100,
   }));
-  convertOp.set("idle");
-  resizeOp.set("idle");
-  convertCancelled.set(false);
-  resizeCancelled.set(false);
 }
 
 // Set of normalized source extensions across all currently loaded files.
@@ -203,4 +229,9 @@ export const sourceFormats = derived(filesStore, ($files) => {
   return set;
 });
 
-export const hasEdits = derived(settingsStore, ($s) => settingsHaveEdits($s));
+// Edits = any changed encode setting OR a trim set on any loaded file (trim
+// is per-file state now, so the same-format-no-edits gate must look at both).
+export const hasEdits = derived(
+  [settingsStore, filesStore],
+  ([$s, $files]) => settingsHaveEdits($s) || $files.some(fileHasTrimEdits)
+);

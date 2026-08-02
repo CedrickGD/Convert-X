@@ -9,6 +9,9 @@
   $: errorFiles = files.filter((f) => f.status === "error");
   $: totalSize = doneFiles.reduce((sum, f) => sum + (f.outputSize || 0), 0);
   $: isWeb = getPlatform().platformType === "web";
+  // A run where nothing succeeded must not celebrate with a checkmark.
+  $: allFailed = doneFiles.length === 0 && errorFiles.length > 0;
+  $: firstError = errorFiles.length > 0 ? errorFiles[0].error || "" : "";
 
   function fmtSize(bytes) {
     if (!bytes) return "0 B";
@@ -36,12 +39,18 @@
 </script>
 
 <div class="panel">
-  <div class="check-ring">
-    <svg width="32" height="32" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round"><polyline points="20 6 9 17 4 12"/></svg>
+  <div class="check-ring" class:failed={allFailed}>
+    {#if allFailed}
+      <svg width="32" height="32" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
+    {:else}
+      <svg width="32" height="32" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round"><polyline points="20 6 9 17 4 12"/></svg>
+    {/if}
   </div>
 
   <h2>
-    {#if doneFiles.length === 1}
+    {#if allFailed}
+      Nothing {actionLabel}
+    {:else if doneFiles.length === 1}
       Done
     {:else}
       {doneFiles.length} files {actionLabel}
@@ -50,10 +59,16 @@
 
   {#if errorFiles.length > 0}
     <p class="error-note">{errorFiles.length} file{errorFiles.length > 1 ? "s" : ""} failed</p>
+    {#if firstError}
+      <p class="error-detail">{firstError}</p>
+    {/if}
   {/if}
 
-  <p class="total-size">Total: {fmtSize(totalSize)}</p>
+  {#if doneFiles.length > 0}
+    <p class="total-size">Total: {fmtSize(totalSize)}</p>
+  {/if}
 
+  {#if doneFiles.length > 0}
   <div class="results-list">
     {#each doneFiles as file}
       <div class="result-row">
@@ -74,6 +89,7 @@
       </div>
     {/each}
   </div>
+  {/if}
 
   <button class="again-btn" on:click={onStartOver}>
     {actionLabel === "resized" ? "Resize more images" : "Convert more files"}
@@ -95,7 +111,7 @@
     width: 56px;
     height: 56px;
     border-radius: 50%;
-    background: rgba(16, 185, 129, 0.1);
+    background: var(--accent-glow);
     display: flex;
     align-items: center;
     justify-content: center;
@@ -108,9 +124,26 @@
     to { transform: scale(1); opacity: 1; }
   }
 
+  .check-ring.failed {
+    background: var(--error-dim, rgba(239, 68, 68, 0.1));
+    color: var(--error);
+  }
+
   h2 { font-size: 1.15rem; font-weight: 700; letter-spacing: -0.02em; }
 
   .error-note { font-size: 0.78rem; color: var(--error); }
+
+  .error-detail {
+    font-size: 0.72rem;
+    color: var(--text-muted);
+    max-width: 420px;
+    text-align: center;
+    display: -webkit-box;
+    -webkit-line-clamp: 3;
+    -webkit-box-orient: vertical;
+    overflow: hidden;
+  }
+
   .total-size { font-size: 0.78rem; color: var(--text-muted); }
 
   .results-list {

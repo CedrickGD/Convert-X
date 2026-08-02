@@ -1,6 +1,7 @@
 use crate::ffmpeg::{self, CropRect, FfmpegOptions};
 use image::{GenericImageView, ImageFormat};
 use serde::Serialize;
+use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 use tauri::Manager;
@@ -10,13 +11,65 @@ use std::os::windows::process::CommandExt as _;
 
 pub struct AppState {
     pub ffmpeg_process: Arc<Mutex<Option<u32>>>,
-    pub ytdlp_process: Arc<Mutex<Option<u32>>>,
+    /// Set by cancel_conversion before the kill so convert_file can tell a
+    /// deliberate cancel apart from a crash and return `{cancelled: true}`
+    /// instead of an error.
+    pub conversion_cancelled: Arc<Mutex<bool>>,
+    /// Per-job registry of live downloader child PIDs, keyed by file_id.
+    pub downloads: Arc<Mutex<HashMap<String, u32>>>,
+    /// file_ids whose cancellation was requested (covers children killed
+    /// mid-run AND direct-CDN transfers that have no PID).
+    pub cancelled_downloads: Arc<Mutex<HashSet<String>>>,
+    /// file_ids of accepted download jobs that currently have no killable PID
+    /// — direct-CDN transfers (never get one; their streaming loop watches
+    /// cancelled_downloads) and yt-dlp/spotdl jobs still inside the window
+    /// between the invoke and the child spawn. cancel-all consults this set so
+    /// a job cannot slip through that window unmarked.
+    pub active_jobs: Arc<Mutex<HashSet<String>>>,
 }
 
 #[derive(Clone, Serialize)]
 pub struct ConversionResult {
     pub output_path: String,
     pub output_size: u64,
+    pub cancelled: bool,
+}
+
+/// Strip Windows-illegal filename characters from a user-controllable stem.
+fn sanitize_stem(name: &str) -> String {
+    let cleaned: String = name
+        .chars()
+        .filter(|c| !matches!(c, '\\' | '/' | ':' | '*' | '?' | '"' | '<' | '>' | '|'))
+        .collect();
+    let trimmed = cleaned.trim().to_string();
+    if trimmed.is_empty() {
+        "output".to_string()
+    } else {
+        trimmed
+    }
+}
+
+/// Append " (2)", " (3)", … to the stem until the path doesn't exist so a
+/// converted file never silently overwrites a same-named one.
+pub fn resolve_collision(path: PathBuf) -> PathBuf {
+    if !path.exists() {
+        return path;
+    }
+    let dir = path.parent().map(|p| p.to_path_buf()).unwrap_or_else(|| PathBuf::from("."));
+    let stem = path.file_stem().unwrap_or_default().to_string_lossy().to_string();
+    let ext = path.extension().map(|e| e.to_string_lossy().to_string());
+    let mut n = 2u32;
+    loop {
+        let name = match &ext {
+            Some(e) => format!("{} ({}).{}", stem, n, e),
+            None => format!("{} ({})", stem, n),
+        };
+        let candidate = dir.join(name);
+        if !candidate.exists() {
+            return candidate;
+        }
+        n += 1;
+    }
 }
 
 fn build_output_path(
@@ -30,8 +83,8 @@ fn build_output_path(
     let parent = path.parent().unwrap_or(Path::new("."));
 
     let name = match output_name {
-        Some(n) if !n.trim().is_empty() => n.trim().to_string(),
-        _ => default_stem.to_string(),
+        Some(n) if !n.trim().is_empty() => sanitize_stem(n),
+        _ => sanitize_stem(&default_stem),
     };
 
     let dir = match output_dir {
@@ -39,7 +92,7 @@ fn build_output_path(
         _ => parent.to_path_buf(),
     };
 
-    dir.join(format!("{}.{}", name, output_format))
+    resolve_collision(dir.join(format!("{}.{}", name, output_format)))
 }
 
 /// Save a DynamicImage to disk in the given format
@@ -322,10 +375,10 @@ async fn run_gif_with_size_cap(
     duration: f64,
     file_type: &str,
     opts: &FfmpegOptions,
-) -> Result<(), String> {
+) -> Result<String, String> {
     let target_mb = opts.gif_target_size_mb.unwrap_or(0);
     if target_mb == 0 {
-        return Ok(());
+        return Ok(String::new());
     }
 
     let target_bytes = target_mb as u64 * 1024 * 1024;
@@ -368,7 +421,7 @@ async fn run_gif_with_size_cap(
 
         let args =
             ffmpeg::build_ffmpeg_args(file_path, &output_path_str, "gif", file_type, &attempt_opts);
-        ffmpeg::run_ffmpeg(
+        let tail = ffmpeg::run_ffmpeg(
             app.clone(),
             &ffmpeg_path,
             args,
@@ -385,7 +438,7 @@ async fn run_gif_with_size_cap(
         best_size = best_size.min(size);
 
         if size <= target_bytes {
-            return Ok(());
+            return Ok(tail);
         }
 
         let target_ratio = target_bytes as f64 / size as f64;
@@ -403,6 +456,105 @@ async fn run_gif_with_size_cap(
         target_mb,
         format_megabytes(best_size)
     ))
+}
+
+/// The actual conversion work, split out so convert_file can uniformly apply
+/// partial-output cleanup + cancelled detection to every branch. Returns the
+/// last-3-lines FFmpeg stderr tail (empty for image-crate conversions).
+#[allow(clippy::too_many_arguments)]
+async fn run_conversion(
+    app: &tauri::AppHandle,
+    state: &tauri::State<'_, AppState>,
+    file_id: &str,
+    file_path: &str,
+    file_type: &str,
+    output_format: &str,
+    quality: u32,
+    effective_duration: f64,
+    output_path: &Path,
+    output_path_str: &str,
+    opts: &FfmpegOptions,
+) -> Result<String, String> {
+    match file_type {
+        "image" => {
+            if output_format == "gif" || needs_ffmpeg_for_image(output_format) {
+                if output_format == "gif" && opts.gif_target_size_mb.unwrap_or(0) > 0 {
+                    run_gif_with_size_cap(
+                        app,
+                        state,
+                        file_id,
+                        file_path,
+                        output_path,
+                        0.0,
+                        "image",
+                        opts,
+                    )
+                    .await
+                } else {
+                    // Route through FFmpeg
+                    let ffmpeg_path = ffmpeg::get_ffmpeg_path(app);
+                    let args = ffmpeg::build_ffmpeg_args(
+                        file_path,
+                        output_path_str,
+                        output_format,
+                        "image",
+                        opts,
+                    );
+                    let process_holder = state.ffmpeg_process.clone();
+                    ffmpeg::run_ffmpeg(
+                        app.clone(),
+                        &ffmpeg_path,
+                        args,
+                        0.0,
+                        file_id.to_string(),
+                        process_holder,
+                    )
+                    .await
+                }
+            } else {
+                convert_image(file_path, output_path, output_format, quality)?;
+                Ok(String::new())
+            }
+        }
+        "video" | "audio" => {
+            if output_format == "gif"
+                && file_type == "video"
+                && opts.gif_target_size_mb.unwrap_or(0) > 0
+            {
+                run_gif_with_size_cap(
+                    app,
+                    state,
+                    file_id,
+                    file_path,
+                    output_path,
+                    effective_duration,
+                    "video",
+                    opts,
+                )
+                .await
+            } else {
+                let ffmpeg_path = ffmpeg::get_ffmpeg_path(app);
+                let args = ffmpeg::build_ffmpeg_args(
+                    file_path,
+                    output_path_str,
+                    output_format,
+                    file_type,
+                    opts,
+                );
+                let process_holder = state.ffmpeg_process.clone();
+                ffmpeg::run_ffmpeg(
+                    app.clone(),
+                    &ffmpeg_path,
+                    args,
+                    effective_duration,
+                    file_id.to_string(),
+                    process_holder,
+                )
+                .await
+            }
+        }
+        _ => Err(format!("Unsupported file type: {}", file_type)),
+    }
 }
 
 #[tauri::command]
@@ -424,6 +576,7 @@ pub async fn convert_file(
     strip_audio: Option<bool>,
     bitrate: Option<String>,
     preset: Option<String>,
+    target_size_mb: Option<f64>,
     gif_colors: Option<u32>,
     gif_dither: Option<String>,
     gif_width: Option<u32>,
@@ -436,6 +589,9 @@ pub async fn convert_file(
     speed: Option<f64>,
     volume: Option<f64>,
 ) -> Result<ConversionResult, String> {
+    // Fresh cancel flag per run — single conversion slot, matching the UI.
+    *state.conversion_cancelled.lock().unwrap() = false;
+
     let output_path = build_output_path(
         &file_path,
         &output_format,
@@ -458,6 +614,8 @@ pub async fn convert_file(
         strip_audio: strip_audio.unwrap_or(false),
         bitrate,
         preset,
+        target_size_mb,
+        source_duration: duration,
         gif_colors,
         gif_dither,
         gif_width,
@@ -483,115 +641,74 @@ pub async fn convert_file(
         }
     };
 
-    match file_type.as_str() {
-        "image" => {
-            if output_format == "gif" || needs_ffmpeg_for_image(&output_format) {
-                if output_format == "gif" && opts.gif_target_size_mb.unwrap_or(0) > 0 {
-                    run_gif_with_size_cap(
-                        &app,
-                        &state,
-                        &file_id,
-                        &file_path,
-                        &output_path,
-                        0.0,
-                        "image",
-                        &opts,
-                    )
-                    .await?;
-                } else {
-                    // Route through FFmpeg
-                    let ffmpeg_path = ffmpeg::get_ffmpeg_path(&app);
-                    let args = ffmpeg::build_ffmpeg_args(
-                        &file_path,
-                        &output_path_str,
-                        &output_format,
-                        "image",
-                        &opts,
-                    );
-                    let process_holder = state.ffmpeg_process.clone();
-                    ffmpeg::run_ffmpeg(
-                        app.clone(),
-                        &ffmpeg_path,
-                        args,
-                        0.0,
-                        file_id.clone(),
-                        process_holder,
-                    )
-                    .await?;
-                }
-            } else {
-                convert_image(&file_path, &output_path, &output_format, quality)?;
-            }
+    let run = run_conversion(
+        &app,
+        &state,
+        &file_id,
+        &file_path,
+        &file_type,
+        &output_format,
+        quality,
+        effective_duration,
+        &output_path,
+        &output_path_str,
+        &opts,
+    )
+    .await;
 
-            use tauri::Emitter;
-            let _ = app.emit(
-                "conversion-progress",
-                ffmpeg::ProgressPayload {
-                    file_id,
-                    progress: 100.0,
-                    elapsed: "00:00".to_string(),
-                },
-            );
-        }
-        "video" | "audio" => {
-            if output_format == "gif"
-                && file_type == "video"
-                && opts.gif_target_size_mb.unwrap_or(0) > 0
-            {
-                run_gif_with_size_cap(
-                    &app,
-                    &state,
-                    &file_id,
-                    &file_path,
-                    &output_path,
-                    effective_duration,
-                    "video",
-                    &opts,
-                )
-                .await?;
-            } else {
-                let ffmpeg_path = ffmpeg::get_ffmpeg_path(&app);
-                let args = ffmpeg::build_ffmpeg_args(
-                    &file_path,
-                    &output_path_str,
-                    &output_format,
-                    &file_type,
-                    &opts,
-                );
-                let process_holder = state.ffmpeg_process.clone();
-                ffmpeg::run_ffmpeg(
-                    app.clone(),
-                    &ffmpeg_path,
-                    args,
-                    effective_duration,
-                    file_id.clone(),
-                    process_holder,
-                )
-                .await?;
+    let tail = match run {
+        Ok(tail) => tail,
+        Err(e) => {
+            // Never leave a partial file in the user's output folder.
+            let _ = std::fs::remove_file(&output_path);
+            if *state.conversion_cancelled.lock().unwrap() {
+                return Ok(ConversionResult {
+                    output_path: String::new(),
+                    output_size: 0,
+                    cancelled: true,
+                });
             }
-
-            use tauri::Emitter;
-            let _ = app.emit(
-                "conversion-progress",
-                ffmpeg::ProgressPayload {
-                    file_id,
-                    progress: 100.0,
-                    elapsed: "00:00".to_string(),
-                },
-            );
+            return Err(e);
         }
-        _ => {
-            return Err(format!("Unsupported file type: {}", file_type));
-        }
-    }
+    };
 
     let output_size = std::fs::metadata(&output_path)
         .map(|m| m.len())
         .unwrap_or(0);
 
+    // FFmpeg can exit 0 while writing nothing (bad filter graph, image+trim
+    // edge cases). A 0-byte "success" is a failure — delete it and say so.
+    if output_size == 0 {
+        let _ = std::fs::remove_file(&output_path);
+        if *state.conversion_cancelled.lock().unwrap() {
+            return Ok(ConversionResult {
+                output_path: String::new(),
+                output_size: 0,
+                cancelled: true,
+            });
+        }
+        let detail = if tail.is_empty() {
+            String::new()
+        } else {
+            format!(" {}", tail)
+        };
+        return Err(format!("FFmpeg produced no output (0 bytes).{}", detail));
+    }
+
+    use tauri::Emitter;
+    let _ = app.emit(
+        "conversion-progress",
+        ffmpeg::ProgressPayload {
+            file_id,
+            progress: 100.0,
+            elapsed: "00:00".to_string(),
+        },
+    );
+
     Ok(ConversionResult {
         output_path: output_path_str,
         output_size,
+        cancelled: false,
     })
 }
 
@@ -611,6 +728,9 @@ pub async fn resize_image(
     output_dir: Option<String>,
     output_name: Option<String>,
 ) -> Result<ConversionResult, String> {
+    // Fresh cancel flag per run — same single conversion slot as convert_file.
+    *state.conversion_cancelled.lock().unwrap() = false;
+
     let img = image::open(&file_path).map_err(|e| format!("Failed to open image: {}", e))?;
     let (orig_w, orig_h) = img.dimensions();
 
@@ -671,7 +791,7 @@ pub async fn resize_image(
             output_path_str.clone(),
         ];
         let process_holder = state.ffmpeg_process.clone();
-        ffmpeg::run_ffmpeg(
+        if let Err(e) = ffmpeg::run_ffmpeg(
             app.clone(),
             &ffmpeg_path,
             args,
@@ -679,7 +799,21 @@ pub async fn resize_image(
             file_id.clone(),
             process_holder,
         )
-        .await?;
+        .await
+        {
+            // -y writes straight to the output path, so a killed FFmpeg leaves
+            // a truncated image in the user's folder.
+            let _ = std::fs::remove_file(&output_path);
+            if *state.conversion_cancelled.lock().unwrap() {
+                // Cancel is never an error.
+                return Ok(ConversionResult {
+                    output_path: String::new(),
+                    output_size: 0,
+                    cancelled: true,
+                });
+            }
+            return Err(e);
+        }
     } else {
         // Use image crate
         let resized = img.resize_exact(target_w, target_h, image::imageops::FilterType::Lanczos3);
@@ -703,11 +837,16 @@ pub async fn resize_image(
     Ok(ConversionResult {
         output_path: output_path_str,
         output_size,
+        cancelled: false,
     })
 }
 
 #[tauri::command]
 pub async fn cancel_conversion(state: tauri::State<'_, AppState>) -> Result<(), String> {
+    // Flag first, kill second — the pending convert_file invoke observes the
+    // flag when the killed child errors out and returns `{cancelled: true}`
+    // (plus partial-output cleanup) instead of surfacing an error.
+    *state.conversion_cancelled.lock().unwrap() = true;
     if let Some(pid) = state.ffmpeg_process.lock().unwrap().take() {
         let mut tk = std::process::Command::new("taskkill");
         tk.args(["/PID", &pid.to_string(), "/F"]);

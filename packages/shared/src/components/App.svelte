@@ -5,8 +5,10 @@
     convertOp, resizeOp, convertCancelled, resizeCancelled,
     convertBusy, resizeBusy,
     sourceFormats, hasEdits,
+    downloaderSettings,
   } from "../stores/fileStore.js";
   import { get } from "svelte/store";
+  import { VIDEO_FORMATS } from "../core/formats.js";
   import { getPlatform } from "../platform.js";
   import { onMount } from "svelte";
   import Navbar from "./Navbar.svelte";
@@ -24,7 +26,15 @@
   import ThemeToggle from "./ThemeToggle.svelte";
   import Credits from "./Credits.svelte";
   import DownloadView from "./DownloadView.svelte";
+  import HistoryView from "./HistoryView.svelte";
+  import Toast from "./Toast.svelte";
+  import ConfirmDialog from "./ConfirmDialog.svelte";
   import { REPO_URL } from "../lib/github.js";
+  import { installGlobalErrorCapture, logError } from "../lib/errorLog.js";
+  import { runMonthlyYtdlpFreshnessCheck } from "../lib/downloadQueue.js";
+  import { importCookiesText } from "../lib/cookies.js";
+  import { invalidateInstagramSessionCache } from "../lib/instagramStories.js";
+  import { saveJson } from "../lib/storage.js";
 
   let files = [];
   let settings = {};
@@ -50,7 +60,63 @@
   sourceFormats.subscribe((v) => (sources = v));
   hasEdits.subscribe((v) => (edited = v));
 
+  // One-time migration of the legacy manually-picked cookies path into the
+  // canonical cookies.txt store. The batch runner resolves cookies ONLY
+  // from the canonical file, so a pre-existing Advanced-field path would
+  // silently stop working without this. Only runs while the canonical file
+  // is empty — once it has content the legacy path is never consulted again.
+  async function migrateLegacyCookiesPath() {
+    try {
+      if (
+        typeof platform.readCookiesText !== "function" ||
+        typeof platform.writeCookiesText !== "function" ||
+        typeof platform.readFileBinary !== "function"
+      ) {
+        return;
+      }
+      const legacyPath = get(downloaderSettings).cookiesPath;
+      if (!legacyPath) return;
+      try {
+        const existing = await platform.readCookiesText();
+        if (!(typeof existing === "string" && existing.trim().length > 0)) {
+          const bytes = await platform.readFileBinary(legacyPath);
+          const text = new TextDecoder().decode(
+            bytes instanceof Uint8Array ? bytes : new Uint8Array(bytes)
+          );
+          if (text.trim()) {
+            await importCookiesText(text);
+            // Same semantics as a manual import: the file was replaced wholesale,
+            // so any persisted "Connected" flags may be stale — reset them and
+            // drop the cached Instagram session verdict.
+            saveJson("convertx.connectedPlatforms.v1", []);
+            invalidateInstagramSessionCache();
+          }
+        }
+      } finally {
+        // Clear the legacy setting in every outcome (imported, canonical file
+        // already populated, or unreadable source) so the migration never
+        // re-runs — the Advanced field is an import action now, not a live path.
+        downloaderSettings.update((s) => ({ ...s, cookiesPath: "" }));
+      }
+    } catch (e) {
+      logError("error", e, "legacy cookies-path migration");
+    }
+  }
+
   onMount(() => {
+    // Field failures (probe/download/crash) are only diagnosable through
+    // the in-app error log — capture uncaught errors from the very start.
+    // Web-safe, so un-gated.
+    installGlobalErrorCapture();
+
+    if (isDesktop) {
+      // Fire-and-forget boot tasks: neither may block or break startup.
+      runMonthlyYtdlpFreshnessCheck().catch((e) =>
+        logError("error", e, "yt-dlp freshness check")
+      );
+      migrateLegacyCookiesPath();
+    }
+
     if (isDesktop && platform.ensureTools) {
       (async () => {
         try {
@@ -91,6 +157,23 @@
   function switchMode(newMode) {
     if (newMode === mode) return;
     appMode.set(newMode);
+  }
+
+  // Tab-content entry animation.
+  //
+  // A mount-time CSS animation only fires for panes that are re-created (or
+  // toggled out of display:none), which made the effect inconsistent:
+  // Convert↔Resize render the SAME view block — only props change — so
+  // switching between them animated nothing at all, while every other tab
+  // switch faded in. Alternating two identical keyframes on every mode
+  // change restarts the animation for whichever pane is on screen, without
+  // remounting anything — so the always-mounted Download pane keeps its
+  // running batch (see the .tab-pane comment in the markup).
+  let paneEnter = 0;
+  let lastAnimatedMode = null;
+  $: if (mode !== lastAnimatedMode) {
+    lastAnimatedMode = mode;
+    paneEnter += 1;
   }
 
   function getDefaultDir(filePath) {
@@ -188,6 +271,8 @@
     let remaining;
     filesStore.subscribe((v) => (remaining = v))();
     if (remaining.length === 0) resetAll();
+    // Trim lives on the removed entry — it dies with the file. A removed
+    // clip-editor selection falls back via the clipVideoFile chain below.
   }
 
   // ── Convert ──
@@ -216,6 +301,15 @@
       );
 
       try {
+        // Target size applies to video-category targets only (GIF has its own
+        // gifTargetSizeMb pipeline). The math lives in the Rust arg builder;
+        // web's wasm builder ignores the field (UI is desktop-gated anyway).
+        const wantsTargetSize =
+          isDesktop &&
+          settings.targetSizeMb != null &&
+          settings.targetSizeMb > 0 &&
+          VIDEO_FORMATS.includes(fmt);
+
         const result = await platform.convertFile({
           fileId: file.id,
           filePath: file.filePath,
@@ -223,13 +317,15 @@
           fileType: file.detectedType,
           outputFormat: fmt,
           quality: settings.quality,
-          duration: file.metadata?.duration || null,
+          duration: file.metadata?.duration || file.duration || null,
           outputDir: settings.outputDir || null,
           outputName: file.outputName || null,
           resolution: settings.resolution || null,
           fps: settings.fps || null,
-          trimStart: settings.trimStart || null,
-          trimEnd: settings.trimEnd || null,
+          // Trim is per-file: each clip carries its own points.
+          trimStart: file.trimStart || null,
+          trimEnd: file.trimEnd || null,
+          targetSizeMb: wantsTargetSize ? settings.targetSizeMb : null,
           stripAudio: fmt === "gif" ? true : (settings.stripAudio || false),
           bitrate: settings.bitrate || null,
           preset: settings.preset || null,
@@ -245,6 +341,18 @@
           speed: settings.speed || 1,
           volume: settings.volume != null ? settings.volume / 100 : 1,
         });
+
+        // A cancelled conversion RESOLVES (it is never an error) with an
+        // empty output path and its partial file already deleted — marking
+        // it "done" would fake a success row with a dead "Open file".
+        if (result?.cancelled) {
+          filesStore.update((all) =>
+            all.map((f) =>
+              f.id === file.id ? { ...f, status: "ready", progress: 0 } : f
+            )
+          );
+          break;
+        }
 
         filesStore.update((all) =>
           all.map((f) =>
@@ -317,6 +425,17 @@
           outputName: file.outputName || null,
         });
 
+        // Same typed-cancel contract as convert_file: a resolved
+        // { cancelled: true } is a cancel, not a finished file.
+        if (result?.cancelled) {
+          filesStore.update((all) =>
+            all.map((f) =>
+              f.id === file.id ? { ...f, status: "ready", progress: 0 } : f
+            )
+          );
+          break;
+        }
+
         filesStore.update((all) =>
           all.map((f) =>
             f.id === file.id
@@ -346,12 +465,15 @@
   }
 
   async function handleCancel() {
+    // Cancel must not throw away finished work: if any file already
+    // completed, land on the done summary instead of dropping to ready.
+    const anyDone = files.some((f) => f.status === "done");
     if (mode === "convert") {
       convertCancelled.set(true);
-      convertOp.set("idle");
+      convertOp.set(anyDone ? "done" : "idle");
     } else {
       resizeCancelled.set(true);
-      resizeOp.set("idle");
+      resizeOp.set(anyDone ? "done" : "idle");
     }
     try { await platform.cancelConversion(); } catch (_) {}
     filesStore.update((all) =>
@@ -387,8 +509,52 @@
   $: hasVideo = types.has("video");
   $: hasDuration = files.some((f) => f.metadata?.duration > 0);
   $: showClipEditor = hasDuration;
-  $: clipVideoFile = files.find((f) => f.metadata?.duration > 0) || null;
+
+  // Which clip the ClipEditor is bound to. Defaults to the first video (or
+  // first file with a duration — audio trim keeps working); multi-video
+  // batches can pick another by clicking its FileList row. A removed
+  // selection falls back through the chain instead of leaving a dead editor.
+  let selectedClipId = null;
+  $: videoFiles = files.filter((f) => f.detectedType === "video");
+  $: clipSelectable = videoFiles.length > 1;
+  $: clipVideoFile =
+    (clipSelectable &&
+      videoFiles.find((f) => f.id === selectedClipId && f.metadata?.duration > 0)) ||
+    videoFiles.find((f) => f.metadata?.duration > 0) ||
+    files.find((f) => f.metadata?.duration > 0) ||
+    null;
   $: clipMaxDuration = clipVideoFile?.metadata?.duration || 0;
+  $: if (files.length === 0 && selectedClipId !== null) selectedClipId = null;
+
+  function setFileTrim(id, start, end, max) {
+    filesStore.update((all) =>
+      all.map((f) =>
+        f.id === id
+          ? {
+              ...f,
+              trimStart: start > 0 ? start : null,
+              trimEnd: end < max ? end : null,
+            }
+          : f
+      )
+    );
+  }
+
+  function clearFileTrim(id) {
+    filesStore.update((all) =>
+      all.map((f) => (f.id === id ? { ...f, trimStart: null, trimEnd: null } : f))
+    );
+  }
+
+  function setFileDuration(id, d) {
+    // The editor re-reports duration on every mount — skip the no-op so
+    // reopening a clip doesn't churn the store for nothing.
+    filesStore.update((all) => {
+      const cur = all.find((f) => f.id === id);
+      if (!cur || cur.duration === d) return all;
+      return all.map((f) => (f.id === id ? { ...f, duration: d } : f));
+    });
+  }
 
   $: overallProgress = (() => {
     const convertable = files.filter((f) => f.status !== "skipped" && f.status !== "error");
@@ -397,8 +563,22 @@
     return total / convertable.length;
   })();
 
-  $: progressLabel = mode === "resize" ? "Resizing..." : "Converting...";
+  // Batch progress reads as 1/N steps; a "X of N" label makes the sequential
+  // advance legible instead of looking stalled.
+  $: progressLabel = (() => {
+    const verb = mode === "resize" ? "Resizing" : "Converting";
+    if (!isBatch) return `${verb}...`;
+    const total = files.filter((f) => f.status !== "skipped" && f.status !== "error").length;
+    if (total === 0) return `${verb}...`;
+    const doneN = files.filter((f) => f.status === "done").length;
+    return `${verb} ${Math.min(doneN + 1, total)} of ${total}...`;
+  })();
   $: actionLabel = mode === "resize" ? "resized" : "converted";
+
+  // Target-size export: video-category targets only (GIF excluded), and only
+  // on desktop — web's wasm arg builder has no size-targeting math.
+  $: showTargetSize =
+    isDesktop && !!settings.selectedFormat && VIDEO_FORMATS.includes(settings.selectedFormat);
 
   $: toolSetupLabel = !toolSetup ? "" :
     toolSetup.state === "extracting" ? "Unpacking ffmpeg…" :
@@ -433,12 +613,36 @@
     <Navbar activeMode={mode} onModeChange={switchMode} />
   </header>
 
-  <div class="content">
+  <div
+    class="content"
+    class:pane-a={paneEnter % 2 === 1}
+    class:pane-b={paneEnter % 2 === 0}
+  >
+    {#if isDesktop}
+      <!-- A running download batch lives in DownloadView's local state (its
+           progress, its Cancel button, the promise closure that finishes it),
+           so unmounting on a tab switch would strand the batch: uncancellable
+           while running, and inert on return. Keep it mounted and hide it.
+           Desktop-only — on web the view is inert, so it stays in the branch
+           chain below and web behaviour is unchanged. -->
+      <div class="tab-pane" class:hidden={mode !== "download"}>
+        <DownloadView />
+      </div>
+    {/if}
+
     {#if mode === "credits"}
       <Credits />
 
     {:else if mode === "download"}
-      <DownloadView />
+      {#if !isDesktop}
+        <DownloadView />
+      {/if}
+
+    {:else if mode === "history" && isDesktop}
+      <!-- The History tab only exists on desktop (gated in Navbar); the
+           isDesktop guard here keeps the web view switch provably
+           unchanged even if the mode were ever set programmatically. -->
+      <HistoryView />
 
     {:else if view === "idle"}
       <div class="animate-in">
@@ -453,6 +657,8 @@
             view="ready"
             onRemoveFile={removeFile}
             onAddFiles={addMoreFiles}
+            selectedFileId={mode === "convert" && clipSelectable ? clipVideoFile?.id ?? null : null}
+            onSelectFile={mode === "convert" && clipSelectable ? (id) => (selectedClipId = id) : null}
           />
         {:else if singleFile}
           <FilePreview metadata={singleFile.metadata} filePath={singleFile.filePath} fileObj={singleFile.fileObj} />
@@ -462,10 +668,17 @@
           <div class="convert-split" class:single-col={!showClipEditor}>
           {#if showClipEditor}
           <div class="split-left">
+            <!-- Keyed by file id so switching clips remounts with fresh
+                 duration/playhead state instead of showing the previous
+                 clip's timeline. Trim reads/writes the bound FILE's
+                 trimStart/trimEnd, not settings. -->
+            {#key clipVideoFile?.id}
             <ClipEditor
               duration={clipMaxDuration}
-              trimStart={settings.trimStart || 0}
-              trimEnd={settings.trimEnd || clipMaxDuration}
+              trimStart={clipVideoFile?.trimStart || 0}
+              trimEnd={clipVideoFile?.trimEnd || clipMaxDuration}
+              storedTrimStart={clipVideoFile?.trimStart ?? null}
+              storedTrimEnd={clipVideoFile?.trimEnd ?? null}
               filePath={clipVideoFile?.filePath || ""}
               fileObj={clipVideoFile?.fileObj || null}
               outputFormat={settings.selectedFormat}
@@ -477,11 +690,13 @@
               speed={settings.speed || 1}
               volume={settings.volume != null ? settings.volume : 100}
               onUpdate={(start, end) => {
-                settingsStore.update((s) => ({
-                  ...s,
-                  trimStart: start > 0 ? start : null,
-                  trimEnd: end < clipMaxDuration ? end : null,
-                }));
+                if (clipVideoFile) setFileTrim(clipVideoFile.id, start, end, clipMaxDuration);
+              }}
+              onDurationKnown={(d) => {
+                if (clipVideoFile) setFileDuration(clipVideoFile.id, d);
+              }}
+              onTrimClear={() => {
+                if (clipVideoFile) clearFileTrim(clipVideoFile.id);
               }}
               onStripAudioChange={(val) => {
                 settingsStore.update((s) => ({ ...s, stripAudio: val }));
@@ -493,6 +708,7 @@
               onSpeedChange={(v) => settingsStore.update((s) => ({ ...s, speed: v }))}
               onVolumeChange={(v) => settingsStore.update((s) => ({ ...s, volume: v }))}
             />
+            {/key}
           </div>
           {/if}
 
@@ -505,8 +721,8 @@
             onFormatSelect={(fmt) => settingsStore.update((s) => ({
               ...s,
               selectedFormat: fmt,
-              trimStart: null,
-              trimEnd: null,
+              // Trim survives format switches — it lives on the file entries
+              // now, matching Android's per-file model.
               ...(fmt === "gif" ? getGifDefaults() : {}),
             }))}
           />
@@ -525,6 +741,9 @@
             selectedFormat={settings.selectedFormat}
             {isBatch}
             singleOutputName={singleFile?.outputName || ""}
+            targetSizeMb={settings.targetSizeMb ?? null}
+            {showTargetSize}
+            onTargetSizeChange={(mb) => settingsStore.update((s) => ({ ...s, targetSizeMb: mb }))}
             onNameChange={(n) => {
               if (singleFile) {
                 filesStore.update((all) => all.map((f) => f.id === singleFile.id ? { ...f, outputName: n } : f));
@@ -632,6 +851,11 @@
   </div>
 </main>
 
+<!-- Feedback hosts: mounted exactly once, app-wide. toast(...) and
+     confirmDialog(...) from any component render through these. -->
+<Toast />
+<ConfirmDialog />
+
 <style>
   main {
     height: 100%;
@@ -639,9 +863,22 @@
     flex-direction: column;
     padding: 16px 20px;
     gap: 12px;
+    /* Widest the app column ever gets. Views may cap themselves tighter. */
+    --app-column: 1200px;
   }
 
-  header { padding: 2px 0; flex-shrink: 0; }
+  /* App column. Every tab (Convert, Resize, Download, Credits, History)
+     renders inside .content, so capping and centring it here is what stops
+     any single view being pinned against one edge of a wide window. The
+     header shares the cap so the GitHub/theme buttons stay flush with the
+     column instead of drifting to the window corners. */
+  header {
+    padding: 2px 0;
+    flex-shrink: 0;
+    width: 100%;
+    max-width: var(--app-column);
+    margin-inline: auto;
+  }
 
   .header-inner {
     display: flex;
@@ -693,10 +930,44 @@
     min-height: 0;
     overflow-y: auto;
     overflow-x: hidden;
+    width: 100%;
+    max-width: var(--app-column);
+    margin-inline: auto;
+  }
+
+  /* display:contents keeps the always-mounted Download pane layout-neutral —
+     its child stays the flex item .content used to lay out directly. */
+  .tab-pane { display: contents; }
+  .tab-pane.hidden { display: none; }
+
+  /* Entry animation for whichever pane is on screen, replayed on every tab
+     switch (see paneEnter in the script). Two identical keyframes alternate
+     because re-applying the SAME animation-name to a surviving element does
+     not restart it. The Download pane is display:contents, so the animation
+     has to land on its child instead of the pane box. Both selectors
+     out-specify the panes' own mount-time fades, so this is the single
+     source of truth for tab-content entry. */
+  .content.pane-a > :global(*:not(.tab-pane)),
+  .content.pane-a > .tab-pane > :global(*) {
+    animation: paneEnterA 0.35s ease-out;
+  }
+
+  .content.pane-b > :global(*:not(.tab-pane)),
+  .content.pane-b > .tab-pane > :global(*) {
+    animation: paneEnterB 0.35s ease-out;
+  }
+
+  @keyframes paneEnterA {
+    from { opacity: 0; transform: translateY(12px); }
+    to { opacity: 1; transform: none; }
+  }
+
+  @keyframes paneEnterB {
+    from { opacity: 0; transform: translateY(12px); }
+    to { opacity: 1; transform: none; }
   }
 
   .animate-in {
-    animation: fadeUp 0.35s ease-out;
     display: flex;
     flex-direction: column;
     flex: 1;
@@ -706,7 +977,6 @@
     display: flex;
     flex-direction: column;
     gap: 10px;
-    animation: fadeUp 0.35s ease-out;
   }
 
   .convert-split {
@@ -740,7 +1010,6 @@
     display: flex;
     flex-direction: column;
     gap: 14px;
-    animation: fadeUp 0.3s ease-out;
   }
 
   .hint {
@@ -749,6 +1018,9 @@
     text-align: center;
     margin: 0;
     padding: 4px 8px;
+    /* Appears/disappears as the user edits settings — fade it instead of
+       popping a line of text into the middle of the panel. */
+    animation: fadeIn 0.2s ease-out;
   }
 
   .actions {
@@ -800,8 +1072,11 @@
     align-items: center;
     justify-content: center;
     background: var(--bg-card);
+    /* Boot overlay: fade in rather than slamming over the app shell. */
+    animation: fadeIn 0.2s ease-out;
   }
   .tool-setup-card {
+    animation: fadeUp 0.3s ease-out;
     text-align: center;
     max-width: 340px;
     padding: 28px 24px;

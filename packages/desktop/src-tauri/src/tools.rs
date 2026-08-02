@@ -143,3 +143,86 @@ pub async fn ensure_tools(app: AppHandle) -> Result<(), String> {
     emit_status(&app, "all", "done");
     Ok(())
 }
+
+#[derive(Clone, serde::Serialize)]
+pub struct YtdlpUpdateResult {
+    /// "DONE" (a newer build was installed) | "ALREADY_UP_TO_DATE"
+    pub status: String,
+    /// `yt-dlp --version` after the update attempt.
+    pub version: String,
+}
+
+async fn ytdlp_version(path: &Path) -> Option<String> {
+    let mut cmd = tokio::process::Command::new(path);
+    cmd.arg("--version");
+    #[cfg(windows)]
+    cmd.creation_flags(0x08000000); // CREATE_NO_WINDOW
+    let output = cmd.output().await.ok()?;
+    if !output.status.success() {
+        return None;
+    }
+    let v = String::from_utf8_lossy(&output.stdout).trim().to_string();
+    if v.is_empty() { None } else { Some(v) }
+}
+
+/// Update the download engine. yt-dlp is a self-updating binary, so when the
+/// resolved exe is writable we just run `yt-dlp -U`; otherwise (read-only
+/// resource dir) the latest release is re-downloaded into the AppData bin dir,
+/// which `get_ytdlp_path` already prefers. Extractor rot is the #1 field
+/// failure mode — this is the fix `friendly_error` keeps recommending.
+#[tauri::command]
+pub async fn update_ytdlp(app: AppHandle) -> Result<YtdlpUpdateResult, String> {
+    let ytdlp = crate::downloader::get_ytdlp_path(&app);
+    let before = ytdlp_version(&ytdlp).await;
+
+    let writable = std::fs::OpenOptions::new()
+        .append(true)
+        .open(&ytdlp)
+        .is_ok();
+
+    if writable {
+        let mut cmd = tokio::process::Command::new(&ytdlp);
+        cmd.arg("-U");
+        #[cfg(windows)]
+        cmd.creation_flags(0x08000000); // CREATE_NO_WINDOW
+        let output = cmd
+            .output()
+            .await
+            .map_err(|e| format!("Failed to run yt-dlp -U: {}", e))?;
+        if !output.status.success() {
+            let stderr = String::from_utf8_lossy(&output.stderr);
+            let tail = stderr
+                .lines()
+                .map(str::trim)
+                .filter(|l| !l.is_empty())
+                .last()
+                .unwrap_or("(no details)")
+                .to_string();
+            return Err(format!("yt-dlp self-update failed: {}", tail));
+        }
+    } else {
+        // Bundled/read-only binary — install a fresh copy where we CAN write.
+        let dir = tools_dir(&app).ok_or("No app data directory available")?;
+        std::fs::create_dir_all(&dir).map_err(|e| format!("Create tools dir: {}", e))?;
+        let bytes = http_get_bytes(YTDLP_URL).await?;
+        std::fs::write(dir.join("yt-dlp.exe"), &bytes)
+            .map_err(|e| format!("Write yt-dlp: {}", e))?;
+    }
+
+    // Re-resolve: the freshly-downloaded AppData copy (if any) now wins.
+    let resolved = crate::downloader::get_ytdlp_path(&app);
+    let after = ytdlp_version(&resolved)
+        .await
+        .ok_or("yt-dlp updated but its version couldn't be read.")?;
+
+    let status = if before.as_deref() == Some(after.as_str()) {
+        "ALREADY_UP_TO_DATE"
+    } else {
+        "DONE"
+    };
+
+    Ok(YtdlpUpdateResult {
+        status: status.to_string(),
+        version: after,
+    })
+}

@@ -1,7 +1,11 @@
 <script>
   import { onMount } from "svelte";
+  import AccentColorCard from "./AccentColorCard.svelte";
   import DesktopDownload from "./DesktopDownload.svelte";
   import WebVersionLink from "./WebVersionLink.svelte";
+  import EngineUpdateCard from "./EngineUpdateCard.svelte";
+  import PlatformLogins from "./PlatformLogins.svelte";
+  import ErrorLogCard from "./ErrorLogCard.svelte";
   import {
     fetchLatestRelease,
     fetchLatestDesktopRelease,
@@ -15,6 +19,12 @@
   const platform = getPlatform();
   const isWeb = platform.platformType === "web";
   const isDesktop = platform.platformType === "desktop";
+
+  // Download-parity cards are capability-detected, not just isDesktop —
+  // the web adapter never grows these methods, so the web Credits layout
+  // stays exactly as before.
+  const hasEngineUpdate = isDesktop && typeof platform.updateYtdlp === "function";
+  const hasPlatformLogins = isDesktop && typeof platform.openLoginWindow === "function";
 
   // APKs live in the monorepo's GitHub releases (v* tags).
   const ANDROID_URL = `${REPO_URL}/releases`;
@@ -33,7 +43,9 @@
     if (!silent) upState = "checking";
     try {
       if (!currentVersion) currentVersion = await platform.getAppVersion();
-      const rel = await fetchLatestDesktopRelease();
+      // An explicit "check for updates" click must hit the network; the
+      // silent mount-time check reads the shared 1h cache.
+      const rel = await fetchLatestDesktopRelease({ force: !silent });
       if (rel && isNewerVersion(rel.version, currentVersion)) {
         const win = pickWindowsAssets(rel);
         latestAsset = win.msi || win.exe;
@@ -94,6 +106,9 @@
     </a>
   </section>
 
+  <!-- Appearance — custom accent color, persisted (web + desktop) -->
+  <AccentColorCard />
+
   {#if isDesktop}
     <section class="card update">
       <h2>{upState === "available" ? "Update available" : "App update"}</h2>
@@ -125,6 +140,14 @@
     </section>
   {/if}
 
+  {#if hasEngineUpdate}
+    <EngineUpdateCard />
+  {/if}
+
+  {#if hasPlatformLogins}
+    <PlatformLogins />
+  {/if}
+
   {#if isWeb}
     <DesktopDownload variant="card" />
   {:else}
@@ -152,6 +175,8 @@
       {/each}
     </ul>
   </section>
+
+  <ErrorLogCard />
 
   <section class="card">
     <h2>Source</h2>
@@ -241,9 +266,9 @@
   .update-btn.primary {
     background: var(--accent);
     border-color: var(--accent);
-    color: #fff;
+    color: var(--btn-primary-text);
   }
-  .update-btn.primary:hover { filter: brightness(1.08); color: #fff; }
+  .update-btn.primary:hover { filter: brightness(1.08); color: var(--btn-primary-text); }
 
   .progress {
     margin-top: 10px;

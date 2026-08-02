@@ -1,5 +1,6 @@
 import { FFmpeg } from "@ffmpeg/ffmpeg";
 import { fetchFile } from "@ffmpeg/util";
+import { AUDIO_FORMATS } from "@convertx/shared/core/formats.js";
 
 // Magic bytes detection (ported from Rust detect.rs)
 function detectByMagicBytes(data) {
@@ -315,6 +316,18 @@ function buildAudioFilterChain(params) {
   return parts.length ? parts.join(",") : null;
 }
 
+// Quality 0-100 -> audio bitrate, mirroring the desktop ladder in
+// src-tauri/src/ffmpeg.rs build_audio_args.
+function audioBitrateFor(quality) {
+  const q = clampQuality(quality);
+  if (q <= 20) return "64k";
+  if (q <= 40) return "96k";
+  if (q <= 60) return "128k";
+  if (q <= 80) return "192k";
+  if (q <= 95) return "256k";
+  return "320k";
+}
+
 function buildFFmpegArgs(inputName, outputName, params) {
   const args = ["-i", inputName];
   const isGif = params.outputFormat === "gif";
@@ -356,6 +369,24 @@ function buildFFmpegArgs(inputName, outputName, params) {
     args.push("-vf", `${prefix}split[s0][s1];[s0]palettegen=max_colors=${colors}:stats_mode=${statsMode}[p];[s1][p]paletteuse=${paletteuse.join(":")}`);
     args.push("-an");
     args.push("-loop", "0");
+  } else if (AUDIO_FORMATS.includes(params.outputFormat)) {
+    // Audio target (a video source is allowed — see core/formats.js). Without
+    // -vn the muxer keeps the auto-selected video stream and re-encodes the
+    // picture into the audio container. Parity with ffmpeg.rs build_audio_args
+    // / android ffmpegArgs.ts buildAudioArgs: no video-only arg applies here.
+    args.push("-vn");
+
+    const audioChain = buildAudioFilterChain(params);
+    if (audioChain) args.push("-af", audioChain);
+
+    // pcm/flac ignore -b:a; every other target gets the quality ladder. The
+    // Advanced bitrate field offers VIDEO rates ("2M") whenever the source is
+    // a video, so it must not be reused as an audio rate — encoders like
+    // libmp3lame reject it outright.
+    if (params.outputFormat !== "wav" && params.outputFormat !== "flac") {
+      const explicit = params.fileType === "video" ? null : params.bitrate;
+      args.push("-b:a", explicit || audioBitrateFor(params.quality));
+    }
   } else {
     // Non-GIF formats
     const filters = buildEditFilters(params);
@@ -528,6 +559,9 @@ export function createWebAdapter() {
     async convertFile(params) {
       const ff = await ensureFFmpeg();
       currentFileId = params.fileId;
+      // params.targetSizeMb (video target-size export) is accepted but
+      // ignored here — the wasm arg builder has no size-targeting math, and
+      // the UI field is desktop-gated.
 
       const file = params.fileObj;
       const inputExt = getExt(file.name);
@@ -622,6 +656,28 @@ export function createWebAdapter() {
     async probeUrl() {
       throw new Error("URL preview needs the desktop app — browser sandbox can't run yt-dlp.");
     },
+
+    async httpRequest() {
+      throw new Error("Direct network probing needs the desktop app — the browser blocks cross-origin requests.");
+    },
+
+    async downloadDirect() {
+      throw new Error("URL downloads need the desktop app — browser sandbox can't save files directly.");
+    },
+
+    async openLoginWindow() {
+      throw new Error("Platform logins need the desktop app.");
+    },
+
+    // NOTE: updateYtdlp is deliberately ABSENT here — callers feature-detect
+    // `typeof platform.updateYtdlp === "function"` to hide engine-update UI
+    // on web.
+
+    async readCookiesText() { return null; },
+    async writeCookiesText() { /* no-op on web */ },
+    async getCookiesFilePath() { return null; },
+    async fileExists() { return false; },
+    async setKeepAwake() { /* no-op on web */ },
 
     async fetchRemoteImage(url) {
       // Browser fetch may CORS-fail for hotlink-blocked CDNs but try anyway —

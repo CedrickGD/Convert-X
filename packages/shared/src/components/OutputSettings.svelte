@@ -9,10 +9,37 @@
   export let onNameChange;
   export let onDirChange;
   export let onQualityChange;
+  // Target output size in MB. null = off (quality slider drives the encode).
+  export let targetSizeMb = null;
+  export let onTargetSizeChange = null;
+  // Show the target-size field — video-category targets only (GIF excluded).
+  export let showTargetSize = false;
 
   $: isWeb = getPlatform().platformType === "web";
   $: qualityLabel = selectedFormat === "gif" ? "GIF quality" : "Quality";
   $: qualityHighLabel = selectedFormat === "gif" ? "Cleaner" : "Better";
+
+  // Empty / zero / garbage all mean "off" — the field can never hard-error.
+  // Accepts a decimal comma (German locale keyboards emit one).
+  function parseTargetSize(text) {
+    const n = parseFloat(String(text).replace(",", "."));
+    return Number.isFinite(n) && n > 0 ? n : null;
+  }
+
+  // The field owns its raw text so partial input ("1." / "0,") survives the
+  // controlled round-trip; only the parsed value goes up to settings.
+  let sizeText = targetSizeMb != null ? String(targetSizeMb) : "";
+
+  // External change (reset, hydration) — re-sync unless the text already
+  // parses to the incoming value, which would clobber in-progress typing.
+  $: if ((targetSizeMb ?? null) !== parseTargetSize(sizeText)) {
+    sizeText = targetSizeMb != null ? String(targetSizeMb) : "";
+  }
+
+  function onTargetSizeInput(e) {
+    sizeText = e.target.value;
+    onTargetSizeChange?.(parseTargetSize(sizeText));
+  }
 
   async function pickFolder() {
     const result = await getPlatform().pickFolder();
@@ -80,6 +107,29 @@
       </div>
     </div>
   </div>
+
+  <!-- Target size (video targets only, GIF excluded) -->
+  {#if showTargetSize && onTargetSizeChange}
+    <div class="field">
+      <span class="label">Target size</span>
+      <div class="input-row">
+        <input
+          type="text"
+          class="name-input"
+          inputmode="decimal"
+          value={sizeText}
+          on:input={onTargetSizeInput}
+          placeholder="Off"
+          spellcheck="false"
+        />
+        <span class="ext">MB</span>
+      </div>
+      <span class="field-hint">
+        Fits the export under this size by overriding the quality slider.
+        Leave empty to disable.
+      </span>
+    </div>
+  {/if}
 </div>
 
 <style>
@@ -129,6 +179,11 @@
   }
 
   .name-input::placeholder { color: var(--text-muted); }
+
+  .field-hint {
+    font-size: 0.68rem;
+    color: var(--text-muted);
+  }
 
   .ext {
     color: var(--accent);

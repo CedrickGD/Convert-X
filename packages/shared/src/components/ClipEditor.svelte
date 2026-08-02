@@ -5,6 +5,10 @@
   export let duration = 0;
   export let trimStart = 0;
   export let trimEnd = 0;
+  // Raw per-file trim values (null = unset) — needed by the stale-trim clamp,
+  // which must only clear points the user actually stored.
+  export let storedTrimStart = null;
+  export let storedTrimEnd = null;
   export let filePath = "";
   export let fileObj = null;
   export let outputFormat = "";
@@ -16,6 +20,12 @@
   export let speed = 1;
   export let volume = 100;
   export let onUpdate;
+  // Reports the media element's probed duration (only when > 0) so it can
+  // land on the file entry — target-size export needs it when ffprobe
+  // couldn't time the container.
+  export let onDurationKnown = () => {};
+  // Clears both trim points on the bound file (stale-trim clamp).
+  export let onTrimClear = () => {};
   export let onStripAudioChange = () => {};
   export let onCropChange = () => {};
   export let onRotateChange = () => {};
@@ -287,10 +297,28 @@
 
   function onVideoLoaded() {
     if (videoEl) {
-      videoEl.currentTime = trimStart;
-      playheadTime = trimStart;
       srcW = videoEl.videoWidth || 0;
       srcH = videoEl.videoHeight || 0;
+      // Only trust a real duration — 0/NaN (duration-less containers) must
+      // not shadow ffprobe's value or misfire the clamp below.
+      const mediaDuration = videoEl.duration;
+      if (Number.isFinite(mediaDuration) && mediaDuration > 0) {
+        onDurationKnown(mediaDuration);
+        // Trim points surviving from a longer clip would render the end
+        // handle past the track and feed ffmpeg -ss/-to beyond the input —
+        // clear anything the loaded clip can't satisfy.
+        if (
+          (storedTrimEnd != null && storedTrimEnd > mediaDuration) ||
+          (storedTrimStart != null && storedTrimStart >= mediaDuration)
+        ) {
+          onTrimClear();
+          videoEl.currentTime = 0;
+          playheadTime = 0;
+          return;
+        }
+      }
+      videoEl.currentTime = trimStart;
+      playheadTime = trimStart;
     }
   }
 

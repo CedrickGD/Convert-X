@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-cookies-file-path"
+description = "Enables the cookies_file_path command without any pre-configured scope."
+commands.allow = ["cookies_file_path"]
+
+[[permission]]
+identifier = "deny-cookies-file-path"
+description = "Denies the cookies_file_path command without any pre-configured scope."
+commands.deny = ["cookies_file_path"]

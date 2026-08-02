@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-read-cookies-file"
+description = "Enables the read_cookies_file command without any pre-configured scope."
+commands.allow = ["read_cookies_file"]
+
+[[permission]]
+identifier = "deny-read-cookies-file"
+description = "Denies the read_cookies_file command without any pre-configured scope."
+commands.deny = ["read_cookies_file"]

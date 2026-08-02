@@ -1,6 +1,6 @@
 <script>
   import { onMount } from "svelte";
-  import { fetchLatestRelease, pickWindowsAssets, formatSize, RELEASES_URL } from "../lib/github.js";
+  import { fetchLatestDesktopRelease, pickWindowsAssets, formatSize, RELEASES_URL } from "../lib/github.js";
 
   export let variant = "card"; // "card" | "inline"
 
@@ -8,7 +8,10 @@
   let loading = true;
 
   onMount(async () => {
-    release = await fetchLatestRelease();
+    // The monorepo's /releases/latest mixes android (v*) and desktop
+    // (desktop-v*) tags — this promo must never hand a web visitor an APK
+    // release, so pick the newest desktop-v* release specifically.
+    release = await fetchLatestDesktopRelease();
     loading = false;
   });
 
@@ -44,7 +47,7 @@
         Download for Windows
       </a>
       <div class="meta">
-        {#if release?.tagName}<span>{release.tagName}</span>{/if}
+        {#if release?.version}<span>v{release.version}</span>{:else if release?.tagName}<span>{release.tagName}</span>{/if}
         {#if primary.size}<span>· {formatSize(primary.size)}</span>{/if}
         {#if msi && exe}
           <span>·</span>

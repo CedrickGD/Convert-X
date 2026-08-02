@@ -1,13 +1,22 @@
-<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" width="512" height="512">
-  <defs>
-    <linearGradient id="bg" x1="0" y1="0" x2="0" y2="1">
-      <stop offset="0" stop-color="#34d399"/>
-      <stop offset="1" stop-color="#059669"/>
-    </linearGradient>
-  </defs>
-  <rect width="512" height="512" rx="112" ry="112" fill="url(#bg)"/>
-  <g stroke="#ffffff" stroke-width="64" stroke-linecap="round" stroke-linejoin="round" fill="none">
-    <path d="M 144 144 L 256 256 L 368 144"/>
-    <path d="M 144 368 L 256 256 L 368 368"/>
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1024 1024" width="1024" height="1024">
+  <!-- Full plate: flat black, pure white monogram. The previous silver
+       gradient (#f2f4f7 -> #9aa1ab) on a #2a2a2e plate topped out around 4:1
+       contrast and read as washed out at launcher size; flat white on black
+       is ~21:1 and stays crisp once the launcher shrinks it to 48dp. -->
+  <rect width="1024" height="1024" rx="196" ry="196" fill="#000000"/>
+
+  <!-- Monogram: angular C (upper-left) + lowercase x (lower-right), offset
+       diagonally and separated by a knockout gap, mirroring the reference. -->
+  <g transform="translate(512 512) scale(0.98) translate(-532.5 -462.5)">
+    <path d="M 305 130 L 665 130 L 605 250 L 395 250 L 330 545 L 545 545 L 605 665 L 245 665 Z"
+          fill="#ffffff"/>
+
+    <!-- The x rides up into the C's mouth so the two interlock instead of
+         merely touching. Stroked in the plate colour first, so it reads as
+         sitting in front with a clean separation gap. -->
+    <path d="M 465 370 L 562 370 L 820 795 L 723 795 Z M 723 370 L 820 370 L 562 795 L 465 795 Z"
+          fill="#000000" stroke="#000000" stroke-width="40" stroke-linejoin="miter"/>
+    <path d="M 465 370 L 562 370 L 820 795 L 723 795 Z M 723 370 L 820 370 L 562 795 L 465 795 Z"
+          fill="#ffffff"/>
   </g>
 </svg>

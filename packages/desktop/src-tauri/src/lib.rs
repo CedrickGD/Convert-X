@@ -1,11 +1,19 @@
+#[cfg(test)]
+mod acl_test;
 mod convert;
+mod cookies;
 mod detect;
 mod downloader;
 mod ffmpeg;
+mod login;
+mod net;
+mod power;
+mod spotify;
 mod tools;
 mod updater;
 
 use convert::AppState;
+use std::collections::{HashMap, HashSet};
 use std::sync::{Arc, Mutex};
 
 #[tauri::command]
@@ -84,9 +92,20 @@ pub fn run() {
     tauri::Builder::default()
         .plugin(tauri_plugin_shell::init())
         .plugin(tauri_plugin_dialog::init())
+        .setup(|_app| {
+            // Staging dirs are per-job and job ids are never reused, so a run
+            // can only clean up after itself — anything left by a killed app
+            // would stay in %TEMP% forever. Own thread: this walks the temp
+            // dirs and must never delay the window.
+            std::thread::spawn(downloader::sweep_stale_staging);
+            Ok(())
+        })
         .manage(AppState {
             ffmpeg_process: Arc::new(Mutex::new(None)),
-            ytdlp_process: Arc::new(Mutex::new(None)),
+            conversion_cancelled: Arc::new(Mutex::new(false)),
+            downloads: Arc::new(Mutex::new(HashMap::new())),
+            cancelled_downloads: Arc::new(Mutex::new(HashSet::new())),
+            active_jobs: Arc::new(Mutex::new(HashSet::new())),
         })
         .invoke_handler(tauri::generate_handler![
             detect::detect_file,
@@ -96,6 +115,14 @@ pub fn run() {
             downloader::download_from_url,
             downloader::cancel_download,
             downloader::probe_url,
+            net::http_request,
+            net::download_direct,
+            cookies::read_cookies_file,
+            cookies::write_cookies_file,
+            cookies::cookies_file_path,
+            cookies::file_exists,
+            login::open_login_window,
+            power::set_keep_awake,
             read_file_binary,
             fetch_remote_image,
             open_file,
@@ -104,6 +131,7 @@ pub fn run() {
             updater::launch_installer,
             tools::ensure_tools,
             tools::tools_ready,
+            tools::update_ytdlp,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

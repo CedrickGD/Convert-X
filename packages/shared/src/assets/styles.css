@@ -1,3 +1,10 @@
+/*
+ * Stock palette. The --accent* cluster (and --btn-primary-text, the colour
+ * drawn ON an accent fill) is the user-themeable part: stores/themeStore.js
+ * writes the same names as inline properties on :root when a custom accent is
+ * picked, which outranks both blocks below. Everything reading var(--accent…)
+ * re-themes for free — never hard-code the emerald in a component.
+ */
 :root,
 [data-theme="dark"] {
   --bg-primary: #0a0a0a;
@@ -10,9 +17,12 @@
   --accent-dim: #059669;
   --accent-glow: rgba(16, 185, 129, 0.12);
   --accent-subtle: rgba(16, 185, 129, 0.06);
+  --accent-border: rgba(16, 185, 129, 0.4);
   --text-primary: #f0f0f0;
   --text-secondary: #999999;
-  --text-muted: #4a4a4a;
+  /* AA on --bg-primary (~4.6:1). Carries every label, hint and placeholder,
+     so it must stay in lockstep with the Android palette. */
+  --text-muted: #7a7a7a;
   --border: #222222;
   --border-hover: #333333;
   --success: #22c55e;
@@ -38,9 +48,10 @@
   --accent-dim: #10b981;
   --accent-glow: rgba(5, 150, 105, 0.15);
   --accent-subtle: rgba(5, 150, 105, 0.05);
+  --accent-border: rgba(5, 150, 105, 0.35);
   --text-primary: #111111;
   --text-secondary: #555555;
-  --text-muted: #999999;
+  --text-muted: #6b6b6b;
   --border: #dcdcdc;
   --border-hover: #c4c4c4;
   --success: #16a34a;

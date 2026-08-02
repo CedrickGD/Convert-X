@@ -1,5 +1,6 @@
 const REPO = "CedrickGD/Convert-X";
 const CACHE_KEY = "convertx-latest-release";
+const DESKTOP_CACHE_KEY = "convertx-latest-desktop-release";
 const TTL_MS = 60 * 60 * 1000;
 
 export const REPO_URL = `https://github.com/${REPO}`;
@@ -53,7 +54,20 @@ export function pickWindowsAssets(release) {
 // releases, so `/releases/latest` is unreliable for the desktop updater. List
 // releases and return the newest published one whose tag is `desktop-v*` and
 // that ships a Windows installer.
-export async function fetchLatestDesktopRelease() {
+// Memoized for TTL_MS like fetchLatestRelease: the promo card is re-mounted on
+// every Download<->Credits switch, and the API is unauthenticated (60 req/h per
+// IP). `force` skips the cache for an explicit "check for updates" click.
+export async function fetchLatestDesktopRelease({ force = false } = {}) {
+  if (!force) {
+    try {
+      const cached = sessionStorage.getItem(DESKTOP_CACHE_KEY);
+      if (cached) {
+        const { ts, data } = JSON.parse(cached);
+        if (Date.now() - ts < TTL_MS) return data;
+      }
+    } catch {}
+  }
+
   try {
     const res = await fetch(`https://api.github.com/repos/${REPO}/releases?per_page=30`, {
       headers: {
@@ -74,7 +88,7 @@ export async function fetchLatestDesktopRelease() {
       }));
       const win = assets.find((a) => /\.(msi|exe)$/i.test(a.name));
       if (!win) continue;
-      return {
+      const data = {
         tagName: json.tag_name,
         version: String(json.tag_name).replace(/^desktop-v/, ""),
         name: json.name,
@@ -83,6 +97,12 @@ export async function fetchLatestDesktopRelease() {
         htmlUrl: json.html_url,
         assets,
       };
+      // Only successes are cached — a transient 403 must not pin the
+      // "View Releases" fallback for the rest of the session.
+      try {
+        sessionStorage.setItem(DESKTOP_CACHE_KEY, JSON.stringify({ ts: Date.now(), data }));
+      } catch {}
+      return data;
     }
     return null;
   } catch {

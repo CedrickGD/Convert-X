@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-launch-installer"
+description = "Enables the launch_installer command without any pre-configured scope."
+commands.allow = ["launch_installer"]
+
+[[permission]]
+identifier = "deny-launch-installer"
+description = "Denies the launch_installer command without any pre-configured scope."
+commands.deny = ["launch_installer"]

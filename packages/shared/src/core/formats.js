@@ -38,7 +38,8 @@ export function isFormatSupportedOn(surface, format) {
 
 export function isFormatCompatible(fileType, format) {
   if (format === "gif") return fileType === "video" || fileType === "image";
-  if (fileType === "video") return VIDEO_FORMATS.includes(format);
+  // Video sources can also target audio formats (track extraction via -vn).
+  if (fileType === "video") return VIDEO_FORMATS.includes(format) || AUDIO_FORMATS.includes(format);
   if (fileType === "image") return IMAGE_FORMATS.includes(format);
   if (fileType === "audio") return AUDIO_FORMATS.includes(format);
   return false;
@@ -61,11 +62,13 @@ export function extOf(filePathOrName) {
 
 // True when the user has changed any encode-affecting setting from its
 // default. Used to decide whether a same-format target is a no-op or a real
-// re-encode.
+// re-encode. Trim now lives on each file entry (see fileHasTrimEdits below);
+// the trim checks here stay for callers that still carry trim in settings.
 export function settingsHaveEdits(s) {
   if (!s) return false;
   if (s.trimStart != null && s.trimStart > 0) return true;
   if (s.trimEnd != null) return true;
+  if (s.targetSizeMb != null && s.targetSizeMb > 0) return true;
   if (s.resolution) return true;
   if (s.fps != null) return true;
   if (s.bitrate) return true;
@@ -77,5 +80,14 @@ export function settingsHaveEdits(s) {
   if (s.flipH || s.flipV) return true;
   if (s.speed != null && s.speed !== 1) return true;
   if (s.volume != null && s.volume !== 100) return true;
+  return false;
+}
+
+// Per-file counterpart of settingsHaveEdits: trim points live on each file
+// entry so they die with the file instead of leaking onto another clip.
+export function fileHasTrimEdits(f) {
+  if (!f) return false;
+  if (f.trimStart != null && f.trimStart > 0) return true;
+  if (f.trimEnd != null) return true;
   return false;
 }

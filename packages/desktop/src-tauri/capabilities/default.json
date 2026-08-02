@@ -1,10 +1,34 @@
 {
   "identifier": "default",
-  "description": "Default capabilities for the main window",
+  "description": "Default capabilities for the main window. Scoped to \"main\" on purpose: the login webview (label \"platform-login\") loads a remote origin and must not reach any app command.",
   "windows": ["main"],
   "permissions": [
     "core:default",
     "shell:allow-open",
-    "dialog:allow-open"
+    "dialog:allow-open",
+    "allow-detect-file",
+    "allow-convert-file",
+    "allow-cancel-conversion",
+    "allow-resize-image",
+    "allow-download-from-url",
+    "allow-cancel-download",
+    "allow-probe-url",
+    "allow-http-request",
+    "allow-download-direct",
+    "allow-read-cookies-file",
+    "allow-write-cookies-file",
+    "allow-cookies-file-path",
+    "allow-file-exists",
+    "allow-open-login-window",
+    "allow-set-keep-awake",
+    "allow-read-file-binary",
+    "allow-fetch-remote-image",
+    "allow-open-file",
+    "allow-open-in-folder",
+    "allow-download-installer",
+    "allow-launch-installer",
+    "allow-ensure-tools",
+    "allow-tools-ready",
+    "allow-update-ytdlp"
   ]
 }
