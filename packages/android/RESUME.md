@@ -6,7 +6,100 @@ Snapshot of where we left off, written to drop back in with zero ramp-up.
 
 ## Current state
 
-**Latest release:** v0.8.0 (tag `v0.8.0`) — the feature wave on top of
+**Latest release:** v0.8.1 (tag `v0.8.1`) — icon pipeline repair.
+
+The new silver-CX icon had been rendered into `assets/` and `res/mipmap-*`
+by hand, and that ad-hoc process left two real defects in the shipped APK:
+
+- **The splash screen was still the old green X.** `values/styles.xml` points
+  `windowSplashScreenAnimatedIcon` at `@drawable/splashscreen_logo`, and those
+  five PNGs had not been touched since **v0.6.16** — they survived *two*
+  subsequent icon redesigns untouched, so the launcher and the splash showed
+  different brands.
+- **`mipmap-hdpi/ic_launcher.png` / `_round.png` were 49x49** instead of
+  72x72, i.e. a broken resize that Android then upscaled on every hdpi device.
+- **The adaptive foreground was drawn far too large and got clipped.** The
+  glyph's circumscribed diameter was ~84% of the 108dp canvas, but a launcher
+  only guarantees the inner 66dp circle (61.1%) survives masking — and One UI
+  masks to an aggressive squircle. On the S26 the C's top-left corner and the
+  x's lower-right arm were sliced flat. `icon-manifest.json` had *already*
+  declared the right value (`android_fg_scale: 62`); it simply was never
+  applied to the render. The generator now measures the visible silver art's
+  circumscribed circle (ignoring the knockout, which is painted in the
+  background colour and is therefore invisible when clipped) and fits it to
+  that 62%. Verified on-device before/after.
+
+Root cause was that nothing derived the rasters from the vector source, so
+drift was invisible. Fixed by adding **`scripts/gen-icons.js`** (`npm run
+icons`, `npm run icons:check`) — the single generator for every Android
+raster, driven by the SVG source of truth in
+`../desktop/src-tauri/icons/` (`source-cx.svg`, `source-cx-fg.svg`,
+`icon-manifest.json`). It emits, all from those SVGs:
+
+- `mipmap-<dpi>/ic_launcher.png` (48/72/96/144/192, full plate)
+- `mipmap-<dpi>/ic_launcher_round.png` (same sizes, circle-masked)
+- `mipmap-<dpi>/ic_launcher_foreground.png` (108/162/216/324/432, glyph with
+  the knockout gap painted `#2a2a2e` to match `@color/iconBackground`)
+- `drawable-<dpi>/splashscreen_logo.png` (288/432/576/864/1152, glyph at 52%
+  coverage so the Android-12 circular splash mask can't clip it, knockout
+  repainted `#0a0a0a` to match `@color/splashscreen_background`)
+- `assets/{icon,adaptive-icon,splash-icon}.png` at 1024 + `favicon.png` at 48
+  — these are the `expo prebuild` inputs, previously only 256/432 px.
+
+`npm run icons:check` exits non-zero on drift, so this can't silently rot again.
+
+Also fixed while in here:
+
+- **`scripts/bump-version.js` now syncs `app.json`'s `expo.android.versionCode`**
+  alongside build.gradle's. It had drifted to 37 while gradle was at 46 —
+  since `expo prebuild` regenerates build.gradle *from* app.json, the next
+  prebuild would have rolled the shipped versionCode backwards and Android
+  would have rejected the install-over as a downgrade.
+- **`build:apk*` now call `.\gradlew.bat`**; the bare `gradlew` did not resolve
+  from cmd's working directory and the script failed instantly.
+- **Windows MAX_PATH broke the native build** once `.cxx` had to be rebuilt
+  from scratch. New-Arch codegen writes object paths that embed the ABSOLUTE
+  source path, landing ~360 chars, and `LongPathsEnabled=1` is NOT enough on
+  its own: the ninja shipped with SDK cmake 3.22.1 is 1.10.2, predating the
+  `longPathAware` manifest (ninja 1.11). `app/build.gradle` now accepts
+  `-PCONVERT_X_NINJA=<path to ninja>=1.11>` and passes it as
+  `CMAKE_MAKE_PROGRAM`. Visual Studio ships a usable one:
+  `C:/Program Files (x86)/Microsoft Visual Studio/18/BuildTools/Common7/IDE/CommonExtensions/Microsoft/CMake/Ninja/ninja.exe`
+  Put it in `~/.gradle/gradle.properties` to make it automatic.
+
+## Cutting a release
+
+Release signing is NOT in the repo. The keystore lives at
+`C:/Users/cedri/keys/convert-x-android-release.jks` (password in
+`convert-x-android-release.password.txt` beside it, alias `convert-x-release`),
+and `android/gradle.properties.local` does not exist — so a plain
+`assembleRelease` silently falls back to the DEBUG keystore and the resulting
+APK cannot install over an existing install (`INSTALL_FAILED_UPDATE_INCOMPATIBLE`).
+Pass the signing config via `ORG_GRADLE_PROJECT_*` env vars (keeps it off disk
+and out of git):
+
+    ORG_GRADLE_PROJECT_CONVERT_X_KEYSTORE_FILE / _KEYSTORE_PASSWORD /
+    _KEY_PASSWORD / _KEY_ALIAS
+
+Verify with `apksigner verify --print-certs` — the release cert is
+`CN=CedrickGD, O=Personal`, SHA-256 `4b946b51…`. A debug-signed APK shows
+`CN=Android Debug` instead.
+
+**Upload the GitHub asset as `app-arm64-v8a-release.apk`**, not the friendly
+`Convert-X-Android-<ver>.apk` that `copy-apk.js` produces: `updater.ts`'s
+`pickAssetForAbi` matches assets by the `arm64-v8a` substring, so the friendly
+name makes the update invisible to every installed client.
+
+Note: build with **`npm run build:apk:fast`**. The `build:apk` script runs
+`expo prebuild` first, which re-templates the committed native project and
+would clobber the hand-maintained parts of it (`splits.abi`, `signingConfigs`,
+the `.dev` applicationIdSuffix, `modules/`).
+
+Also carries the **`img_index` off-by-one fix**: Instagram's `?img_index=` is
+1-based but the entries array is 0-based, so a link to carousel item N
+preselected item N+1.
+
+**Previous release v0.8.0** (tag `v0.8.0`) — the feature wave on top of
 v0.7.6, all requested by the user in one "do all of em" session:
 
 - **Parallel downloads**: direct-CDN entries run 3-wide alongside a

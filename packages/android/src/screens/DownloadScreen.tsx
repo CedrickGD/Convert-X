@@ -175,11 +175,12 @@ export function DownloadScreen() {
     setDone(null);
     try {
       // Pluck an Instagram-style hint that asks for a specific carousel
-      // item ("?img_index=9" → item index 9, zero-based). yt-dlp ignores
-      // the param itself, so we keep it on the URL we send but use it
-      // locally to default the selection.
+      // item ("?img_index=1" → the FIRST item; Instagram's img_index is
+      // 1-based, the entries array is 0-based). yt-dlp ignores the param
+      // itself, so we keep it on the URL we send but use it locally to
+      // default the selection.
       const hintMatch = trimmed.match(/[?&]img_index=(\d+)/);
-      const hintIdx = hintMatch ? parseInt(hintMatch[1], 10) : -1;
+      const hintIdx = hintMatch ? parseInt(hintMatch[1], 10) - 1 : -1;
 
       const result = await probeUrl(trimmed, {
         spotifyClientId: state.settings.spotifyClientId || undefined,

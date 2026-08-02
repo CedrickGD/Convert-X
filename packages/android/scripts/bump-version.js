@@ -50,11 +50,6 @@ if (!/^\d+\.\d+\.\d+$/.test(next)) {
 pkg.version = next;
 fs.writeFileSync(pkgPath, JSON.stringify(pkg, null, 2) + '\n');
 
-// 2. app.json
-const appJson = JSON.parse(fs.readFileSync(appJsonPath, 'utf8'));
-appJson.expo.version = next;
-fs.writeFileSync(appJsonPath, JSON.stringify(appJson, null, 2) + '\n');
-
 // 3 + 4. build.gradle versionName + auto-incremented versionCode
 let gradle = fs.readFileSync(gradlePath, 'utf8');
 const codeMatch = gradle.match(/versionCode\s+(\d+)/);
@@ -66,6 +61,16 @@ const nextCode = parseInt(codeMatch[1], 10) + 1;
 gradle = gradle.replace(/versionCode\s+\d+/, `versionCode ${nextCode}`);
 gradle = gradle.replace(/versionName\s+"[^"]*"/, `versionName "${next}"`);
 fs.writeFileSync(gradlePath, gradle);
+
+// 2. app.json — version AND versionCode. build.gradle is the value that
+// actually ships, but `expo prebuild` regenerates build.gradle FROM app.json,
+// so letting expo.android.versionCode drift behind means the next prebuild
+// silently rolls the shipped versionCode backwards and Android then refuses
+// the install-over as a downgrade.
+const appJson = JSON.parse(fs.readFileSync(appJsonPath, 'utf8'));
+appJson.expo.version = next;
+appJson.expo.android.versionCode = nextCode;
+fs.writeFileSync(appJsonPath, JSON.stringify(appJson, null, 2) + '\n');
 
 console.log(`Bumped ${current} -> ${next}  (versionCode ${codeMatch[1]} -> ${nextCode})`);
 console.log('Updated: package.json, app.json, android/app/build.gradle');
