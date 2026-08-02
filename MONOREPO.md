@@ -98,6 +98,29 @@ git tag desktop-v0.2.0 && git push origin desktop-v0.2.0
 git tag v0.6.15 && git push origin v0.6.15
 ```
 
+### Every release page links BOTH platforms
+
+Because the two lines are independent and Android ships far more often, desktop
+releases get buried pages deep in the releases list — someone looking for the
+desktop build from an Android release page had no way to find it, and
+`/releases/latest` is an Android release almost all the time.
+
+Both workflows now generate a **Downloads** table into the release body: the
+artifact for their own platform, plus a resolved link to the newest published
+release of the *other* platform (queried from the releases API at publish
+time, so it never goes stale). Whichever release page someone lands on gets
+them to both.
+
+This is deliberately a **link, not a second attached binary**. Attaching a
+desktop exe to every Android release would mean building whatever desktop
+source happens to be sitting on `main` when an Android tag is cut — usually
+mid-feature — and shipping it as a release artifact. Linking always points at
+a desktop build that was deliberately cut and tagged.
+
+Both pickers skip drafts and prereleases, and require the *other* platform's
+release to actually carry a matching asset before linking it, so a broken or
+asset-less release is never linked.
+
 ### ⚠️ The two tag schemes are different on purpose
 - **Android must stay `v*`.** The in-app updater (`packages/android/src/lib/updater.ts`) does `tag_name.replace(/^v/, '')` then semver-compares. A prefixed tag like `android-v0.6.15` would parse to `NaN` and the app would report "no update". So Android keeps the bare `v0.6.15` scheme.
 - **Desktop uses `desktop-v*`** so it doesn't collide with Android in the same repo. (`v*` and `desktop-v*` are disjoint — different first letters.)

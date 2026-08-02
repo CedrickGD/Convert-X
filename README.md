@@ -11,6 +11,19 @@ Fast, offline file converter. Drag, pick a format, done.
 
 Built with **Tauri v2 + Svelte + Rust**. Uses FFmpeg under the hood.
 
+## Download
+
+| Platform | Get it | File |
+|---|---|---|
+| **Windows** | [Latest desktop release](https://github.com/CedrickGD/Convert-X/releases?q=desktop-v&expanded=true) | `Convert-X.exe` — portable, no install, no admin |
+| **Android** | [Latest release](https://github.com/CedrickGD/Convert-X/releases/latest) | `app-arm64-v8a-release.apk` — arm64, sideload |
+
+Desktop and Android are **versioned independently** (`desktop-v*` vs `v*`), so
+their version numbers differ and the newest release of one is often not the
+newest release overall. Every release page carries a Downloads table linking
+both, so whichever one you land on will get you to the other. Each app also
+self-updates from its own release line.
+
 ## Features
 
 - **Convert** videos, images, and audio between formats
