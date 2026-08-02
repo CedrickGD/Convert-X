@@ -128,11 +128,65 @@ jobs:
           # Fail fast if the arm64 APK is missing — we only build that ABI.
           test -f app/build/outputs/apk/release/app-arm64-v8a-release.apk
 
+      # Desktop ships on its own `desktop-v*` tag, so an Android release page
+      # used to be a dead end for anyone wanting the desktop build — and since
+      # Android releases are far more frequent, the desktop ones get buried
+      # pages deep and are effectively undiscoverable. Every release page now
+      # links BOTH platforms.
+      #
+      # Deliberately a link, not an attached binary: attaching the desktop exe
+      # here would mean building whatever desktop source happens to sit on main
+      # when an Android tag is cut, which is usually mid-feature. Linking always
+      # points at a real, deliberately-cut desktop release.
+      - name: Build cross-platform downloads section
+        id: downloads
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          gh api "repos/${GITHUB_REPOSITORY}/releases?per_page=100" > /tmp/rels.json
+
+          # Newest published desktop-v* release that actually has a Windows binary.
+          desktop=$(jq -c '
+            [ .[]
+              | select(.draft == false and .prerelease == false)
+              | select(.tag_name | startswith("desktop-v"))
+              | { tag: .tag_name,
+                  asset: ([ .assets[]
+                            | select((.name | ascii_downcase | endswith(".exe"))
+                                  or (.name | ascii_downcase | endswith(".msi"))) ][0]) }
+              | select(.asset != null)
+            ][0] // empty' /tmp/rels.json)
+
+          apk="https://github.com/${GITHUB_REPOSITORY}/releases/download/${GITHUB_REF_NAME}/app-arm64-v8a-release.apk"
+          {
+            echo 'body<<RELEASE_BODY_EOF'
+            echo '### Downloads'
+            echo
+            echo '| Platform | Download |'
+            echo '| --- | --- |'
+            echo "| **Android** | [\`app-arm64-v8a-release.apk\`]($apk) — arm64, sideload |"
+            if [ -n "$desktop" ]; then
+              d_tag=$(jq -r .tag           <<<"$desktop")
+              d_name=$(jq -r .asset.name   <<<"$desktop")
+              d_url=$(jq -r .asset.browser_download_url <<<"$desktop")
+              echo "| **Windows (desktop)** | [\`$d_name\`]($d_url) — portable, from [\`$d_tag\`](https://github.com/${GITHUB_REPOSITORY}/releases/tag/$d_tag) |"
+            else
+              echo "| **Windows (desktop)** | see [all releases](https://github.com/${GITHUB_REPOSITORY}/releases) |"
+            fi
+            echo
+            echo '> Desktop and Android are versioned independently, so the newest desktop build carries a different version number. Each in-app updater tracks its own release line.'
+            echo
+            echo '---'
+            echo 'RELEASE_BODY_EOF'
+          } >> "$GITHUB_OUTPUT"
+
       - name: Publish GitHub Release
         uses: softprops/action-gh-release@v2
         with:
           # Publishes to THIS repo (Convert-X) with the built-in GITHUB_TOKEN.
           # The workflow's `permissions: contents: write` covers it — no PAT.
+          body: ${{ steps.downloads.outputs.body }}
           generate_release_notes: true
           fail_on_unmatched_files: true
           files: packages/android/android/app/build/outputs/apk/release/*.apk

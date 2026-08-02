@@ -47,11 +47,58 @@ jobs:
         shell: pwsh
         run: Copy-Item packages/desktop/src-tauri/target/release/convertx.exe Convert-X.exe -Force
 
+      # Mirror of the same step in android-release.yml: every release page
+      # surfaces BOTH platforms, so neither is a dead end for someone who
+      # landed on the wrong one.
+      - name: Build cross-platform downloads section
+        id: downloads
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          gh api "repos/${GITHUB_REPOSITORY}/releases?per_page=100" > rels.json
+
+          # Newest published android release (bare `v*` tag) that has an arm64 APK.
+          android=$(jq -c '
+            [ .[]
+              | select(.draft == false and .prerelease == false)
+              | select(.tag_name | test("^v[0-9]"))
+              | { tag: .tag_name,
+                  asset: ([ .assets[]
+                            | select((.name | ascii_downcase | contains("arm64-v8a"))
+                                 and (.name | ascii_downcase | endswith(".apk"))) ][0]) }
+              | select(.asset != null)
+            ][0] // empty' rels.json)
+
+          exe="https://github.com/${GITHUB_REPOSITORY}/releases/download/${GITHUB_REF_NAME}/Convert-X.exe"
+          {
+            echo 'body<<RELEASE_BODY_EOF'
+            echo 'Portable single-file build — no install, no admin. Download **Convert-X.exe** and run it; it fetches ffmpeg/yt-dlp on first use and self-updates from here on.'
+            echo
+            echo '### Downloads'
+            echo
+            echo '| Platform | Download |'
+            echo '| --- | --- |'
+            echo "| **Windows (desktop)** | [\`Convert-X.exe\`]($exe) — portable |"
+            if [ -n "$android" ]; then
+              a_tag=$(jq -r .tag         <<<"$android")
+              a_name=$(jq -r .asset.name <<<"$android")
+              a_url=$(jq -r .asset.browser_download_url <<<"$android")
+              echo "| **Android** | [\`$a_name\`]($a_url) — arm64 sideload, from [\`$a_tag\`](https://github.com/${GITHUB_REPOSITORY}/releases/tag/$a_tag) |"
+            else
+              echo "| **Android** | see [all releases](https://github.com/${GITHUB_REPOSITORY}/releases) |"
+            fi
+            echo
+            echo '> Desktop and Android are versioned independently, so the newest Android build carries a different version number. Each in-app updater tracks its own release line.'
+            echo 'RELEASE_BODY_EOF'
+          } >> "$GITHUB_OUTPUT"
+
       - name: Publish release
         uses: softprops/action-gh-release@v2
         with:
           tag_name: ${{ github.ref_name }}
-          name: "ConvertX ${{ github.ref_name }}"
-          body: "Portable single-file build — no install, no admin. Download **Convert-X.exe** and run it; it fetches ffmpeg/yt-dlp on first use and self-updates from here on."
+          name: "Convert-X Desktop ${{ github.ref_name }}"
+          body: ${{ steps.downloads.outputs.body }}
           fail_on_unmatched_files: true
           files: Convert-X.exe
