@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-ffmpeg-transcode"
+description = "Enables the ffmpeg_transcode command without any pre-configured scope."
+commands.allow = ["ffmpeg_transcode"]
+
+[[permission]]
+identifier = "deny-ffmpeg-transcode"
+description = "Denies the ffmpeg_transcode command without any pre-configured scope."
+commands.deny = ["ffmpeg_transcode"]

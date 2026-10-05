@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-clear-staging"
+description = "Enables the clear_staging command without any pre-configured scope."
+commands.allow = ["clear_staging"]
+
+[[permission]]
+identifier = "deny-clear-staging"
+description = "Denies the clear_staging command without any pre-configured scope."
+commands.deny = ["clear_staging"]

@@ -4,10 +4,155 @@ import { listen } from "@tauri-apps/api/event";
 import { downloadDir } from "@tauri-apps/api/path";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import { open } from "@tauri-apps/plugin-dialog";
+import { CAPS } from "@convertx/shared/core/discordMedia.js";
+
+// Convert-X gateway. The desktop app does its own networking (no CORS), so it
+// only calls the gateway to resolve Klipy links (needs the server-side key).
+const GATEWAY_BASE = "https://convertx-api.rr-admin-panel.workers.dev";
+
+function base64ToBytes(b64) {
+  if (!b64) return new Uint8Array(0);
+  const bin = atob(b64);
+  const out = new Uint8Array(bin.length);
+  for (let i = 0; i < bin.length; i += 1) out[i] = bin.charCodeAt(i);
+  return out;
+}
+
+// Rust reqwest via `http_fetch_bytes`: resolves on any HTTP status, rejects
+// only on network failure — exactly the resolver's `net` contract.
+async function fetchBytes(url, { method = "GET", headers = null, maxBytes = null, timeoutMs = 30000 } = {}) {
+  const r = await invoke("http_fetch_bytes", {
+    url,
+    method,
+    headers: headers || null,
+    maxBytes: maxBytes ?? null,
+    timeoutMs,
+  });
+  return {
+    status: r.status,
+    contentType: r.contentType ?? null,
+    finalUrl: r.finalUrl || url,
+    bytes: base64ToBytes(r.dataBase64),
+  };
+}
+
+const discordNet = {
+  async getBytes(url, { maxBytes, headers } = {}) {
+    const r = await fetchBytes(url, { headers, maxBytes });
+    return { status: r.status, contentType: r.contentType, bytes: r.bytes, finalUrl: r.finalUrl };
+  },
+  async getText(url, { headers } = {}) {
+    const r = await fetchBytes(url, { headers, maxBytes: 16 * 1024 * 1024 });
+    return {
+      status: r.status,
+      contentType: r.contentType,
+      text: new TextDecoder().decode(r.bytes),
+      finalUrl: r.finalUrl,
+    };
+  },
+  async head(url) {
+    const r = await fetchBytes(url, { method: "HEAD", maxBytes: 0 });
+    return { status: r.status, contentType: r.contentType };
+  },
+  async klipyResolve(type, slug) {
+    // A gateway outage resolves (status 0) so the resolver shows its own
+    // friendly "can't be looked up right now" copy.
+    try {
+      const r = await fetchBytes(
+        `${GATEWAY_BASE}/v1/resolve/klipy?type=${encodeURIComponent(type)}&slug=${encodeURIComponent(slug)}`,
+        { maxBytes: 1024 * 1024 }
+      );
+      let json = null;
+      try {
+        json = JSON.parse(new TextDecoder().decode(r.bytes));
+      } catch (_) {}
+      return { status: r.status, json };
+    } catch (_) {
+      return { status: 0, json: null };
+    }
+  },
+};
+
+function cancelledError() {
+  const e = new Error("Cancelled");
+  e.name = "AbortError";
+  e.cancelled = true;
+  return e;
+}
+
+function mediaHttpError(status) {
+  let message;
+  if (status === 404 || status === 410) message = `That file is no longer available (HTTP ${status}).`;
+  else if (status === 401 || status === 403) message = `The server refused that file (HTTP ${status}).`;
+  else if (status === 429) message = "The media server is rate-limiting us — wait a moment and try again.";
+  else if (status >= 500) message = `The media server had a problem (HTTP ${status}) — try again.`;
+  else message = `Download failed (HTTP ${status}).`;
+  const e = new Error(message);
+  e.httpStatus = status;
+  return e;
+}
 
 export function createDesktopAdapter() {
   return {
     platformType: "desktop",
+
+    // Discord sticker stealer. Media handles are staged files on disk:
+    // { path, size } under %TEMP%/convertx-sticker/<fileId>/.
+    stickerCaps: CAPS.desktop,
+    discordNet,
+    gateway: { base: GATEWAY_BASE },
+    capabilities: { urlDownloads: true },
+
+    async fetchMedia({ fileId, url, fileName }) {
+      const destDir = await invoke("sticker_staging_dir", { fileId });
+      const r = await invoke("download_direct", {
+        fileId,
+        url,
+        destDir,
+        fileName,
+        headers: {},
+      });
+      if (r?.status === "cancelled") throw cancelledError();
+      if (r?.status === "http_error") throw mediaHttpError(r.httpStatus ?? 0);
+      if (!r?.outputPath) throw new Error("The download didn't produce a file.");
+      // download_direct doesn't report a size; nothing downstream needs the
+      // input's size (outputs carry their own from the transcode/finalize).
+      return { path: r.outputPath, size: null };
+    },
+
+    async importMediaBytes({ fileId, bytes, fileName }) {
+      // Raw binary IPC body; the command reads the id/name from headers.
+      const path = await invoke("write_staging_file", bytes, {
+        headers: { "x-file-id": fileId, "x-file-name": fileName },
+      });
+      return { path, size: bytes.length };
+    },
+
+    async transcodeMedia({ fileId, input, inputArgs = [], outputArgs = [], outputExt }) {
+      const r = await invoke("ffmpeg_transcode", {
+        fileId,
+        inputPath: input.path,
+        inputArgs,
+        outputArgs,
+        outputExt,
+      });
+      if (r?.cancelled) return { handle: null, size: 0, cancelled: true };
+      return { handle: { path: r.outputPath, size: r.outputSize }, size: r.outputSize };
+    },
+
+    async finalizeMedia({ fileId, handle, fileName, outputDir }) {
+      const r = await invoke("finalize_staged_file", {
+        fileId,
+        stagingPath: handle.path,
+        destDir: outputDir || null,
+        fileName,
+      });
+      return { outputPath: r.outputPath, outputSize: r.outputSize, outputBlob: null };
+    },
+
+    async discardMedia(fileId) {
+      return invoke("clear_staging", { fileId });
+    },
 
     async pickFiles({ multiple, extensions, filterName }) {
       const selected = await open({
@@ -124,7 +269,9 @@ export function createDesktopAdapter() {
     },
 
     async cancelDownload(fileId) {
-      // No fileId = cancel ALL active downloads (both lanes).
+      // No fileId = cancel ALL active downloads (both lanes). Sticker
+      // transcodes register under their fileId in the same registry, so
+      // this stops those too.
       return invoke("cancel_download", { fileId: fileId ?? null });
     },
 

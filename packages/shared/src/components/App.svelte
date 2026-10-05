@@ -618,25 +618,21 @@
     class:pane-a={paneEnter % 2 === 1}
     class:pane-b={paneEnter % 2 === 0}
   >
-    {#if isDesktop}
-      <!-- A running download batch lives in DownloadView's local state (its
-           progress, its Cancel button, the promise closure that finishes it),
-           so unmounting on a tab switch would strand the batch: uncancellable
-           while running, and inert on return. Keep it mounted and hide it.
-           Desktop-only — on web the view is inert, so it stays in the branch
-           chain below and web behaviour is unchanged. -->
-      <div class="tab-pane" class:hidden={mode !== "download"}>
-        <DownloadView />
-      </div>
-    {/if}
+    <!-- A running download / sticker batch lives in DownloadView's local state
+         (its progress, its Cancel button, the promise closure that finishes
+         it), so unmounting on a tab switch would strand the batch: uncancellable
+         while running, and inert on return. Keep it mounted and hide it — on
+         web too, now that the Discord stealer and gateway downloads run there. -->
+    <div class="tab-pane" class:hidden={mode !== "download"}>
+      <DownloadView />
+    </div>
 
     {#if mode === "credits"}
       <Credits />
 
     {:else if mode === "download"}
-      {#if !isDesktop}
-        <DownloadView />
-      {/if}
+      <!-- rendered persistently in the .tab-pane above; this empty branch
+           keeps the Dropzone/ready branches below off the Download tab. -->
 
     {:else if mode === "history" && isDesktop}
       <!-- The History tab only exists on desktop (gated in Navbar); the

@@ -1,4 +1,5 @@
 import { EventSubscription, requireNativeModule } from 'expo-modules-core';
+import { PermissionsAndroid, Platform } from 'react-native';
 
 /**
  * yt-dlp bridge — probe / download / cancel.
@@ -140,14 +141,33 @@ export function updateYtDlp(): Promise<UpdateResult> {
 }
 
 /**
- * Publish a finished file into the user's gallery. Uses a MediaStore
- * insert owned by this app — no system consent dialog, and the gallery
- * shows exactly `displayName` instead of a cache-file name.
+ * On API < 29 (Android 9 and older) a MediaStore insert into the public
+ * Pictures/Movies/Download tree still requires the legacy
+ * WRITE_EXTERNAL_STORAGE runtime permission — scoped storage (which needs
+ * no permission) only arrived in API 29. Request it once, up front, so the
+ * save doesn't fail deep inside the native module. A no-op on API 29+ and
+ * on non-Android platforms.
  */
-export function saveToGallery(
+async function ensureLegacyWriteAccess(): Promise<void> {
+  if (Platform.OS !== 'android' || Number(Platform.Version) >= 29) return;
+  const perm = PermissionsAndroid.PERMISSIONS.WRITE_EXTERNAL_STORAGE;
+  if (await PermissionsAndroid.check(perm)) return;
+  if ((await PermissionsAndroid.request(perm)) !== PermissionsAndroid.RESULTS.GRANTED) {
+    throw new Error('Storage permission is needed to save to the gallery on Android 9 and older.');
+  }
+}
+
+/**
+ * Publish a finished file into the user's gallery. Uses a MediaStore
+ * insert owned by this app — no system consent dialog on API 29+, and the
+ * gallery shows exactly `displayName` instead of a cache-file name. On
+ * older Android the legacy storage permission is requested first.
+ */
+export async function saveToGallery(
   filePath: string,
   displayName: string
 ): Promise<SaveToGalleryResult> {
+  await ensureLegacyWriteAccess();
   return native.saveToGallery(filePath, displayName);
 }
 
@@ -170,6 +190,17 @@ export function detectSite(url: string): string | null {
   if (u.includes('youtube.com') || u.includes('youtu.be')) return 'YouTube';
   if (u.includes('spotify.com') || u.includes('open.spotify.com')) return 'Spotify';
   if (u.includes('instagram.com')) return 'Instagram';
+  // Discord sticker-stealer sources — checked before the loose x.com match
+  // below so a CDN host can never be mislabeled.
+  if (
+    u.includes('discord.com') ||
+    u.includes('discordapp.com') ||
+    u.includes('discordapp.net')
+  )
+    return 'Discord';
+  if (u.includes('tenor.com')) return 'Tenor';
+  if (u.includes('giphy.com')) return 'Giphy';
+  if (u.includes('klipy.com') || u.includes('klipy.co')) return 'Klipy';
   if (u.includes('twitter.com') || u.includes('x.com')) return 'Twitter/X';
   if (u.includes('tiktok.com')) return 'TikTok';
   if (u.includes('reddit.com') || u.includes('v.redd.it')) return 'Reddit';

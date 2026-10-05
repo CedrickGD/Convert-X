@@ -4,6 +4,12 @@
   "version": "0.1.0",
   "type": "module",
   "main": "src/index.js",
+  "scripts": {
+    "test": "node --test \"test/*.test.mjs\""
+  },
+  "dependencies": {
+    "lottie-web": "^5.12.2"
+  },
   "exports": {
     ".": "./src/index.js",
     "./components/*": "./src/components/*",

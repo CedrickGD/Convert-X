@@ -28,12 +28,15 @@
  *     variants,       // [{url, width, height}] | null — quality-cap selection
  *     duration,       // number | null
  *     uploader,       // string | null
- *     partialCarousel // from the anonymous IG embed prober only
+ *     partialCarousel,// from the anonymous IG embed prober only
+ *     discord?        // DiscordMedia (core/discordMedia.js) — Discord-stealer
+ *                     // entries only; those run through stickerBatch.js
  *   }
  */
 
 import { getPlatform } from "../platform.js";
 import { hasCookiesForDomain, resolveCookiesPath } from "./cookies.js";
+import { isDiscordInputToken, probeDiscordInput } from "./discordScraper.js";
 import { logError } from "./errorLog.js";
 import { isInstagramPostUrl, probeInstagramAnonymous } from "./instagramScraper.js";
 import {
@@ -249,10 +252,12 @@ function entriesFromYtdlpProbe(raw, sourceUrl) {
 }
 
 /** Normalize a prober ProbeResult ({site, isPlaylist, entries}) into the
- *  router's return shape, deriving the preview fields the UI reads. */
+ *  router's return shape, deriving the preview fields the UI reads.
+ *  `failures` (per-token errors from a multi-token paste that still
+ *  resolved something) rides along when present. */
 function normalizeProberResult(res) {
   const first = res.entries[0];
-  return {
+  const out = {
     site: res.site ?? null,
     isPlaylist: !!res.isPlaylist,
     kind: res.isPlaylist ? "multi" : "single",
@@ -261,6 +266,8 @@ function normalizeProberResult(res) {
     thumbnail: first?.thumbnail ?? null,
     entries: res.entries,
   };
+  if (Array.isArray(res.failures) && res.failures.length > 0) out.failures = res.failures;
+  return out;
 }
 
 /**
@@ -277,9 +284,18 @@ function normalizeProberResult(res) {
  * The cookie gate is per-DOMAIN (instagram.com), not file existence, and
  * cookies are resolved from the on-disk file, not caller state.
  *
+ * Discord stealer input (emoji markup, emoji/sticker/attachment links, bare
+ * IDs, Tenor/Giphy/Klipy links) is claimed FIRST by the Discord prober, with
+ * no fallthrough: yt-dlp can only answer "Unsupported URL" for these, and the
+ * prober's own errors are the actionable ones. It needs no downloader key.
+ *
  * NOT handled here: Spotify (caller short-circuits before the router).
  */
 export async function probeUrl(url, opts = {}) {
+  if (isDiscordInputToken(url)) {
+    return normalizeProberResult(await probeDiscordInput(url));
+  }
+
   const platform = getPlatform();
   const hasHttp = typeof platform.httpRequest === "function";
 
@@ -495,10 +511,11 @@ function isDirectLane(entry, audioOnly) {
  * and the item retried once.
  *
  * onProgress receives { overallPct, completed, total, currentTitle };
- * onItemDone(entry, { outputPath }) fires after each success (history).
+ * onItemDone(entry, { outputPath, … }) fires after each success (history).
  *
- * Returns { results: [{ id, title, outputPath }], errors: [{ id, title,
- * message }], cancelled }.
+ * Returns { results: [{ id, title, outputPath, outputBlob, outputSize,
+ * fileUrl }], errors: [{ id, title, message }], cancelled }. outputBlob /
+ * fileUrl are web-only (null on desktop).
  */
 export async function downloadBatch(opts) {
   const {
@@ -652,7 +669,13 @@ export async function downloadBatch(opts) {
           `Media URL expired or blocked (HTTP ${st}) — hit Find again to refresh it.`
         );
       }
-      return { outputPath: r?.outputPath ?? r?.output_path ?? null };
+      // Web returns the bytes as a Blob (the UI offers Save); desktop has
+      // already written the file and returns only its path.
+      return {
+        outputPath: r?.outputPath ?? r?.output_path ?? null,
+        outputBlob: r?.outputBlob ?? null,
+        outputSize: r?.outputSize ?? null,
+      };
     }
 
     // yt-dlp lane.
@@ -696,7 +719,14 @@ export async function downloadBatch(opts) {
       cookiesPath,
     });
     if (r?.status === "cancelled" || r?.cancelled === true) return { cancelled: true };
-    return { outputPath: r?.outputPath ?? r?.output_path ?? null, title: r?.title };
+    // Web: the gateway already handed the file to the browser's downloads;
+    // `fileUrl` lets the UI offer it again.
+    return {
+      outputPath: r?.outputPath ?? r?.output_path ?? null,
+      title: r?.title,
+      outputSize: r?.outputSize ?? null,
+      fileUrl: r?.fileUrl ?? null,
+    };
   };
 
   const runOne = async (i) => {
@@ -724,7 +754,14 @@ export async function downloadBatch(opts) {
         reportOverall();
         remaining.delete(entry.id);
         persistRemaining();
-        results.push({ id: entry.id, title: entry.title, outputPath: r.outputPath ?? null });
+        results.push({
+          id: entry.id,
+          title: entry.title,
+          outputPath: r.outputPath ?? null,
+          outputBlob: r.outputBlob ?? null,
+          outputSize: r.outputSize ?? null,
+          fileUrl: r.fileUrl ?? null,
+        });
         if (typeof onItemDone === "function") {
           try {
             onItemDone(entry, r);

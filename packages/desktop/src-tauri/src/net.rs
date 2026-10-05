@@ -342,3 +342,170 @@ async fn download_direct_inner(
         final_path.to_string_lossy().to_string(),
     ))
 }
+
+/// Media bytes fetched for the Discord sticker/emoji stealer. The webview
+/// enforces CORS, so the resolver's byte fetches (Discord/Tenor/Giphy CDNs)
+/// route through Rust the same way the probers do. Bytes come back base64 so
+/// the JSON IPC channel stays text; the JS side decodes with `atob`.
+#[derive(Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct FetchBytesPayload {
+    pub status: u16,
+    pub content_type: Option<String>,
+    pub final_url: String,
+    /// Response headers, keys lowercased. Repeated headers joined with ", ".
+    pub headers: HashMap<String, String>,
+    pub data_base64: String,
+    /// Reading stopped at the byte cap — the body is incomplete.
+    pub truncated: bool,
+}
+
+/// 8 MiB default read cap (a sticker/emoji is far smaller), 64 MiB hard cap so
+/// a bad URL can't buffer the whole process into memory.
+const FETCH_DEFAULT_MAX_BYTES: u64 = 8 * 1024 * 1024;
+const FETCH_HARD_MAX_BYTES: u64 = 64 * 1024 * 1024;
+
+/// Standard base64 (RFC 4648, padded). Hand-written on purpose: `base64` is a
+/// transitive dep only, and the contract says to keep Cargo.toml untouched.
+fn base64_encode(input: &[u8]) -> String {
+    const TABLE: &[u8; 64] =
+        b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+    let mut out = String::with_capacity(input.len().div_ceil(3) * 4);
+    for chunk in input.chunks(3) {
+        let b0 = chunk[0] as u32;
+        let b1 = if chunk.len() > 1 { chunk[1] as u32 } else { 0 };
+        let b2 = if chunk.len() > 2 { chunk[2] as u32 } else { 0 };
+        let n = (b0 << 16) | (b1 << 8) | b2;
+        out.push(TABLE[((n >> 18) & 0x3f) as usize] as char);
+        out.push(TABLE[((n >> 12) & 0x3f) as usize] as char);
+        if chunk.len() > 1 {
+            out.push(TABLE[((n >> 6) & 0x3f) as usize] as char);
+        } else {
+            out.push('=');
+        }
+        if chunk.len() > 2 {
+            out.push(TABLE[(n & 0x3f) as usize] as char);
+        } else {
+            out.push('=');
+        }
+    }
+    out
+}
+
+/// Fetch a URL and return its bytes (base64) with status/headers. Resolves on
+/// ANY HTTP status — rejects only on network errors / timeouts, like fetch().
+/// Reading stops at `max_bytes` (default 8 MiB, hard cap 64 MiB) with
+/// `truncated = true`, so an oversized or endless body can't exhaust memory.
+#[tauri::command]
+pub async fn http_fetch_bytes(
+    url: String,
+    method: Option<String>,
+    headers: Option<HashMap<String, String>>,
+    max_bytes: Option<u64>,
+    timeout_ms: Option<u64>,
+) -> Result<FetchBytesPayload, String> {
+    let timeout_ms = timeout_ms.unwrap_or(30_000);
+    let max = max_bytes
+        .unwrap_or(FETCH_DEFAULT_MAX_BYTES)
+        .min(FETCH_HARD_MAX_BYTES);
+
+    let client = reqwest::Client::builder()
+        .timeout(std::time::Duration::from_millis(timeout_ms))
+        .redirect(reqwest::redirect::Policy::limited(10))
+        .build()
+        .map_err(|e| format!("HTTP client init: {}", e))?;
+
+    let method = reqwest::Method::from_bytes(
+        method.as_deref().unwrap_or("GET").to_uppercase().as_bytes(),
+    )
+    .map_err(|e| format!("Invalid HTTP method: {}", e))?;
+
+    let mut req = client.request(method, &url);
+    if let Some(hs) = headers {
+        for (k, v) in hs {
+            req = req.header(&k, &v);
+        }
+    }
+
+    let mut res = req
+        .send()
+        .await
+        .map_err(|e| net_err("Request failed", timeout_ms, e))?;
+
+    let status = res.status().as_u16();
+    let final_url = res.url().to_string();
+    let content_type = res
+        .headers()
+        .get("content-type")
+        .and_then(|v| v.to_str().ok())
+        .map(|s| s.to_string());
+
+    let mut out_headers: HashMap<String, String> = HashMap::new();
+    for (name, value) in res.headers().iter() {
+        let key = name.as_str().to_lowercase();
+        let val = String::from_utf8_lossy(value.as_bytes()).to_string();
+        out_headers
+            .entry(key)
+            .and_modify(|existing| {
+                existing.push_str(", ");
+                existing.push_str(&val);
+            })
+            .or_insert(val);
+    }
+
+    // Stream the body so an oversized response is capped instead of buffered
+    // whole. `chunk()` keeps reqwest's read timeout; the overall client timeout
+    // still bounds the total transfer.
+    let cap = max as usize;
+    let mut data: Vec<u8> = Vec::new();
+    let mut truncated = false;
+    loop {
+        match res.chunk().await {
+            Ok(Some(chunk)) => {
+                let remaining = cap.saturating_sub(data.len());
+                if chunk.len() > remaining {
+                    data.extend_from_slice(&chunk[..remaining]);
+                    truncated = true;
+                    break;
+                }
+                data.extend_from_slice(&chunk);
+            }
+            Ok(None) => break,
+            Err(e) => return Err(net_err("Failed to read response body", timeout_ms, e)),
+        }
+    }
+
+    let data_base64 = base64_encode(&data);
+
+    Ok(FetchBytesPayload {
+        status,
+        content_type,
+        final_url,
+        headers: out_headers,
+        data_base64,
+        truncated,
+    })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::base64_encode;
+
+    #[test]
+    fn base64_matches_rfc4648_vectors() {
+        let cases: [(&[u8], &str); 7] = [
+            (b"", ""),
+            (b"f", "Zg=="),
+            (b"fo", "Zm8="),
+            (b"foo", "Zm9v"),
+            (b"foob", "Zm9vYg=="),
+            (b"fooba", "Zm9vYmE="),
+            (b"foobar", "Zm9vYmFy"),
+        ];
+        for (input, want) in cases {
+            assert_eq!(base64_encode(input), want);
+        }
+        // High bytes must survive intact (the reason this exists instead of http_request's lossy text).
+        assert_eq!(base64_encode(&[0xff, 0x80, 0x00, 0xfe]), "/4AA/g==");
+    }
+}

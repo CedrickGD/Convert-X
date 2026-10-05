@@ -158,6 +158,19 @@ export const RESIZE_DEFAULTS: ResizeSettings = {
 
 export type DownloadCategory = 'video' | 'audio';
 
+/** Target format for a Discord/Tenor/Giphy/Klipy "sticker stealer" save.
+ *  Separate from the yt-dlp `format` field (which becomes a `-f` selector
+ *  on the next video download) — see TARGETS in lib/discordMedia. */
+export type StickerTarget =
+  | 'original'
+  | 'gif'
+  | 'png'
+  | 'apng'
+  | 'webp'
+  | 'mp4'
+  | 'sticker'
+  | 'emoji';
+
 export type DownloadSettings = {
   url: string;
   category: DownloadCategory;
@@ -169,6 +182,9 @@ export type DownloadSettings = {
   /** Keys (see lib/loginPlatforms) of platforms the user has signed into
    *  via the in-app WebView. Drives the "Connected" state in Credits. */
   connectedPlatforms: string[];
+  /** Chosen output format for Discord sticker-stealer saves. Persisted
+   *  separately from `format` so the two features never clobber each other. */
+  stickerTarget: StickerTarget;
 };
 
 export const DOWNLOAD_DEFAULTS: DownloadSettings = {
@@ -180,4 +196,5 @@ export const DOWNLOAD_DEFAULTS: DownloadSettings = {
   spotifyClientSecret: '',
   cookiesPath: '',
   connectedPlatforms: [],
+  stickerTarget: 'sticker',
 };

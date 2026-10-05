@@ -18,6 +18,7 @@ import { useNavigation } from '@react-navigation/native';
 import { NativeStackNavigationProp } from '@react-navigation/native-stack';
 
 import { ProgressBar } from '../components/convert';
+import { DiscordFormatPicker } from '../components/download/DiscordFormatPicker';
 import { useFeedback } from '../components/Feedback';
 import { detectSite } from '../../modules/convert-x-downloader/src';
 import {
@@ -33,8 +34,16 @@ import {
 } from '../lib/downloadQueue';
 import { logError } from '../lib/errorLog';
 import type { RootStackParamList } from '../navigation/types';
+import { haptics } from '../lib/haptics';
 import { addHistoryEntry } from '../lib/history';
 import { addRecentUrl, getRecentUrls } from '../lib/recentUrls';
+import { CAPS, planExport } from '../lib/discordMedia';
+import { mediaBadge } from '../lib/stickerPlan';
+import {
+  cancelStickerBatch,
+  isStickerBatchRunning,
+  runStickerBatch,
+} from '../lib/stickerQueue';
 import { useDownload, useShared } from '../state';
 import { radius, spacing, typography, useTheme } from '../theme';
 
@@ -65,11 +74,15 @@ export function DownloadScreen() {
   // Size of the batch actually running — a retry re-runs only the failed
   // subset, so "Item X of N" must not read the original selection's size.
   const [activeBatchLen, setActiveBatchLen] = useState(0);
+  // A sticker batch converts or saves rather than downloads; null for a
+  // regular batch. Drives the progress/done wording only.
+  const [stickerVerb, setStickerVerb] = useState<'convert' | 'save' | null>(null);
   const [done, setDone] = useState<{
     publicPath?: string;
     completed: number;
     total: number;
     errors: Array<{ id: string; title: string; message: string }>;
+    warnings?: Array<{ id: string; title: string; message: string }>;
   } | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [results, setResults] = useState<{ name: string; uri: string }[]>([]);
@@ -235,7 +248,7 @@ export function DownloadScreen() {
       // Cancel flips the view back to the preview while the native yt-dlp
       // process is still dying — without this guard a quick re-tap starts
       // a second concurrent batch fighting over the shared cancel state.
-      if (isDownloading()) return;
+      if (isDownloading() || isStickerBatchRunning()) return;
       // Any banner still describing an OLDER interrupted batch is now
       // obsolete — this batch owns the persistence slot.
       setPendingResume(null);
@@ -252,6 +265,75 @@ export function DownloadScreen() {
 
       const sessionId = `dl-${Date.now()}`;
       download.dispatch({ type: 'beginSession', sessionId });
+
+      // Discord/Tenor/Giphy/Klipy batch → the sticker stealer. Every item
+      // carries a resolved `discord` payload; stickerQueue fetches or
+      // transcodes to the chosen target and saves to the gallery.
+      const isDiscordBatch = toDownload.every((e) => e.discord != null);
+      setStickerVerb(
+        !isDiscordBatch
+          ? null
+          : toDownload.some(
+              (e) =>
+                e.discord != null &&
+                planExport(e.discord, state.settings.stickerTarget, CAPS.android).mode === 'convert'
+            )
+          ? 'convert'
+          : 'save'
+      );
+      if (isDiscordBatch) {
+        try {
+          const result = await runStickerBatch({
+            sessionId,
+            entries: toDownload,
+            target: state.settings.stickerTarget,
+            onProgress: (overall, idx) => {
+              setProgress(overall);
+              setCurrentItemIdx(idx);
+            },
+            onItemStart: (idx, entry) => {
+              setCurrentItemIdx(idx);
+              setCurrentItemTitle(entry.title);
+            },
+            onItemDone: (entry, r) => {
+              const path = r.outputPath
+                ? r.outputPath.startsWith('file://')
+                  ? r.outputPath
+                  : `file://${r.outputPath}`
+                : undefined;
+              if (!path) return;
+              const name = r.outputPath?.split('/').pop() ?? entry.title;
+              setResults((prev) => [...prev, { name, uri: path }]);
+              void addHistoryEntry({
+                uri: path,
+                name,
+                bytes: 0,
+                op: 'download',
+                source: entry.webpageUrl,
+              });
+            },
+          });
+          if (result.cancelled) {
+            download.dispatch({ type: 'cancelSession' });
+          } else {
+            setDone({
+              publicPath: result.lastPublicPath,
+              completed: result.done,
+              total: toDownload.length,
+              errors: result.errors,
+              warnings: result.warnings,
+            });
+            download.dispatch({ type: 'finishSession', sessionId });
+            if (result.done > 0) haptics.success();
+            else haptics.warn();
+          }
+        } catch (e) {
+          setError(e instanceof Error ? e.message : String(e));
+          download.dispatch({ type: 'cancelSession' });
+        }
+        return;
+      }
+
       try {
         const result = await downloadBatch({
           sessionId,
@@ -361,7 +443,10 @@ export function DownloadScreen() {
   }, []);
 
   const handleCancel = useCallback(() => {
+    // Both runners are safe no-ops when not active — call both so the
+    // Cancel button works whether this is a yt-dlp or sticker-stealer batch.
     cancelBatch();
+    cancelStickerBatch();
     download.dispatch({ type: 'cancelSession' });
   }, [download]);
 
@@ -389,16 +474,30 @@ export function DownloadScreen() {
   // choice, and an audio-only source must never offer a quality ladder.
   const selectedKinds = useMemo(() => {
     const src = selectedEntries.length > 0 ? selectedEntries : entries;
+    const allDiscord = src.length > 0 && src.every((e) => e.discord != null);
     return {
-      hasVideo: src.some((e) => (e.mediaType ?? 'video') === 'video'),
-      hasAudioSource: src.some((e) => e.mediaType === 'audio'),
-      allImages: src.length > 0 && src.every((e) => e.mediaType === 'image'),
+      // A Discord sticker-stealer batch drives its own format picker and
+      // runner — it must never fall into the video/audio/image branches.
+      allDiscord,
+      hasVideo: !allDiscord && src.some((e) => (e.mediaType ?? 'video') === 'video'),
+      hasAudioSource: !allDiscord && src.some((e) => e.mediaType === 'audio'),
+      allImages: !allDiscord && src.length > 0 && src.every((e) => e.mediaType === 'image'),
     };
   }, [selectedEntries, entries]);
 
+  // Resolved Discord media for the currently-selected entries — feeds the
+  // "Save as" chip group (intersection-aware availability).
+  const discordMediaSelected = useMemo(
+    () =>
+      selectedEntries
+        .map((e) => e.discord)
+        .filter((m): m is NonNullable<typeof m> => m != null),
+    [selectedEntries]
+  );
+
   // Photos are "saved", media is "downloaded" — small wording that makes
   // the button match what the user actually sees on screen.
-  const actionVerb = selectedKinds.allImages ? 'Save' : 'Download';
+  const actionVerb = selectedKinds.allImages || selectedKinds.allDiscord ? 'Save' : 'Download';
 
   return (
     <ScrollView
@@ -504,6 +603,9 @@ export function DownloadScreen() {
                 </Text>
               </View>
             ) : null}
+            <Text style={[styles.inputHint, { color: theme.text.muted }]}>
+              Discord: paste an emoji, sticker or GIF link, {'<:name:id>'}, or a sticker ID.
+            </Text>
           </View>
 
           {recent.length > 0 && !url ? (
@@ -637,6 +739,7 @@ export function DownloadScreen() {
             {entries.map((e, idx) => {
               const isSelected = selectedIds.has(e.id);
               const multi = entries.length > 1;
+              const isDiscord = e.discord != null;
               return (
                 <Pressable
                   key={e.id}
@@ -661,22 +764,24 @@ export function DownloadScreen() {
                       ) : null}
                     </View>
                   ) : null}
-                  <View style={styles.thumbWrap}>
+                  <View style={isDiscord ? styles.thumbWrapSquare : styles.thumbWrap}>
                     {e.thumbnail ? (
                       <ExpoImage
                         source={{ uri: e.thumbnail }}
                         style={[
-                          styles.thumbnail,
+                          isDiscord ? styles.thumbnailSquare : styles.thumbnail,
                           { backgroundColor: theme.bg.surfaceSunken, borderColor: theme.border.subtle },
                         ]}
-                        contentFit="cover"
+                        // Stickers and emoji are square with transparency —
+                        // 'contain' keeps them whole instead of cropping.
+                        contentFit={isDiscord ? 'contain' : 'cover'}
                         cachePolicy="memory-disk"
                         recyclingKey={e.id}
                       />
                     ) : (
                       <View
                         style={[
-                          styles.thumbnail,
+                          isDiscord ? styles.thumbnailSquare : styles.thumbnail,
                           styles.thumbnailFallback,
                           { backgroundColor: theme.bg.surfaceSunken, borderColor: theme.border.subtle },
                         ]}
@@ -704,7 +809,11 @@ export function DownloadScreen() {
                     >
                       {e.title}
                     </Text>
-                    {e.duration ? (
+                    {isDiscord && e.discord ? (
+                      <Text style={[styles.previewMeta, { color: theme.text.muted }]}>
+                        {mediaBadge(e.discord)}
+                      </Text>
+                    ) : e.duration ? (
                       <Text style={[styles.previewMeta, { color: theme.text.muted }]}>
                         {formatDuration(e.duration)}
                       </Text>
@@ -723,7 +832,16 @@ export function DownloadScreen() {
                 { backgroundColor: theme.bg.surface, borderColor: theme.border.subtle },
               ]}
             >
-              {selectedKinds.hasVideo ? (
+              {selectedKinds.allDiscord ? (
+                <DiscordFormatPicker
+                  media={discordMediaSelected}
+                  target={state.settings.stickerTarget}
+                  onSelect={(t) => {
+                    haptics.pick();
+                    download.updateSettings({ stickerTarget: t });
+                  }}
+                />
+              ) : selectedKinds.hasVideo ? (
                 <>
                   <Text style={[styles.cardLabel, { color: theme.text.muted }]}>
                     DOWNLOAD AS
@@ -851,6 +969,10 @@ export function DownloadScreen() {
               // an index-based label would flip between workers.
               activeBatchLen > 1
                 ? `${Math.min(results.length, activeBatchLen)} of ${activeBatchLen} done`
+                : stickerVerb === 'convert'
+                ? 'Converting…'
+                : stickerVerb === 'save'
+                ? 'Saving…'
                 : 'Downloading…'
             }
           />
@@ -889,7 +1011,9 @@ export function DownloadScreen() {
             </View>
             <Text style={[styles.doneTitle, { color: theme.text.primary }]}>
               {done?.total && done.total > 1
-                ? `${done.completed} of ${done.total} downloaded`
+                ? `${done.completed} of ${done.total} ${stickerVerb ? 'saved' : 'downloaded'}`
+                : stickerVerb
+                ? 'Saved'
                 : 'Downloaded'}
             </Text>
             <Text style={[styles.doneSub, { color: theme.text.muted }]} numberOfLines={2}>
@@ -909,6 +1033,22 @@ export function DownloadScreen() {
                     style={[styles.doneErrorItem, { color: theme.text.muted }]}
                   >
                     {err.title}: {err.message}
+                  </Text>
+                ))}
+              </View>
+            ) : null}
+            {done?.warnings && done.warnings.length > 0 ? (
+              <View style={styles.doneErrors}>
+                <Text style={[styles.doneErrorsLabel, { color: theme.status.warning }]}>
+                  {done.warnings.length} adjusted
+                </Text>
+                {done.warnings.slice(0, 3).map((w, i) => (
+                  <Text
+                    key={i}
+                    numberOfLines={2}
+                    style={[styles.doneErrorItem, { color: theme.text.muted }]}
+                  >
+                    {w.title}: {w.message}
                   </Text>
                 ))}
               </View>
@@ -1122,6 +1262,7 @@ const styles = StyleSheet.create({
     borderWidth: StyleSheet.hairlineWidth,
   },
   siteChipText: { ...typography.micro, fontWeight: '600' },
+  inputHint: { ...typography.micro, lineHeight: 15 },
 
   toggle: {
     flexDirection: 'row',
@@ -1209,6 +1350,18 @@ const styles = StyleSheet.create({
   thumbnail: {
     width: 96,
     height: 54,
+    borderRadius: radius.xs,
+    borderWidth: StyleSheet.hairlineWidth,
+  },
+  // Square tile for Discord stickers/emoji so a 320×320 asset isn't cropped.
+  thumbWrapSquare: {
+    width: 72,
+    height: 72,
+    position: 'relative',
+  },
+  thumbnailSquare: {
+    width: 72,
+    height: 72,
     borderRadius: radius.xs,
     borderWidth: StyleSheet.hairlineWidth,
   },

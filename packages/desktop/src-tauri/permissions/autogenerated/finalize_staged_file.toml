@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-finalize-staged-file"
+description = "Enables the finalize_staged_file command without any pre-configured scope."
+commands.allow = ["finalize_staged_file"]
+
+[[permission]]
+identifier = "deny-finalize-staged-file"
+description = "Denies the finalize_staged_file command without any pre-configured scope."
+commands.deny = ["finalize_staged_file"]

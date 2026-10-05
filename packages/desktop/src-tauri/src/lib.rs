@@ -9,6 +9,7 @@ mod login;
 mod net;
 mod power;
 mod spotify;
+mod sticker;
 mod tools;
 mod updater;
 
@@ -117,6 +118,12 @@ pub fn run() {
             downloader::probe_url,
             net::http_request,
             net::download_direct,
+            net::http_fetch_bytes,
+            sticker::sticker_staging_dir,
+            sticker::write_staging_file,
+            sticker::ffmpeg_transcode,
+            sticker::finalize_staged_file,
+            sticker::clear_staging,
             cookies::read_cookies_file,
             cookies::write_cookies_file,
             cookies::cookies_file_path,

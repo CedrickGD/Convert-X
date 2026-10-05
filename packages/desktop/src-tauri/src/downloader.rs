@@ -422,7 +422,7 @@ fn title_from_path(p: &str) -> String {
         .to_string()
 }
 
-fn dirs_downloads_or_cwd() -> PathBuf {
+pub(crate) fn dirs_downloads_or_cwd() -> PathBuf {
     if let Some(home) = std::env::var_os("USERPROFILE") {
         let downloads = PathBuf::from(home).join("Downloads");
         if downloads.exists() { return downloads; }
@@ -479,11 +479,19 @@ pub(crate) fn sanitize_job_id(id: &str) -> String {
 }
 
 /// Staging roots under %TEMP%, one sub-directory per job. Keep the list and
-/// the three constants in sync — sweep_stale_staging only cleans what it knows.
+/// the four constants in sync — sweep_stale_staging only cleans what it knows.
 pub(crate) const STAGING_ROOT_YTDLP: &str = "convertx-ytdlp";
 pub(crate) const STAGING_ROOT_SPOTDL: &str = "convertx-spotdl";
 pub(crate) const STAGING_ROOT_DIRECT: &str = "convertx-direct";
-const STAGING_ROOTS: [&str; 3] = [STAGING_ROOT_YTDLP, STAGING_ROOT_SPOTDL, STAGING_ROOT_DIRECT];
+/// Discord sticker/emoji staging (fetched media + ffmpeg attempt outputs). See
+/// `sticker.rs`.
+pub(crate) const STAGING_ROOT_STICKER: &str = "convertx-sticker";
+const STAGING_ROOTS: [&str; 4] = [
+    STAGING_ROOT_YTDLP,
+    STAGING_ROOT_SPOTDL,
+    STAGING_ROOT_DIRECT,
+    STAGING_ROOT_STICKER,
+];
 /// Only sweep staging dirs untouched for this long — a second app instance
 /// may have live jobs staged next to ours.
 const STAGING_MAX_AGE: std::time::Duration = std::time::Duration::from_secs(24 * 60 * 60);

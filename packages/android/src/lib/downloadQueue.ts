@@ -15,6 +15,8 @@ import { activateKeepAwakeAsync, deactivateKeepAwake } from 'expo-keep-awake';
 
 import * as Downloader from '../../modules/convert-x-downloader/src';
 import { hasCookiesForDomain, resolveCookiesPath } from './cookies';
+import type { DiscordMedia } from './discordMedia';
+import { isDiscordInputToken, probeDiscordInput } from './discordScraper';
 import { logError } from './errorLog';
 import { isInstagramPostUrl, probeInstagramAnonymous } from './instagramScraper';
 import {
@@ -64,6 +66,11 @@ export type DownloadEntry = {
   /** Set by the anonymous Instagram scraper when the post is a carousel but
    *  only the first item is retrievable without login. */
   partialCarousel?: boolean;
+  /** Set by the Discord/Tenor/Giphy/Klipy prober (discordScraper). When
+   *  present the entry is a "sticker stealer" item handled by stickerQueue
+   *  — it carries the resolved renditions and convert sources and bypasses
+   *  yt-dlp and the direct-CDN lane entirely. */
+  discord?: DiscordMedia;
 };
 
 export type ProbeResult = {
@@ -190,6 +197,15 @@ export async function probeUrl(
     spotifyClientSecret?: string;
   }
 ): Promise<ProbeResult> {
+  // Discord / Tenor / Giphy / Klipy "sticker stealer" input — emoji markup
+  // (<:name:id>), a bare sticker/emoji ID, an attachment/CDN link, or a
+  // GIF-picker link. These resolve over plain HTTPS (no yt-dlp, no cookies),
+  // so claim them FIRST and commit with no fall-through: a pasted sticker ID
+  // must never leak into yt-dlp's generic extractor.
+  if (isDiscordInputToken(url)) {
+    return probeDiscordInput(url);
+  }
+
   // On-disk cookies.txt is the source of truth for "logged in" — fall back
   // to it when the caller's cookiesPath is momentarily empty (hydration
   // race), so a logged-in user's first private-post download doesn't fail

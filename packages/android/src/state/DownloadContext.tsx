@@ -31,6 +31,7 @@ function persistableFrom(s: DownloadSettings) {
     category: s.category,
     format: s.format,
     quality: s.quality,
+    stickerTarget: s.stickerTarget,
   };
 }
 
@@ -159,6 +160,7 @@ export function DownloadProvider({ children }: { children: React.ReactNode }) {
     state.settings.category,
     state.settings.format,
     state.settings.quality,
+    state.settings.stickerTarget,
   ]);
 
   const updateSettings = useCallback(

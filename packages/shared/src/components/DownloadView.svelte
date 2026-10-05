@@ -19,14 +19,48 @@
   import { logError } from "../lib/errorLog.js";
   import { toast } from "../lib/feedback.js";
   import { loadJson, saveJson } from "../lib/storage.js";
+  import { isDiscordInputToken } from "../lib/discordScraper.js";
+  import {
+    runStickerBatch,
+    cancelStickerBatch,
+    isStickerBatchRunning,
+    formatBytes,
+  } from "../lib/stickerBatch.js";
+  import { renderLottiePoster } from "../lib/lottieRender.js";
+  import { TARGETS, availableTargets, planExport, sniffMedia } from "../core/discordMedia.js";
   import DesktopDownload from "./DesktopDownload.svelte";
+  import GatewayKeyCard from "./GatewayKeyCard.svelte";
 
   const platform = getPlatform();
-  let isDesktop = platform.platformType === "desktop"; // TEMP-DEBUG was const
+  const isDesktop = platform.platformType === "desktop";
 
   const VIDEO_FORMATS = ["mp4", "mkv", "webm", "avi", "mov"];
   const AUDIO_FORMATS = ["mp3", "m4a", "wav", "flac", "ogg", "opus"];
   const CONNECTED_PLATFORMS_KEY = "convertx.connectedPlatforms.v1";
+
+  // Discord stealer "Save as" target — deliberately NOT `format`, which the
+  // video/audio constraints below keep resetting to mp4/mp3.
+  const STICKER_TARGET_KEY = "convertx.stickerTarget";
+  const TARGET_KEYS = new Set(TARGETS.map((t) => t.key));
+  const TARGET_DETAILS = {
+    original: "As uploaded — no conversion.",
+    gif: "Animated GIF that loops forever.",
+    png: "Still image (first frame).",
+    apng: "Animated PNG that loops forever.",
+    webp: "WebP — stays animated when the source is.",
+    mp4: "Silent MP4 video.",
+    sticker: "320×320 · ≤512 KB · up to 5 s — APNG (PNG for stills), GIF if it won't fit.",
+    emoji: "128×128 · ≤256 KB — GIF when animated, PNG for stills.",
+  };
+  let stickerTarget = (() => {
+    const v = loadJson(STICKER_TARGET_KEY, "original");
+    return TARGET_KEYS.has(v) ? v : "original";
+  })();
+
+  // Web: the URL downloader unlocks with a gateway access key. Desktop
+  // always has it. Discord stealer input works everywhere regardless.
+  let webUnlocked = platform.platformType === "web" && !!platform.capabilities?.urlDownloads;
+  $: urlDownloadsEnabled = isDesktop || webUnlocked;
 
   let url = "";
   let detectedSite = "";
@@ -89,42 +123,194 @@
   let spotifySlotByFileId = new Map();
   let spotifyCancelRequested = false;
   let downloadActive = false;
+  // Discord-stealer lane (stickerBatch.js): mean pct, item count, successes,
+  // and the runner's step label ("Converting…", "Fitting under 512 KB…").
+  let stickerPct = 0;
+  let stickerTotal = 0;
+  let stickerCompleted = 0;
+  let stickerLabel = "";
+  // Web: results the user already handed to the browser (Save / auto-save).
+  let savedIds = new Set();
 
   let unlistenProgress = null;
 
   function updateOverall() {
     if (totalItems <= 0) return;
     const spotSum = spotPct.reduce((a, b) => a + (b || 0), 0);
-    progress = Math.min(100, Math.round((batchMeanPct * batchTotal + spotSum) / totalItems));
-    completedCount = batchCompleted + spotCompleted;
+    progress = Math.min(
+      100,
+      Math.round((batchMeanPct * batchTotal + spotSum + stickerPct * stickerTotal) / totalItems)
+    );
+    completedCount = batchCompleted + spotCompleted + stickerCompleted;
   }
 
   // Proxied thumbnail blob URLs keyed by entry id. CDN-hotlink-blocked images
   // (Instagram especially) won't load from a remote <img src>, so we fetch via
-  // a Tauri command and turn the bytes into a blob URL.
+  // a Tauri command and turn the bytes into a blob URL. The web build is
+  // COEP require-corp: a cross-origin <img> without CORP (Discord's media
+  // proxy, most CDNs) is blocked outright, so web ONLY shows blob: previews.
   let thumbBlobs = {}; // record { [entryId]: blobUrl }
+  let thumbEpoch = 0;  // bumps on clear so late fetches from an old probe are dropped
 
   function clearThumbBlobs() {
+    thumbEpoch += 1;
     for (const k of Object.keys(thumbBlobs)) {
       try { URL.revokeObjectURL(thumbBlobs[k]); } catch {}
     }
     thumbBlobs = {};
   }
 
+  /** Real image type from the bytes — GIF/APNG/WebP previews must keep
+   *  animating, so never label everything image/jpeg. */
+  function imageMimeFor(buf) {
+    const f = sniffMedia(buf).format;
+    if (f === "png" || f === "apng") return "image/png";
+    if (f === "gif") return "image/gif";
+    if (f === "webp") return "image/webp";
+    return "image/jpeg";
+  }
+
+  async function thumbBlobFor(e) {
+    const media = e.discord;
+    if (media?.sourceFormat === "lottie") {
+      // Lottie has no raster preview anywhere — draw a poster frame.
+      const src = media.renditions?.original?.url;
+      if (!src || !platform.discordNet) return null;
+      const res = await platform.discordNet.getText(src);
+      if (res.status !== 200 || !res.text) return null;
+      return renderLottiePoster(res.text, 256);
+    }
+    if (!e.thumbnail) return null;
+    const bytes = await platform.fetchRemoteImage(e.thumbnail);
+    const buf = bytes instanceof Uint8Array ? bytes : new Uint8Array(bytes);
+    return new Blob([buf], { type: imageMimeFor(buf) });
+  }
+
   async function loadThumbnails(list) {
+    const epoch = thumbEpoch;
     // Fire all fetches in parallel, ignore failures — placeholder will show.
     await Promise.all(list.map(async (e) => {
-      const thumbUrl = e.thumbnail;
-      if (!thumbUrl) return;
       try {
-        const bytes = await platform.fetchRemoteImage(thumbUrl);
-        const buf = bytes instanceof Uint8Array ? bytes : new Uint8Array(bytes);
-        const blob = new Blob([buf], { type: "image/jpeg" });
-        thumbBlobs = { ...thumbBlobs, [e.id]: URL.createObjectURL(blob) };
+        const blob = await thumbBlobFor(e);
+        if (!blob) return;
+        const objectUrl = URL.createObjectURL(blob);
+        if (epoch !== thumbEpoch) {
+          URL.revokeObjectURL(objectUrl);
+          return;
+        }
+        thumbBlobs = { ...thumbBlobs, [e.id]: objectUrl };
       } catch (_) {
         // Leave entry without a thumb — UI shows placeholder.
       }
     }));
+  }
+
+  /** Preview src: the blob when ready; desktop may show the remote URL
+   *  meanwhile (no COEP there). */
+  function thumbSrc(entry, blobs, fallback = null) {
+    if (!entry) return null;
+    return blobs[entry.id] || (isDesktop ? entry.thumbnail || fallback || null : null);
+  }
+
+  function placeholderLabel(entry) {
+    if (entry?.discord) {
+      const f = entry.discord.sourceFormat;
+      return f === "lottie" ? "LOTTIE" : f === "jpeg" ? "JPG" : String(f || "IMG").toUpperCase();
+    }
+    return entry?.mediaType === "image" ? "IMG" : entry?.mediaType === "audio" ? "AUD" : "VID";
+  }
+
+  const KIND_LABELS = {
+    emoji: "emoji",
+    sticker: "sticker",
+    attachment: "attachment",
+    tenor: "Tenor GIF",
+    giphy: "Giphy GIF",
+    klipy: "Klipy GIF",
+    direct: "image",
+  };
+
+  function formatLabel(f) {
+    if (f === "lottie") return "Lottie";
+    if (f === "jpeg") return "JPG";
+    if (f === "webp") return "WebP";
+    return String(f || "").toUpperCase();
+  }
+
+  /** e.g. "Animated sticker · APNG · 320×320" */
+  function discordBadge(media) {
+    if (!media) return "";
+    let kind = KIND_LABELS[media.kind] || "media";
+    if (media.kind === "direct" && (media.sourceFormat === "mp4" || media.sourceFormat === "webm")) kind = "video";
+    const showAnimated = media.animated && ["emoji", "sticker", "attachment", "direct"].includes(media.kind) && kind !== "video";
+    const head = showAnimated ? `Animated ${kind}` : kind.charAt(0).toUpperCase() + kind.slice(1);
+    const parts = [head, formatLabel(media.sourceFormat)];
+    if (media.width && media.height) parts.push(`${media.width}×${media.height}`);
+    return parts.join(" · ");
+  }
+
+  function displayTitle(entry) {
+    return entry?.discord?.name || entry?.title || "Untitled";
+  }
+
+  /** Per-target availability across the selected Discord entries: a chip is
+   *  enabled when it works for at least one of them. */
+  function computeTargetOptions(list, caps) {
+    if (!caps || list.length === 0) {
+      return TARGETS.map((t) => ({ ...t, enabled: t.key === "original", count: 0, reason: null }));
+    }
+    const per = list.map((e) => availableTargets(e.discord, caps));
+    return TARGETS.map((t) => {
+      let count = 0;
+      let reason = null;
+      for (const av of per) {
+        const a = av.find((x) => x.key === t.key);
+        if (a?.enabled) count += 1;
+        else if (!reason && a?.reason) reason = a.reason;
+      }
+      return { ...t, enabled: count > 0, count, reason };
+    });
+  }
+
+  function chooseTarget(key) {
+    if (!TARGET_KEYS.has(key)) return;
+    stickerTarget = key;
+    saveJson(STICKER_TARGET_KEY, key);
+  }
+
+  function resultFileName(r) {
+    if (r?.fileName) return r.fileName;
+    const p = String(r?.outputPath || "");
+    const base = p.split(/[/\\]/).pop();
+    return base || `${r?.title || "download"}`;
+  }
+
+  function resultMeta(r) {
+    const parts = [];
+    const ext = resultFileName(r).split(".").pop();
+    if (ext && ext.length <= 5) parts.push(ext.toUpperCase());
+    if (typeof r?.outputSize === "number" && r.outputSize > 0) parts.push(formatBytes(r.outputSize));
+    return parts.join(" · ");
+  }
+
+  async function saveResult(r) {
+    if (!r?.outputBlob) return;
+    try {
+      await platform.saveFile(r.outputBlob, resultFileName(r));
+      savedIds = new Set(savedIds).add(r.id);
+    } catch (e) {
+      logError("download", e, r.title);
+      toast("Couldn't save that file.", "error");
+    }
+  }
+
+  async function saveAll() {
+    const list = doneResults.filter((r) => r.outputBlob);
+    for (let i = 0; i < list.length; i += 1) {
+      await saveResult(list[i]);
+      // Browsers throttle bursts of downloads — space them out a little.
+      if (i < list.length - 1) await new Promise((res) => setTimeout(res, 250));
+    }
   }
 
   settingsStore.subscribe((s) => {
@@ -154,79 +340,6 @@
         }
       });
     }
-    // TEMP-DEBUG ── layout harness (?dbg=<state>). Remove before commit.
-    {
-      const q = new URLSearchParams(location.search);
-      if (q.has("dbg")) {
-        isDesktop = q.get("web") !== "1";
-        const n = parseInt(q.get("n") || "9", 10);
-        const list = Array.from({ length: n }, (_, i) => ({
-          id: "dbg" + i,
-          title: "Sample media item " + (i + 1) + " with a fairly long descriptive title",
-          url: "https://example.com/" + i,
-          sourceUrl: "https://example.com/" + i,
-          mediaType: i % 4 === 0 ? "image" : i % 5 === 0 ? "audio" : "video",
-          thumbnail: null,
-          directUrl: null,
-          variants: null,
-          duration: 31 + i * 47,
-          uploader: "Example Channel",
-          partialCarousel: false,
-        }));
-        const st = q.get("dbg");
-        url = "https://www.youtube.com/watch?v=dQw4w9WgXcQ";
-        recent = [
-          "https://www.youtube.com/watch?v=dQw4w9WgXcQ",
-          "https://open.spotify.com/track/4cOdK2wGLETKBW3PvgPWqT",
-          "https://www.instagram.com/p/Cabcdefghij/",
-          "https://x.com/someone/status/1234567890",
-        ];
-        if (st === "idle") url = "";
-        if (st === "resume") {
-          url = "";
-          pendingResume = { sourceUrl: "https://example.com/x", remainingIds: ["a", "b"], items: ["a", "b", "c", "d", "e"] };
-        }
-        if (st === "error") {
-          state = "error";
-          errorMessage = "ERROR: [Instagram] Cabcdefghij: Requested content is not available, login required. Use --cookies-from-browser or --cookies for the authentication.";
-        }
-        if (st === "probing") state = "probing";
-        if (st === "preview" || st === "single") {
-          const entriesList = st === "single" ? list.slice(0, 1) : list;
-          probe = {
-            kind: st === "single" ? "single" : "multi",
-            title: "Example post — a reasonably long playlist or carousel title",
-            uploader: "Example Channel",
-            thumbnail: null,
-            entries: entriesList,
-          };
-          selected = new Set(entriesList.map((e) => e.id));
-          state = "preview";
-        }
-        if (st === "downloading") {
-          state = "downloading";
-          progress = 42;
-          totalItems = 9;
-          completedCount = 3;
-          currentItemTitle = "Sample media item 4 with a fairly long descriptive title";
-        }
-        if (st === "done") {
-          probe = { kind: "multi", title: "Example post", uploader: "Example Channel", thumbnail: null, entries: list };
-          doneResults = list.slice(0, 7).map((e) => ({ id: e.id, title: e.title, outputPath: "C:/Users/me/Downloads/" + e.id + ".mp4" }));
-          doneInfo = {
-            completed: 7,
-            total: 9,
-            errors: [
-              { id: "dbg7", title: "Sample media item 8", message: "HTTP Error 403: Forbidden" },
-              { id: "dbg8", title: "Sample media item 9", message: "Video unavailable in your country" },
-            ],
-          };
-          state = "done";
-        }
-        return;
-      }
-    }
-    // TEMP-DEBUG end
     recent = getRecentUrls();
     if (isDesktop) {
       const p = getPendingBatch();
@@ -239,12 +352,34 @@
 
   onDestroy(() => {
     if (typeof unlistenProgress === "function") unlistenProgress();
+    // Release every thumbnail object URL. clearThumbBlobs() bumps thumbEpoch,
+    // so any loadThumbnails fetch still in flight revokes its own URL on
+    // settle instead of leaking it — no separate cancel needed.
+    clearThumbBlobs();
+    // The pane is normally kept mounted while a batch runs (App.svelte), but
+    // a real teardown must never strand one: cancel both lanes so no orphaned
+    // ffmpeg.wasm batch keeps running (and auto-saving) off-screen.
+    if (downloadActive) {
+      spotifyCancelRequested = true;
+      cancelStickerBatch();
+      cancelActiveBatch();
+      downloadOp.set("idle");
+    }
   });
 
   // Site detection — used for the chip and for switching the format default
   // (Spotify is always audio-only).
   const SITE_PATTERNS = [
     { match: /open\.spotify\.com|^spotify:/i, name: "Spotify", audioOnly: true },
+    // Discord stealer sources — ahead of the generic sites so a GIF-picker
+    // or CDN link is never labelled by an embedded host name.
+    { match: /tenor\.com/i, name: "Tenor" },
+    { match: /giphy\.com/i, name: "Giphy" },
+    { match: /klipy\.com?/i, name: "Klipy" },
+    {
+      match: /discord(?:app)?\.(?:com|net)|<a?:\w{1,32}(?:~\d+)?:\d{17,20}>|^\s*\d{17,20}\s*$/i,
+      name: "Discord",
+    },
     { match: /youtube\.com|youtu\.be/i, name: "YouTube" },
     { match: /(twitter\.com|x\.com)/i, name: "X / Twitter" },
     { match: /instagram\.com/i, name: "Instagram" },
@@ -262,7 +397,6 @@
     { match: /streamable\.com/i, name: "Streamable" },
     { match: /dailymotion\.com/i, name: "Dailymotion" },
     { match: /bilibili\.com/i, name: "Bilibili" },
-    { match: /(cdn\.discordapp\.com|media\.discordapp\.net)/i, name: "Discord CDN" },
   ];
 
   $: detectedHit = url.trim() ? SITE_PATTERNS.find((p) => p.match.test(url)) : null;
@@ -277,14 +411,21 @@
     validUrls.every((u) => !!SITE_PATTERNS.find((p) => p.match.test(u))?.audioOnly);
   $: if (audioForced && format !== "mp3") format = "mp3";
 
-  // Parse multi-URL input: one URL per line, blanks ignored.
+  // Parse multi-URL input: one URL per line, blanks ignored. Discord stealer
+  // input (emoji markup, bare IDs, a pasted message line) counts too.
   $: urlList = url.split(/\r?\n/).map((l) => l.trim()).filter((l) => l.length > 0);
-  $: validUrls = urlList.filter((u) => /^https?:\/\//i.test(u) || /^spotify:/i.test(u));
+  $: validUrls = urlList.filter(
+    (u) => /^https?:\/\//i.test(u) || /^spotify:/i.test(u) || isDiscordInputToken(u)
+  );
   $: isValidUrl = validUrls.length > 0;
+  // Discord/Tenor/Giphy/Klipy input never needs the URL downloader.
+  $: allDiscordInput = isValidUrl && validUrls.every((u) => isDiscordInputToken(u));
   // "error" is retryable, not terminal: the one-tap fixes below (Instagram
   // login, engine update) are worthless if the user can't re-probe after
   // applying them. handlePreview resets every probe-derived field itself.
-  $: canPreview = isDesktop && isValidUrl && (state === "idle" || state === "error");
+  $: canPreview =
+    (urlDownloadsEnabled || allDiscordInput) && isValidUrl && (state === "idle" || state === "error");
+  $: previewLocked = !isDesktop && isValidUrl && !urlDownloadsEnabled && !allDiscordInput;
   $: multiUrlInput = urlList.length > 1;
 
   // Preview-derived flags
@@ -308,6 +449,31 @@
   $: allSpotify = selectionForKinds.length > 0 && selectionForKinds.every((e) => e.spotify);
   // Photos are "saved", media is "downloaded".
   $: actionVerb = allImages ? "Save" : "Download";
+
+  // Discord stealer: "Save as" chips show only when EVERY picked item is
+  // Discord media; in a mixed pick those items keep their original file.
+  $: discordSelection = selectionForKinds.filter((e) => e.discord);
+  $: allDiscord = selectionForKinds.length > 0 && discordSelection.length === selectionForKinds.length;
+  $: anyDiscord = discordSelection.length > 0;
+  $: targetOptions = computeTargetOptions(discordSelection, platform.stickerCaps);
+  $: activeTarget = targetOptions.some((t) => t.key === stickerTarget && t.enabled) ? stickerTarget : "original";
+  $: activeOption = targetOptions.find((t) => t.key === activeTarget);
+  $: fallbackItems = platform.stickerCaps
+    ? discordSelection.filter((e) => planExport(e.discord, activeTarget, platform.stickerCaps).mode === "unsupported")
+    : [];
+  $: targetNote =
+    allDiscord && fallbackItems.length > 0 && activeTarget !== "original"
+      ? `${fallbackItems.length} of ${discordSelection.length} can't be saved as ${activeOption?.label ?? activeTarget} and will keep the original` +
+        (activeOption?.reason ? ` (${activeOption.reason.replace(/[.\s]+$/, "").replace(/^./, (c) => c.toLowerCase())}).` : ".")
+      : "";
+
+  // Downloading pane headline: the sticker runner's own step when it is the
+  // only lane running ("Converting…", "Fitting under 512 KB…").
+  $: stageLabel =
+    stickerTotal > 0 && batchTotal === 0 && spotPct.length === 0
+      ? stickerLabel || "Working…"
+      : "Downloading…";
+  $: webSaveable = !isDesktop && doneResults.some((r) => r.outputBlob);
 
   // Force audio category for Spotify/SoundCloud and for audio-only picks.
   $: if (audioForced && category !== "audio") category = "audio";
@@ -334,7 +500,7 @@
   $: suggestsEngineUpdate =
     state === "error" &&
     !!errorMessage &&
-    isDesktop &&
+    urlDownloadsEnabled &&
     typeof platform.updateYtdlp === "function" &&
     /yt-dlp -U|latest version|unsupported url|confirm you are on/i.test(errorMessage);
 
@@ -475,6 +641,10 @@
       if (s.status === "fulfilled") {
         okCount += 1;
         if (!firstResult) firstResult = s.value.r;
+        // A multi-token Discord paste can resolve partly — list the misses.
+        for (const f of s.value.r.failures || []) {
+          failures.push({ url: f.url || u, message: f.message });
+        }
         const list = (s.value.r.entries || []).filter((e) => {
           if (seenIds.has(e.id)) return false;
           seenIds.add(e.id);
@@ -544,6 +714,7 @@
     probeFailures = [];
     doneInfo = null;
     doneResults = [];
+    savedIds = new Set();
     clearThumbBlobs();
     downloadOp.set("idle");
   }
@@ -654,7 +825,12 @@
     if (toDownload.length === 0) return;
     // Cancel flips the view back while the native process is still dying —
     // this guard stops a quick re-click starting a second concurrent batch.
-    if (isDownloading() || downloadActive) return;
+    // A prior batch can also still be finishing after a tab switch, so say so
+    // instead of silently no-opping.
+    if (isDownloading() || isStickerBatchRunning() || downloadActive) {
+      toast("A download is still finishing…", "info");
+      return;
+    }
     pendingResume = null;
 
     const audioOnly = settingsOverride ? settingsOverride.audioOnly : category === "audio";
@@ -662,7 +838,10 @@
     const dlQuality = settingsOverride ? settingsOverride.quality : quality;
 
     const priorSuccess = retainResults ? doneResults.length : 0;
-    if (!retainResults) doneResults = [];
+    if (!retainResults) {
+      doneResults = [];
+      savedIds = new Set();
+    }
     errorMessage = "";
     doneInfo = null;
     state = "downloading";
@@ -672,8 +851,16 @@
     progress = 0;
     currentItemTitle = toDownload[0]?.title ?? "";
 
+    // Three lanes: spotdl (Spotify), the Discord stealer runner (entries
+    // carrying `discord`), and the shared direct/yt-dlp batch for the rest.
     const spotItems = toDownload.filter((e) => e.spotify);
-    const batchItems = toDownload.filter((e) => !e.spotify);
+    const stickerItems = toDownload.filter((e) => !e.spotify && e.discord);
+    const batchItems = toDownload.filter((e) => !e.spotify && !e.discord);
+    // The chosen "Save as" only applies to an all-Discord pick (that's the
+    // only time the chips are shown); otherwise Discord items keep the original.
+    const runTarget =
+      settingsOverride?.stickerTarget ??
+      (stickerItems.length > 0 && stickerItems.length === toDownload.length ? activeTarget : "original");
     batchMeanPct = 0;
     batchTotal = batchItems.length;
     batchCompleted = 0;
@@ -681,13 +868,46 @@
     spotCompleted = 0;
     spotifySlotByFileId = new Map();
     spotifyCancelRequested = false;
+    stickerPct = 0;
+    stickerTotal = stickerItems.length;
+    stickerCompleted = 0;
+    stickerLabel = "";
     downloadActive = true;
 
     try {
       let batchResult = { results: [], errors: [], cancelled: false };
       let spotResult = { results: [], errors: [], cancelled: false };
+      let stickerResult = { results: [], errors: [], cancelled: false };
 
       await Promise.all([
+        (async () => {
+          if (stickerItems.length === 0) return;
+          stickerResult = await runStickerBatch({
+            entries: stickerItems,
+            target: runTarget,
+            outputDir: outputDir || null,
+            onProgress: (pct, label, title) => {
+              stickerPct = pct;
+              if (label) stickerLabel = label;
+              if (title) currentItemTitle = title;
+              updateOverall();
+            },
+            onItemDone: (entry, r) => {
+              stickerCompleted += 1;
+              updateOverall();
+              // History is desktop-only (web paths aren't files on disk).
+              if (isDesktop && r?.outputPath) {
+                addHistoryEntry({
+                  id: entry.id,
+                  title: entry.title,
+                  outputPath: r.outputPath,
+                  sourceUrl: entry.sourceUrl ?? null,
+                  mediaType: entry.mediaType ?? null,
+                });
+              }
+            },
+          });
+        })(),
         (async () => {
           if (batchItems.length === 0) return;
           batchResult = await downloadBatch({
@@ -704,7 +924,8 @@
               updateOverall();
             },
             onItemDone: (entry, r) => {
-              if (r?.outputPath) {
+              // History is desktop-only (web paths aren't files on disk).
+              if (isDesktop && r?.outputPath) {
                 addHistoryEntry({
                   id: entry.id,
                   title: entry.title,
@@ -722,8 +943,13 @@
         })(),
       ]);
 
-      const cancelled = batchResult.cancelled || spotResult.cancelled;
-      doneResults = [...doneResults, ...batchResult.results, ...spotResult.results];
+      const cancelled = batchResult.cancelled || spotResult.cancelled || stickerResult.cancelled;
+      doneResults = [
+        ...doneResults,
+        ...batchResult.results,
+        ...spotResult.results,
+        ...stickerResult.results,
+      ];
 
       if (cancelled) {
         // A cancel is NEVER an error — back to the preview, selection intact.
@@ -736,11 +962,16 @@
       doneInfo = {
         completed: doneResults.length,
         total: priorSuccess + toDownload.length,
-        errors: [...batchResult.errors, ...spotResult.errors],
+        errors: [...batchResult.errors, ...spotResult.errors, ...stickerResult.errors],
       };
       state = "done";
       progress = 100;
       downloadOp.set("done");
+      // Web: a lone file goes straight to the browser's downloads; several
+      // wait for Save / Save all (browsers block download bursts).
+      if (!isDesktop && doneResults.length === 1 && doneResults[0].outputBlob && !savedIds.has(doneResults[0].id)) {
+        saveResult(doneResults[0]);
+      }
     } catch (err) {
       logError("download", err, probedSourceUrl ?? undefined);
       errorMessage = `${err?.message || err}`;
@@ -811,12 +1042,21 @@
     // Flags both lanes AND kills every in-flight native transfer. Typed
     // { status: 'cancelled' } results unwind cleanly — no error banner.
     spotifyCancelRequested = true;
+    cancelStickerBatch();
     cancelActiveBatch();
   }
 
   function handleReset() {
     url = "";
     backToIdle();
+  }
+
+  // Discord picks: same items, different "Save as" — no re-probe needed.
+  function handleBackToPreview() {
+    if (!probe) return;
+    state = "preview";
+    progress = 0;
+    downloadOp.set("idle");
   }
 
   // One-tap fix: open the Instagram login window, merge harvested cookies
@@ -939,7 +1179,11 @@
       </svg>
     </div>
     <h2>Download from URL</h2>
-    <p class="sub">YouTube, Spotify, X, Instagram, TikTok, Snapchat, Reddit, Vimeo, Facebook, SoundCloud, Twitch — and 1800+ more sites.</p>
+    {#if urlDownloadsEnabled}
+      <p class="sub">YouTube, Spotify, X, Instagram, TikTok, Snapchat, Reddit, Vimeo, Facebook, SoundCloud, Twitch, Discord — and 1800+ more sites.</p>
+    {:else}
+      <p class="sub">Grab Discord stickers, emoji and GIFs right here — other sites unlock with an access key or the desktop app.</p>
+    {/if}
   </div>
 
   {#if state === "idle" || state === "error"}
@@ -980,8 +1224,11 @@
         <span class="site-chip multi-chip">{validUrls.length} URLs</span>
       {/if}
     </div>
+    <p class="input-hint">
+      Discord: paste an emoji, sticker or GIF link, <code>&lt;:name:id&gt;</code>, or a sticker ID.
+    </p>
 
-    {#if isDesktop && recent.length > 0 && !url.trim()}
+    {#if recent.length > 0 && !url.trim()}
       <div class="recent-row">
         {#each recent as u (u)}
           <button type="button" class="recent-chip" title={u} on:click={() => (url = u)}>
@@ -1016,16 +1263,19 @@
       {/if}
     {/if}
 
-    {#if isDesktop}
-      <div class="actions">
-        <button class="btn primary" disabled={!canPreview} on:click={handlePreview}>
-          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-            <circle cx="11" cy="11" r="8" />
-            <line x1="21" y1="21" x2="16.65" y2="16.65" />
-          </svg>
-          Preview
-        </button>
-      </div>
+    <div class="actions">
+      <button class="btn primary" disabled={!canPreview} on:click={handlePreview}>
+        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+          <circle cx="11" cy="11" r="8" />
+          <line x1="21" y1="21" x2="16.65" y2="16.65" />
+        </svg>
+        Preview
+      </button>
+    </div>
+    {#if previewLocked}
+      <p class="preview-hint">
+        This site needs an access key (below) or the desktop app — Discord links work without one.
+      </p>
     {/if}
     </div><!-- /.pane-main -->
 
@@ -1127,12 +1377,17 @@
       {/if}
       </div><!-- /.pane-side -->
     {:else}
-      <div class="web-notice">
-        <DesktopDownload variant="card" />
-        <p class="web-explainer">
-          URL downloads need the desktop app — they require a local yt-dlp binary that can't run in a browser sandbox.
-          The web version is great for converting and editing files you already have on disk.
-        </p>
+      <div class="web-side">
+        <GatewayKeyCard onChange={(on) => (webUnlocked = on)} />
+        {#if !webUnlocked}
+          <div class="web-notice">
+            <DesktopDownload variant="card" />
+            <p class="web-explainer">
+              No key? The desktop app downloads from YouTube, X, Instagram and 1800+ more sites on your own machine.
+              Discord stickers, emoji and GIFs work right here in the browser.
+            </p>
+          </div>
+        {/if}
       </div>
     {/if}
   </div><!-- /.pane.entry-pane -->
@@ -1182,27 +1437,36 @@
 
     {#if !isMulti}
       <!-- Single item card -->
+      {@const single = entries[0]}
+      {@const singleSrc = thumbSrc(single, thumbBlobs, probe?.thumbnail)}
       <div class="single-card">
-        <div class="single-thumb">
-          {#if entries[0] && (thumbBlobs[entries[0].id] || entries[0].thumbnail || probe?.thumbnail)}
-            <img src={thumbBlobs[entries[0].id] || entries[0].thumbnail || probe?.thumbnail} alt="" referrerpolicy="no-referrer" on:error={(e) => e.currentTarget.style.display = 'none'} />
+        <div class="single-thumb" class:sticker-thumb={single?.discord} class:checker={single?.discord}>
+          {#if singleSrc}
+            {#key singleSrc}
+              <img src={singleSrc} alt="" referrerpolicy="no-referrer" on:error={(e) => e.currentTarget.style.display = 'none'} />
+            {/key}
           {:else}
-            <div class="thumb-placeholder">
-              {entries[0]?.mediaType === "image" ? "IMG" : entries[0]?.mediaType === "audio" ? "AUD" : "VID"}
-            </div>
+            <div class="thumb-placeholder">{placeholderLabel(single)}</div>
           {/if}
-          {#if entries[0]?.mediaType === "image"}
+          {#if single?.discord}
+            <span class="kind-chip discord">{formatLabel(single.discord.sourceFormat)}</span>
+          {:else if single?.mediaType === "image"}
             <span class="kind-chip image">Image</span>
-          {:else if entries[0]?.mediaType === "audio"}
+          {:else if single?.mediaType === "audio"}
             <span class="kind-chip audio">Audio</span>
-          {:else if entries[0]?.duration}
-            <span class="duration-chip">{formatDuration(entries[0].duration)}</span>
+          {:else if single?.duration}
+            <span class="duration-chip">{formatDuration(single.duration)}</span>
           {/if}
         </div>
         <div class="single-meta">
-          <div class="single-title">{probe?.title || entries[0]?.title || "Untitled"}</div>
-          {#if probe?.uploader}
-            <div class="single-sub">{probe.uploader}</div>
+          {#if single?.discord}
+            <div class="single-title">{displayTitle(single)}</div>
+            <div class="single-sub">{discordBadge(single.discord)}</div>
+          {:else}
+            <div class="single-title">{probe?.title || single?.title || "Untitled"}</div>
+            {#if probe?.uploader}
+              <div class="single-sub">{probe.uploader}</div>
+            {/if}
           {/if}
         </div>
       </div>
@@ -1220,19 +1484,20 @@
       </div>
       <div class="grid">
         {#each entries as entry (entry.id)}
+          {@const src = thumbSrc(entry, thumbBlobs)}
           <button
             type="button"
             class="grid-card"
             class:selected={selected.has(entry.id)}
             on:click={() => toggleEntry(entry.id)}
           >
-            <div class="grid-thumb">
-              {#if thumbBlobs[entry.id] || entry.thumbnail}
-                <img src={thumbBlobs[entry.id] || entry.thumbnail} alt="" referrerpolicy="no-referrer" on:error={(e) => e.currentTarget.style.display = 'none'} />
+            <div class="grid-thumb" class:checker={entry.discord}>
+              {#if src}
+                {#key src}
+                  <img src={src} alt="" referrerpolicy="no-referrer" on:error={(e) => e.currentTarget.style.display = 'none'} />
+                {/key}
               {:else}
-                <div class="thumb-placeholder">
-                  {entry.mediaType === "image" ? "IMG" : entry.mediaType === "audio" ? "AUD" : "VID"}
-                </div>
+                <div class="thumb-placeholder">{placeholderLabel(entry)}</div>
               {/if}
               <span class="check" class:on={selected.has(entry.id)}>
                 {#if selected.has(entry.id)}
@@ -1241,7 +1506,9 @@
                   </svg>
                 {/if}
               </span>
-              {#if entry.mediaType === "image"}
+              {#if entry.discord}
+                <span class="kind-chip discord small">{formatLabel(entry.discord.sourceFormat)}</span>
+              {:else if entry.mediaType === "image"}
                 <span class="kind-chip image small">Image</span>
               {:else if entry.mediaType === "audio"}
                 <span class="kind-chip audio small">Audio</span>
@@ -1249,7 +1516,10 @@
                 <span class="duration-chip small">{formatDuration(entry.duration)}</span>
               {/if}
             </div>
-            <div class="grid-title">{entry.title}</div>
+            <div class="grid-title">{entry.discord ? displayTitle(entry) : entry.title}</div>
+            {#if entry.discord}
+              <div class="grid-badge">{discordBadge(entry.discord)}</div>
+            {/if}
           </button>
         {/each}
       </div>
@@ -1258,7 +1528,35 @@
 
     <div class="pane-side">
     <div class="options">
-      {#if hasVideo}
+      {#if allDiscord}
+        <div class="field">
+          <span class="field-label" id="save-as-label">Save as</span>
+          <div class="save-chips" role="radiogroup" aria-labelledby="save-as-label">
+            {#each targetOptions as t (t.key)}
+              <button
+                type="button"
+                class="save-chip"
+                class:preset={t.key === "sticker" || t.key === "emoji"}
+                class:active={activeTarget === t.key}
+                role="radio"
+                aria-checked={activeTarget === t.key}
+                disabled={!t.enabled}
+                title={t.enabled ? TARGET_DETAILS[t.key] : t.reason || "Not available for this item"}
+                on:click={() => chooseTarget(t.key)}
+              >
+                <span class="chip-label">{t.label}</span>
+                {#if t.key === "sticker" || t.key === "emoji"}
+                  <span class="chip-hint">{t.hint}</span>
+                {/if}
+              </button>
+            {/each}
+          </div>
+          <span class="field-hint">{TARGET_DETAILS[activeTarget]}</span>
+          {#if targetNote}
+            <span class="field-hint warn">{targetNote}</span>
+          {/if}
+        </div>
+      {:else if hasVideo}
         <div class="field">
           <span class="field-label">Type</span>
           <div class="seg" role="group" aria-label="Type">
@@ -1310,6 +1608,9 @@
           </span>
         </div>
       {/if}
+      {#if anyDiscord && !allDiscord}
+        <span class="field-hint">Discord items in this pick are saved as their original file.</span>
+      {/if}
 
       {#if isDesktop}
         <div class="field">
@@ -1350,7 +1651,7 @@
     <div class="pane narrow-pane">
     <div class="progress-panel">
       <div class="progress-top">
-        <span class="stage-label">Downloading…</span>
+        <span class="stage-label">{stageLabel}</span>
         <span class="progress-num">{progress}%</span>
       </div>
       <div class="bar-track">
@@ -1386,7 +1687,7 @@
       </div>
       <div class="done-title">
         {#if doneInfo && doneInfo.total > 1}
-          {doneInfo.completed} of {doneInfo.total} downloaded
+          {doneInfo.completed} of {doneInfo.total} {webSaveable ? "ready" : "downloaded"}
         {:else if doneResults.length > 0}
           Download complete
         {:else}
@@ -1395,17 +1696,38 @@
       </div>
 
       {#if doneResults.length === 1 && doneInfo && doneInfo.total <= 1}
-        <div class="done-file">{doneResults[0]?.title || "Saved"}</div>
+        {@const only = doneResults[0]}
+        <div class="done-file">{only?.title || "Saved"}</div>
+        {#if resultMeta(only)}
+          <div class="done-file-meta">{resultMeta(only)}</div>
+        {/if}
+        {#if only?.warning}
+          <div class="done-warn">{only.warning}</div>
+        {/if}
       {:else if doneResults.length > 0}
         <ul class="done-list">
           {#each doneResults as r (r.id)}
             <li class="done-item">
               <div class="done-item-meta">
                 <div class="done-item-title">{r.title || "Saved"}</div>
+                {#if resultMeta(r)}
+                  <div class="done-item-sub">{resultMeta(r)}</div>
+                {/if}
+                {#if r.warning}
+                  <div class="done-item-warn" title={r.warning}>{r.warning}</div>
+                {/if}
               </div>
               <div class="done-item-actions">
-                <button class="btn ghost small" on:click={() => handleOpenFolder(r.outputPath)}>Folder</button>
-                <button class="btn ghost small" on:click={() => handleOpenFile(r.outputPath)}>Open</button>
+                {#if isDesktop}
+                  <button class="btn ghost small" on:click={() => handleOpenFolder(r.outputPath)}>Folder</button>
+                  <button class="btn ghost small" on:click={() => handleOpenFile(r.outputPath)}>Open</button>
+                {:else if r.outputBlob}
+                  <button class="btn ghost small" class:saved={savedIds.has(r.id)} on:click={() => saveResult(r)}>
+                    {savedIds.has(r.id) ? "Save again" : "Save"}
+                  </button>
+                {:else if r.fileUrl}
+                  <a class="btn ghost small" href={r.fileUrl} download={resultFileName(r)} rel="noopener">Save again</a>
+                {/if}
               </div>
             </li>
           {/each}
@@ -1423,14 +1745,40 @@
     </div>
 
     {#if doneResults.length === 1 && doneInfo && doneInfo.total <= 1}
+      {#if isDesktop}
+        <div class="actions done-actions">
+          <button class="btn ghost" on:click={() => handleOpenFolder(doneResults[0]?.outputPath)}>Open folder</button>
+          <button class="btn primary" on:click={() => handleOpenFile(doneResults[0]?.outputPath)}>Open file</button>
+        </div>
+      {:else if doneResults[0]?.outputBlob}
+        <div class="actions done-actions">
+          <button class="btn primary" on:click={() => saveResult(doneResults[0])}>
+            {savedIds.has(doneResults[0].id) ? "Save again" : "Save"}
+          </button>
+        </div>
+      {:else if doneResults[0]?.fileUrl}
+        <div class="actions done-actions">
+          <a class="btn ghost" href={doneResults[0].fileUrl} download={resultFileName(doneResults[0])} rel="noopener">Save again</a>
+        </div>
+      {/if}
+    {:else if webSaveable}
       <div class="actions done-actions">
-        <button class="btn ghost" on:click={() => handleOpenFolder(doneResults[0]?.outputPath)}>Open folder</button>
-        <button class="btn primary" on:click={() => handleOpenFile(doneResults[0]?.outputPath)}>Open file</button>
+        <button class="btn primary" on:click={saveAll}>
+          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+            <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4" />
+            <polyline points="7 10 12 15 17 10" />
+            <line x1="12" y1="15" x2="12" y2="3" />
+          </svg>
+          Save all
+        </button>
       </div>
     {/if}
     <div class="actions">
       {#if doneInfo && doneInfo.errors.length > 0}
         <button class="btn ghost" on:click={handleRetryFailed}>Retry failed ({doneInfo.errors.length})</button>
+      {/if}
+      {#if probe && allDiscord}
+        <button class="btn link" on:click={handleBackToPreview}>Save in another format</button>
       {/if}
       <button class="btn link" on:click={handleReset}>Download another</button>
     </div>
@@ -1660,6 +2008,64 @@
   .duration-chip.small, .kind-chip.small { font-size: 0.62rem; padding: 1px 5px; }
   .kind-chip.image { background: rgba(168,85,247,0.85); }
   .kind-chip.audio { background: rgba(30,215,96,0.85); }
+  .kind-chip.discord { background: rgba(88,101,242,0.9); }
+
+  /* ── Discord stealer ─────────────────────────────────────────────── */
+  .input-hint { font-size: 0.7rem; color: var(--text-muted); margin: -6px 2px 0; line-height: 1.45; }
+  .input-hint code { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; font-size: 0.68rem; padding: 1px 4px; border-radius: 4px; background: var(--bg-secondary); border: 1px solid var(--border); color: var(--text-secondary); }
+  .preview-hint { font-size: 0.72rem; color: var(--text-muted); margin: -4px 0 0; text-align: center; line-height: 1.45; }
+  .web-side { display: flex; flex-direction: column; gap: 12px; min-width: 0; }
+
+  /* Transparent media sits on a theme-aware checkerboard, uncropped. */
+  .checker {
+    --checker-ink: color-mix(in srgb, var(--text-primary) 8%, transparent);
+    background-color: var(--bg-secondary);
+    background-image:
+      linear-gradient(45deg, var(--checker-ink) 25%, transparent 25%),
+      linear-gradient(-45deg, var(--checker-ink) 25%, transparent 25%),
+      linear-gradient(45deg, transparent 75%, var(--checker-ink) 75%),
+      linear-gradient(-45deg, transparent 75%, var(--checker-ink) 75%);
+    background-size: 16px 16px;
+    background-position: 0 0, 0 8px, 8px -8px, -8px 0;
+  }
+  .single-thumb.sticker-thumb { width: 120px; height: 120px; }
+  .single-thumb.checker img, .grid-thumb.checker img { object-fit: contain; padding: 6px; }
+  .grid-badge { font-size: 0.64rem; color: var(--text-muted); line-height: 1.3; margin-top: -4px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+
+  .save-chips { display: grid; grid-template-columns: repeat(6, minmax(0, 1fr)); gap: 5px; }
+  .save-chip {
+    grid-column: span 2;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    gap: 1px;
+    min-width: 0;
+    padding: 8px 4px;
+    background: var(--bg-secondary);
+    border: 1px solid var(--border);
+    border-radius: var(--radius-xs);
+    color: var(--text-secondary);
+    font-weight: 600;
+    font-size: 0.74rem;
+    letter-spacing: 0.01em;
+    line-height: 1.2;
+  }
+  .save-chip.preset { grid-column: span 3; padding: 7px 6px; }
+  .save-chip .chip-label { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; max-width: 100%; }
+  .save-chip .chip-hint { font-size: 0.6rem; font-weight: 500; color: var(--text-muted); white-space: nowrap; }
+  .save-chip:hover:not(:disabled):not(.active) { background: var(--bg-hover); color: var(--text-primary); border-color: var(--border-hover); }
+  .save-chip.active { background: var(--accent); border-color: var(--accent); color: var(--btn-primary-text); box-shadow: 0 0 14px var(--accent-glow); }
+  .save-chip.active .chip-hint { color: inherit; opacity: 0.75; }
+  .save-chip:disabled { opacity: 0.4; border-style: dashed; cursor: not-allowed; }
+  .field-hint.warn { color: var(--warning); line-height: 1.4; }
+
+  a.btn { text-decoration: none; }
+  .btn.ghost.saved { color: var(--text-muted); }
+  .done-file-meta { font-size: 0.72rem; color: var(--text-muted); margin-top: 2px; }
+  .done-warn { margin: 8px auto 0; max-width: 420px; font-size: 0.72rem; color: var(--warning); line-height: 1.4; }
+  .done-item-sub { font-size: 0.66rem; color: var(--text-muted); margin-top: 1px; }
+  .done-item-warn { font-size: 0.66rem; color: var(--warning); margin-top: 1px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 
   /* ── Wide layout ────────────────────────────────────────────────────
      The Tauri window opens at 600x700 with a 500x600 minimum, so the
