@@ -130,6 +130,32 @@ export async function runConvertSession(opts: ConvertRunOpts): Promise<void> {
   }
 }
 
+/**
+ * Build a software-encoder retry of an FFmpeg command that used the hardware
+ * H.264 encoder. `h264_mediacodec` has no software fallback inside ffmpeg-kit,
+ * so on devices whose vendor MediaCodec encoder is missing or broken (older /
+ * 32-bit stacks are the usual culprits) the hardware path just exits non-zero.
+ * Swap it for the always-present `mpeg4` software encoder, mirroring the
+ * avi/flv path in ffmpegArgs.ts. Returns null when the command doesn't use
+ * h264_mediacodec (nothing to retry differently).
+ */
+function mpeg4RetryArgs(args: string[], quality: number): string[] | null {
+  const idx = args.indexOf('h264_mediacodec');
+  if (idx <= 0 || args[idx - 1] !== '-c:v') return null;
+  const out = args.slice();
+  out[idx] = 'mpeg4';
+  // In quality mode the hardware path emits `-b:v <bitrate>`; mpeg4 wants a
+  // qscale instead. In target-size mode it emits `-b:v/-maxrate/-bufsize`
+  // (detected by the following -maxrate) — mpeg4 honours -b:v too, so leave
+  // the size budget intact.
+  if (args[idx + 1] === '-b:v' && args[idx + 3] !== '-maxrate') {
+    const q = Math.max(0, Math.min(100, quality));
+    const qscale = Math.max(1, Math.round(31 - (q / 100) * 30));
+    out.splice(idx + 1, 2, '-q:v', String(qscale));
+  }
+  return out;
+}
+
 async function runFfmpegFile(
   opts: ConvertRunOpts & {
     file: FileEntry;
@@ -218,11 +244,26 @@ async function runFfmpegFile(
   });
 
   try {
-    const result = await executeAsync(opts.sessionId, args, durationMs);
+    let result = await executeAsync(opts.sessionId, args, durationMs);
     if (isCancelled(opts.sessionId)) {
       // Cancelled mid-encode — FFmpeg may have written a partial file.
       await FileSystem.deleteAsync(outputPath, { idempotent: true }).catch(() => {});
       return;
+    }
+    // h264_mediacodec has no software fallback in ffmpeg-kit. When the device's
+    // vendor encoder is missing or broken (old / 32-bit MediaCodec stacks), the
+    // hardware path exits non-zero — retry once with the software `mpeg4`
+    // encoder before giving up, so conversion still produces a playable file.
+    if (result.returnCode !== 0) {
+      const retry = mpeg4RetryArgs(args, s.quality);
+      if (retry) {
+        await FileSystem.deleteAsync(outputPath, { idempotent: true }).catch(() => {});
+        result = await executeAsync(opts.sessionId, retry, durationMs);
+        if (isCancelled(opts.sessionId)) {
+          await FileSystem.deleteAsync(outputPath, { idempotent: true }).catch(() => {});
+          return;
+        }
+      }
     }
     // Last meaningful FFmpeg stderr lines — shows what FFmpeg actually
     // complained about (codec not found, invalid input, empty stream, …)

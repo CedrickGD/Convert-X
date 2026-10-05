@@ -88,12 +88,14 @@ Then copy `android/gradle.properties.example` to `android/gradle.properties.loca
 
 ## Auto-release on tag push
 
-Pushing a `v*` tag (e.g. `git tag v0.2.0 && git push origin v0.2.0`) triggers `.github/workflows/release.yml`:
-- Builds the per-ABI release APKs on ubuntu-latest.
+Pushing a `v*` tag (e.g. `git tag v0.2.0 && git push origin v0.2.0`) triggers `.github/workflows/android-release.yml`:
+- Builds the per-ABI release APKs on ubuntu-latest (`arm64-v8a` + `armeabi-v7a`).
 - Signs them with the keystore from the repo secrets.
-- Attaches `app-arm64-v8a-release.apk` + `app-armeabi-v7a-release.apk` to the GitHub Release.
+- Attaches `app-arm64-v8a-release.apk` (64-bit ARM, most phones) and `app-armv7-release.apk` (32-bit ARM / armeabi-v7a, for older or budget phones) to the GitHub Release. The 32-bit APK is renamed from Gradle's default `app-armeabi-v7a-release.apk` so the updater never pushes a 32-bit build onto an arm64 phone (see `src/lib/updater.ts` `ASSETS_FOR_ABI`).
 
-The in-app updater (Credits tab) reads `https://api.github.com/repos/CedrickGD/Convert-X/releases`, picks the newest release with an APK matching the device's ABI, downloads to cache, and hands it to Android's system installer.
+The in-app updater (Credits tab) reads `https://api.github.com/repos/CedrickGD/Convert-X/releases`, picks the newest release that carries the exact APK for the device's ABI — walking `Build.SUPPORTED_ABIS` in preference order, so a 64-bit phone always gets arm64 and a 32-bit-userspace phone only ever gets armv7 — downloads to cache, and hands it to Android's system installer.
+
+Requires **Android 7.0 (API 24)** or newer — the hard floor of the current RN 0.81 / Expo 54 / ffmpeg-kit / youtubedl-android stack.
 
 One-time secret setup in the GitHub repo (Settings → Secrets and variables → Actions):
 

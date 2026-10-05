@@ -16,7 +16,10 @@ Built with **Tauri v2 + Svelte + Rust**. Uses FFmpeg under the hood.
 | Platform | Get it | File |
 |---|---|---|
 | **Windows** | [Latest desktop release](https://github.com/CedrickGD/Convert-X/releases?q=desktop-v&expanded=true) | `Convert-X.exe` — portable, no install, no admin |
-| **Android** | [Latest release](https://github.com/CedrickGD/Convert-X/releases/latest) | `app-arm64-v8a-release.apk` — arm64, sideload |
+| **Android** (most phones) | [Latest release](https://github.com/CedrickGD/Convert-X/releases/latest) | `app-arm64-v8a-release.apk` — 64-bit ARM, sideload |
+| **Android** (older / budget phones) | [Latest release](https://github.com/CedrickGD/Convert-X/releases/latest) | `app-armv7-release.apk` — 32-bit ARM (armeabi-v7a); use this if arm64 says *App not installed / isn't compatible* |
+
+> Android requires **Android 7.0 (API 24)** or newer.
 
 Desktop and Android are **versioned independently** (`desktop-v*` vs `v*`), so
 their version numbers differ and the newest release of one is often not the
@@ -31,8 +34,15 @@ self-updates from its own release line.
 - **GIF editor** with timeline trimmer for video-to-GIF clips
 - **Batch processing** with per-file progress tracking
 - **Advanced options** — resolution, FPS, trim, bitrate, encoder preset
+- **URL downloader** (yt-dlp) — desktop and Android run it locally; the web
+  version uses a self-hosted backend unlocked with an access key
+- **Discord sticker & emoji grabber** — paste a custom emoji, sticker, image or
+  GIF link (Tenor / Giphy / Klipy too), `<:name:id>` markup or a sticker ID into
+  the Download tab and save it as Original, GIF, PNG, APNG, WebP or MP4 — or
+  ready to re-upload as a **Discord sticker** (320×320, ≤512 KB) or **Discord
+  emoji** (128×128, ≤256 KB). Works on desktop, web (no key needed) and Android
 - **Dark / Light theme**
-- Fully offline, no uploads
+- Conversion is fully offline, no uploads
 
 ### Supported Formats
 

@@ -60,6 +60,8 @@ jobs:
           gh api "repos/${GITHUB_REPOSITORY}/releases?per_page=100" > rels.json
 
           # Newest published android release (bare `v*` tag) that has an arm64 APK.
+          # Also pull the 32-bit armv7 asset from the SAME release when present
+          # (older releases pre-date it, so the armv7 row is emitted only if found).
           android=$(jq -c '
             [ .[]
               | select(.draft == false and .prerelease == false)
@@ -67,7 +69,9 @@ jobs:
               | { tag: .tag_name,
                   asset: ([ .assets[]
                             | select((.name | ascii_downcase | contains("arm64-v8a"))
-                                 and (.name | ascii_downcase | endswith(".apk"))) ][0]) }
+                                 and (.name | ascii_downcase | endswith(".apk"))) ][0]),
+                  armv7: ([ .assets[]
+                            | select(.name == "app-armv7-release.apk") ][0]) }
               | select(.asset != null)
             ][0] // empty' rels.json)
 
@@ -85,7 +89,13 @@ jobs:
               a_tag=$(jq -r .tag         <<<"$android")
               a_name=$(jq -r .asset.name <<<"$android")
               a_url=$(jq -r .asset.browser_download_url <<<"$android")
-              echo "| **Android** | [\`$a_name\`]($a_url) — arm64 sideload, from [\`$a_tag\`](https://github.com/${GITHUB_REPOSITORY}/releases/tag/$a_tag) |"
+              a_tag_url="https://github.com/${GITHUB_REPOSITORY}/releases/tag/$a_tag"
+              echo "| **Android** (most phones) | [\`$a_name\`]($a_url) — 64-bit ARM sideload, from [\`$a_tag\`]($a_tag_url) |"
+              v7_name=$(jq -r '.armv7.name // empty'                 <<<"$android")
+              v7_url=$(jq -r '.armv7.browser_download_url // empty'  <<<"$android")
+              if [ -n "$v7_url" ]; then
+                echo "| **Android** (older / budget phones) | [\`$v7_name\`]($v7_url) — 32-bit ARM (armeabi-v7a), from [\`$a_tag\`]($a_tag_url) |"
+              fi
             else
               echo "| **Android** | see [all releases](https://github.com/${GITHUB_REPOSITORY}/releases) |"
             fi
@@ -99,6 +109,9 @@ jobs:
         with:
           tag_name: ${{ github.ref_name }}
           name: "Convert-X Desktop ${{ github.ref_name }}"
+          # desktop-v0.3.0-beta.1 → prerelease (the in-app updater skips it);
+          # desktop-v0.3.0 → the real release.
+          prerelease: ${{ contains(github.ref_name, '-beta') || contains(github.ref_name, '-rc') }}
           body: ${{ steps.downloads.outputs.body }}
           fail_on_unmatched_files: true
           files: Convert-X.exe

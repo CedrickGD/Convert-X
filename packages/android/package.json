@@ -1,6 +1,6 @@
 {
   "name": "convert-x-android",
-  "version": "0.8.2",
+  "version": "0.9.0",
   "main": "index.ts",
   "scripts": {
     "start": "expo start",

@@ -1,0 +1,19 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  Debug override of res/xml/network_security_config.xml.
+
+  Once ANY network security config is present, android:usesCleartextTraffic is
+  ignored on API 24+, so the debug manifest's usesCleartextTraffic="true" alone
+  would no longer let the dev client reach Metro over http. This variant copy
+  keeps the same trust anchors as the release config but permits cleartext, so
+  `npx expo start` / `adb reverse` dev loops keep working. Debug builds only.
+-->
+<network-security-config>
+  <base-config cleartextTrafficPermitted="true">
+    <trust-anchors>
+      <certificates src="system"/>
+      <certificates src="@raw/isrg_root_x1"/>
+      <certificates src="@raw/isrg_root_x2"/>
+    </trust-anchors>
+  </base-config>
+</network-security-config>

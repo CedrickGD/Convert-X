@@ -3,7 +3,7 @@ name = "convertx"
 # Keep in lockstep with tauri.conf.json's "version" — that one names the
 # bundle/installer, this one is the crate version, and they had drifted
 # (0.2.2 vs 0.1.0) since the 0.2.x line began.
-version = "0.2.3"
+version = "0.3.0"
 description = "A desktop file converter"
 authors = ["you"]
 edition = "2021"

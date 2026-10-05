@@ -67,7 +67,11 @@ jobs:
       # the committed debug.keystore; no release secrets needed.
       - name: Gradle assembleDebug
         working-directory: packages/android/android
-        run: ./gradlew assembleDebug --no-daemon --stacktrace
+        # Dev client stays arm64-only — no need to build the 32-bit ABI for a
+        # test phone, and it keeps this build fast. The release splits default
+        # to arm64-v8a,armeabi-v7a (app/build.gradle); override both the split
+        # and the RN C++ ABI list so only arm64-v8a is compiled and packaged.
+        run: ./gradlew assembleDebug --no-daemon --stacktrace -Pconvertx.splitAbis=arm64-v8a -PreactNativeArchitectures=arm64-v8a
 
       - name: Locate APK
         id: apk

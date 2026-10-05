@@ -4,6 +4,64 @@ Snapshot of where we left off, written to drop back in with zero ramp-up.
 
 ---
 
+## Old-Android compatibility (armv7 + API 24 hardening)
+
+The friend's phone couldn't install the APK. Root cause was almost certainly
+the ABI: we only shipped `arm64-v8a`, and many budget/older phones run a 32-bit
+userspace (armeabi-v7a) even on a 64-bit SoC, so the arm64 APK fails with *"App
+not installed — isn't compatible with your phone"*. Everything below landed to
+fix that and to harden the app down to its real floor, **Android 7.0 (API 24)**.
+API 24 is the hard floor of the stack (RN 0.81 / Expo 54 / ffmpeg-kit fork /
+youtubedl-android 0.18 all declare minSdk 24); Android 6 and older cannot be
+supported.
+
+- **Ship two per-ABI APKs.** `app/build.gradle` `splits.abi` now defaults to
+  `arm64-v8a,armeabi-v7a` via a `-Pconvertx.splitAbis` property;
+  `gradle.properties` sets `reactNativeArchitectures=armeabi-v7a,arm64-v8a`
+  (dropped x86/x86_64) and **pins `android.minSdkVersion=24`** so a dependency
+  bump can't silently raise the floor. For an x86_64 API-24 emulator pass
+  `-PreactNativeArchitectures=x86_64 -Pconvertx.splitAbis=x86_64`.
+- **Updater ABI picker rewritten** (`src/lib/updater.ts`). `pickAssetForAbi` now
+  matches **exact asset names** in `Build.SUPPORTED_ABIS` **preference order**
+  (never re-sorted). A 64-bit phone always gets arm64 (and self-heals a mistaken
+  32-bit install); a 32-bit-userspace phone (no arm64-v8a in its list) only ever
+  gets armv7. **The 32-bit asset is published as `app-armv7-release.apk`** — the
+  substring "armeabi" is kept OUT of the name on purpose, because clients up to
+  v0.8.2 sort ABIs longest-first and would otherwise pull `armeabi-v7a` (11
+  chars) ahead of `arm64-v8a` (9) and move every arm64 phone to the 32-bit build.
+  `ASSETS_FOR_ABI` still accepts the Gradle default `app-armeabi-v7a-release.apk`
+  as a fallback for locally-built releases.
+- **Gallery saves on Android 7–9 (API 24–28).** The pre-scoped-storage copy
+  path needs a runtime `WRITE_EXTERNAL_STORAGE` grant that was never requested.
+  The JS wrapper (`modules/convert-x-downloader/src/index.ts`, owned by the
+  Android-feature unit) requests it; `ConvertXDownloaderModule.kt` now guards the
+  `< 29` branch and throws a clear `NO_STORAGE_PERMISSION` / `MKDIR_FAILED`
+  instead of a buried EACCES.
+- **TLS on Android 7.0.** API 24 predates ISRG Root X1 in the system trust
+  store, so GitHub release-asset downloads (Let's Encrypt chain) and any
+  Let's-Encrypt backend fail the handshake. Added a network security config
+  (`res/xml/network_security_config.xml`) trusting the system store **plus the
+  bundled ISRG Root X1 and X2** (`res/raw/isrg_root_x{1,2}.pem`, SHA-256-verified
+  against letsencrypt.org before committing). `cleartextTrafficPermitted="false"`
+  matches the release default; identical `src/debug` + `src/debugOptimized`
+  copies permit cleartext so Metro over http still works (a net-sec config
+  disables `usesCleartextTraffic` on API 24+).
+- **h264_mediacodec fallback (H3).** `src/lib/conversionQueue.ts` retries a
+  failed hardware-H.264 encode once with the software `mpeg4` encoder — old or
+  32-bit vendor MediaCodec stacks can have no working H.264 encoder and
+  ffmpeg-kit has no automatic fallback.
+- **Release pipeline.** `android-release.yml` fails fast if either per-ABI APK
+  is missing, renames the 32-bit one to `app-armv7-release.apk`, and lists both
+  (plus a "Requires Android 7.0+" note) in the Downloads table.
+  `desktop-release.yml` links the armv7 asset too; `dev-build.yml` stays
+  arm64-only via `-P` flags.
+
+Not yet verified on a real 32-bit / API-24 device — no local Android toolchain
+on this machine (CI is the build path). Typecheck + the updater-matcher unit
+test pass.
+
+---
+
 ## Current state
 
 **Latest release:** v0.8.2 (tag `v0.8.2`) — icon recolour: **white on black**.
@@ -111,10 +169,13 @@ Verify with `apksigner verify --print-certs` — the release cert is
 `CN=CedrickGD, O=Personal`, SHA-256 `4b946b51…`. A debug-signed APK shows
 `CN=Android Debug` instead.
 
-**Upload the GitHub asset as `app-arm64-v8a-release.apk`**, not the friendly
-`Convert-X-Android-<ver>.apk` that `copy-apk.js` produces: `updater.ts`'s
-`pickAssetForAbi` matches assets by the `arm64-v8a` substring, so the friendly
-name makes the update invisible to every installed client.
+**Upload the GitHub assets as `app-arm64-v8a-release.apk` and
+`app-armv7-release.apk`** (CI renames Gradle's `app-armeabi-v7a-release.apk` to
+the latter), not the friendly `Convert-X-Android-<ver>.apk` that `copy-apk.js`
+produces: `updater.ts`'s `pickAssetForAbi` now matches assets by **exact name**
+(`ASSETS_FOR_ABI`), so a differently-named asset is invisible to every installed
+client. The 32-bit name deliberately omits "armeabi" — see the compat section
+at the top for why.
 
 Note: build with **`npm run build:apk:fast`**. The `build:apk` script runs
 `expo prebuild` first, which re-templates the committed native project and
@@ -218,7 +279,7 @@ entries); PlatformLoginScreen clears its goBack timer + isFocused guard.
 Releases: https://github.com/CedrickGD/Convert-X/releases
 Release flow: bump (`node scripts/bump-version.js <ver>`) → commit to `main`
 → push tag `v*` → the "Release Android APKs" workflow builds
-`app-arm64-v8a-release.apk`. CI runs the gradle build only (no tsc/lint), so
+`app-arm64-v8a-release.apk` + `app-armv7-release.apk`. CI runs the gradle build only (no tsc/lint), so
 **typecheck locally** (`npx tsc --noEmit` in `packages/android`) before
 tagging. Local release gradle build fails on this machine (CMake 260-char
 Windows path limit) — CI is the build path. The native `android/` project is

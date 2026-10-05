@@ -367,6 +367,19 @@ class ConvertXDownloaderModule : Module() {
           // classic public-directory copy + media scan instead (the
           // manifest grants WRITE_EXTERNAL_STORAGE up to API 28).
           if (android.os.Build.VERSION.SDK_INT < 29) {
+            // The public-directory copy below needs a runtime
+            // WRITE_EXTERNAL_STORAGE grant on API 23–28. The JS wrapper
+            // (ensureLegacyWriteAccess) requests it first; guard here too so a
+            // denied grant surfaces a clear coded error instead of an EACCES
+            // buried in copyTo().
+            if (ctx.checkSelfPermission(android.Manifest.permission.WRITE_EXTERNAL_STORAGE)
+                != android.content.pm.PackageManager.PERMISSION_GRANTED) {
+              throw CodedException(
+                "NO_STORAGE_PERMISSION",
+                "Saving to the gallery on Android 9 and older needs the storage permission",
+                null
+              )
+            }
             val baseDir = when {
               mime.startsWith("video/") -> android.os.Environment.DIRECTORY_MOVIES
               mime.startsWith("audio/") -> android.os.Environment.DIRECTORY_MUSIC
@@ -377,7 +390,13 @@ class ConvertXDownloaderModule : Module() {
               android.os.Environment.getExternalStoragePublicDirectory(baseDir),
               "Convert-X"
             )
-            destDir.mkdirs()
+            if (!destDir.mkdirs() && !destDir.isDirectory) {
+              throw CodedException(
+                "MKDIR_FAILED",
+                "Could not create the Convert-X folder under $baseDir",
+                null
+              )
+            }
             val dest = java.io.File(destDir, safeName)
             src.copyTo(dest, overwrite = true)
             android.media.MediaScannerConnection.scanFile(

@@ -58,23 +58,30 @@ function cmpSemver(a: string, b: string): number {
   return 0;
 }
 
+// Exact asset names published by android-release.yml. The 32-bit APK is published as
+// `app-armv7-release.apk` (no "armeabi" substring) on purpose: clients <= v0.8.2 sort
+// SUPPORTED_ABIS longest-first and would try "armeabi-v7a" before "arm64-v8a",
+// silently moving arm64 phones to the 32-bit build.
+const ASSETS_FOR_ABI: Record<string, string[]> = {
+  'arm64-v8a': ['app-arm64-v8a-release.apk'],
+  'armeabi-v7a': ['app-armv7-release.apk', 'app-armeabi-v7a-release.apk'],
+  'x86_64': ['app-x86_64-release.apk'],
+  'x86': ['app-x86-release.apk'],
+};
+
 function pickAssetForAbi(assets: GhAsset[], abis: string[]): GhAsset | null {
-  // ABI names in our release filenames look like `app-arm64-v8a-release.apk`
-  // — match by lowercased substring, longest first so `arm64-v8a` doesn't
-  // accidentally match the bare `arm64` prefix of something else.
-  const sortedAbis = [...abis].sort((a, b) => b.length - a.length);
-  for (const abi of sortedAbis) {
-    const hit = assets.find(
-      (a) =>
-        a.name.toLowerCase().includes(abi.toLowerCase()) &&
-        a.name.toLowerCase().endsWith('.apk')
-    );
-    if (hit) return hit;
+  const byName = new Map(assets.map((a) => [a.name.toLowerCase(), a] as const));
+  // Build.SUPPORTED_ABIS is in device-preference order (64-bit first on a 64-bit
+  // phone). Walk it IN ORDER, never re-sort: a 64-bit phone always gets arm64
+  // (and self-heals a mistaken 32-bit install); a 32-bit-userspace phone, whose
+  // list has no arm64-v8a, only ever gets armv7.
+  for (const abi of abis) {
+    for (const name of ASSETS_FOR_ABI[abi] ?? []) {
+      const hit = byName.get(name);
+      if (hit) return hit;
+    }
   }
-  return (
-    assets.find((a) => /universal/i.test(a.name) && a.name.endsWith('.apk')) ??
-    null
-  );
+  return assets.find((a) => /universal/i.test(a.name) && a.name.toLowerCase().endsWith('.apk')) ?? null;
 }
 
 let inflightCheck: Promise<UpdateInfo | null> | null = null;

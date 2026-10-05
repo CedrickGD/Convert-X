@@ -1,0 +1,25 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  Trust anchors for release builds.
+
+  Android 7.0 (API 24) shipped before ISRG Root X1 was added to the system
+  trust store, so TLS to any Let's Encrypt-certified host fails the handshake
+  there: the in-app updater's GitHub release-asset download
+  (release-assets.githubusercontent.com / objects.githubusercontent.com) and
+  any Let's Encrypt backend such as the NAS behind Cloudflare. Bundling the two
+  ISRG roots alongside the system store fixes API 24 while leaving every newer
+  Android on its own (updated) store.
+
+  cleartextTrafficPermitted="false" matches the release default at targetSdk 36.
+  The debug / debugOptimized source sets override THIS file with an identical
+  one that permits cleartext, so Metro over http keeps working there.
+-->
+<network-security-config>
+  <base-config cleartextTrafficPermitted="false">
+    <trust-anchors>
+      <certificates src="system"/>
+      <certificates src="@raw/isrg_root_x1"/>
+      <certificates src="@raw/isrg_root_x2"/>
+    </trust-anchors>
+  </base-config>
+</network-security-config>

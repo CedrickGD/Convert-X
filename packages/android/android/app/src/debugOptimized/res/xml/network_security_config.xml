@@ -1,0 +1,18 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  debugOptimized override of res/xml/network_security_config.xml.
+
+  Same reasoning as src/debug: a network security config disables
+  android:usesCleartextTraffic on API 24+, so this variant copy re-permits
+  cleartext (keeping the release trust anchors) so Metro over http keeps
+  working for the optimized debug variant too.
+-->
+<network-security-config>
+  <base-config cleartextTrafficPermitted="true">
+    <trust-anchors>
+      <certificates src="system"/>
+      <certificates src="@raw/isrg_root_x1"/>
+      <certificates src="@raw/isrg_root_x2"/>
+    </trust-anchors>
+  </base-config>
+</network-security-config>

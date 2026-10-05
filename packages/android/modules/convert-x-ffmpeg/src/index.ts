@@ -33,8 +33,10 @@ interface NativeModule {
   executeAsync(sessionId: string, args: string[], durationMs: number): Promise<{ returnCode: number; logs: string }>;
   cancel(sessionId: string): void;
   getMediaInfo(uri: string): Promise<MediaInfo>;
-  /** Device ABI preference list — used by the updater to pick a matching APK asset. */
-  getSupportedAbis(): Promise<string[]>;
+  /** Device ABI preference list — used by the updater to pick a matching APK
+   *  asset. Synchronous on the native side (Build.SUPPORTED_ABIS), so it
+   *  returns the array directly, not a Promise. */
+  getSupportedAbis(): string[];
   /** Triggers Android's "Install this app?" sheet for a downloaded APK file URI. */
   installApk(uri: string): Promise<void>;
   /** null when FFmpeg loaded successfully; otherwise the underlying cause chain. */
@@ -61,7 +63,7 @@ export function getMediaInfo(uri: string): Promise<MediaInfo> {
   return native.getMediaInfo(uri);
 }
 
-export function getSupportedAbis(): Promise<string[]> {
+export function getSupportedAbis(): string[] {
   return native.getSupportedAbis();
 }
 

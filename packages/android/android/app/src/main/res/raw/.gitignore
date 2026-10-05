@@ -1,0 +1,6 @@
+# The repo-wide `*.pem` ignore (packages/android/.gitignore) would drop these,
+# but the two Let's Encrypt ISRG root certificates are bundled into the APK as
+# TLS trust anchors for Android 7.0 (see ../xml/network_security_config.xml),
+# so they MUST be committed. Re-include them here.
+!isrg_root_x1.pem
+!isrg_root_x2.pem
