@@ -1,0 +1,14 @@
+{
+  "name": "@convertx/server",
+  "private": true,
+  "version": "0.1.0",
+  "description": "Convert-X downloader API for the NAS: yt-dlp jobs behind a Cloudflare Workers VPC tunnel. No npm dependencies.",
+  "type": "module",
+  "engines": {
+    "node": ">=22"
+  },
+  "scripts": {
+    "start": "node src/main.mjs",
+    "test": "node --test \"test/*.test.mjs\""
+  }
+}

@@ -1,0 +1,17 @@
+{
+  "_type": "video",
+  "id": "A61SaA1",
+  "title": "MRW gifv is up and running without any bugs",
+  "ext": "mp4",
+  "url": "https://i.imgur.com/A61SaA1.mp4",
+  "webpage_url": "https://i.imgur.com/A61SaA1.gif",
+  "original_url": "https://i.imgur.com/A61SaA1.gif",
+  "thumbnail": "https://i.imgur.com/A61SaA1h.jpg",
+  "extractor": "Imgur",
+  "extractor_key": "Imgur",
+  "thumbnails": [
+    {
+      "url": "https://i.imgur.com/A61SaA1h.jpg"
+    }
+  ]
+}

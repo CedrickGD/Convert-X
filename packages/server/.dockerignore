@@ -1,0 +1,10 @@
+test
+node_modules
+*.md
+.env
+.env.*
+*.env
+*.env.example
+compose.yml
+Dockerfile
+.dockerignore

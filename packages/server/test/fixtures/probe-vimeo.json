@@ -1,0 +1,21 @@
+{
+  "_type": "video",
+  "id": "76979871",
+  "title": "The New Vimeo Player (You Know, For Videos)",
+  "ext": "mp4",
+  "vcodec": "avc1.64001F",
+  "acodec": null,
+  "duration": 62,
+  "webpage_url": "https://player.vimeo.com/video/76979871",
+  "original_url": "https://player.vimeo.com/video/76979871",
+  "uploader": "Vimeo",
+  "uploader_id": null,
+  "thumbnail": "https://i.vimeocdn.com/video/452001751-8216e0571c251a09d7a8387550942d89f7f86f6398f8ed886e639b0dd50d3c90-d",
+  "extractor": "vimeo",
+  "extractor_key": "Vimeo",
+  "thumbnails": [
+    {
+      "url": "https://i.vimeocdn.com/video/452001751-8216e0571c251a09d7a8387550942d89f7f86f6398f8ed886e639b0dd50d3c90-d"
+    }
+  ]
+}

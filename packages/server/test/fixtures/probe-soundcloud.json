@@ -1,0 +1,32 @@
+{
+  "_type": "video",
+  "id": "293",
+  "title": "Flickermood",
+  "ext": "m4a",
+  "vcodec": "none",
+  "acodec": "mp4a.40.2",
+  "duration": 213.886,
+  "url": "https://playback.media-streaming.soundcloud.cloud/cWHNerOLlkUq/aac_160k/fa250033-f3ae-45f5-a97d-5f743bced495/playlist.m3...",
+  "webpage_url": "https://soundcloud.com/forss/flickermood",
+  "original_url": "https://soundcloud.com/forss/flickermood",
+  "uploader": "Forss",
+  "uploader_id": "183",
+  "thumbnail": "https://i1.sndcdn.com/artworks-000067273316-smsiqx-original.jpg",
+  "extractor": "soundcloud",
+  "extractor_key": "Soundcloud",
+  "thumbnails": [
+    {
+      "url": "https://i1.sndcdn.com/artworks-000067273316-smsiqx-mini.jpg",
+      "width": 16,
+      "height": 16
+    },
+    {
+      "url": "https://i1.sndcdn.com/artworks-000067273316-smsiqx-t500x500.jpg",
+      "width": 500,
+      "height": 500
+    },
+    {
+      "url": "https://i1.sndcdn.com/artworks-000067273316-smsiqx-original.jpg"
+    }
+  ]
+}

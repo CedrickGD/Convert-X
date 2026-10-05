@@ -26,3 +26,33 @@ jobs:
 
       - name: Build web target
         run: npm --workspace packages/web run build
+
+  # Unit tests for the Discord grabber core (JS + its Android TS twin), the
+  # sticker runner, and the NAS backend + Worker gateway. Node 22 is required:
+  # the parity suite imports packages/android/src/lib/discordMedia.ts directly
+  # via Node's built-in type stripping (unflagged since 22.18).
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+
+      - name: Install dependencies
+        run: npm install
+
+      - name: Shared (discord core + sticker runner)
+        working-directory: packages/shared
+        run: npm test
+
+      - name: Server (NAS download backend)
+        working-directory: packages/server
+        run: npm test
+
+      - name: Gateway (Cloudflare Worker)
+        working-directory: packages/gateway
+        run: npm test

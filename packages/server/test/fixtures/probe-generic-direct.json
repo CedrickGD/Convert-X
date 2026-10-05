@@ -1,0 +1,11 @@
+{
+  "_type": "video",
+  "id": "png",
+  "title": "png",
+  "ext": "unknown_video",
+  "url": "https://httpbin.org/image/png",
+  "webpage_url": "https://httpbin.org/image/png",
+  "original_url": "https://httpbin.org/image/png",
+  "extractor": "generic",
+  "extractor_key": "Generic"
+}

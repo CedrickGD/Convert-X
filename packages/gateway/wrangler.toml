@@ -1,0 +1,25 @@
+# Convert-X gateway Worker → https://convertx-api.rr-admin-panel.workers.dev
+# Setup, secrets and the Workers VPC binding: see README.md.
+name = "convertx-api"
+main = "src/index.js"
+compatibility_date = "2026-09-01"
+workers_dev = true
+
+[vars]
+# Origins that may read keyed responses (/v1/dl/*, /v1/file/*). Pages preview
+# deployments (https://<branch>.convert-x-online.pages.dev) are always allowed.
+ALLOWED_ORIGINS = "https://convert-x-online.pages.dev,http://localhost:3000,http://localhost:4173"
+
+[observability]
+enabled = true
+
+# Workers VPC service "convertx-nas-api" → tunnel "convertx-nas" → convertx-api:8080 on the NAS.
+# Without it the gateway still serves /v1/media and Klipy; the downloader answers 503.
+[[vpc_services]]
+binding = "NAS"
+service_id = "01a0fe5c-b0ba-73f0-b58a-ef5e36db8ef8"
+
+# Secrets (never in this file) — `npx wrangler secret put <NAME>`:
+#   ACCESS_KEYS    name:key pairs, comma-separated (keys ≥ 16 chars)
+#   ORIGIN_KEY     same value as ORIGIN_KEY in the NAS api.env
+#   KLIPY_API_KEY  optional; enables /v1/resolve/klipy

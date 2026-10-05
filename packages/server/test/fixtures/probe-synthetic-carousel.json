@@ -1,0 +1,38 @@
+{
+  "_type": "playlist",
+  "id": "C0ffeeCarousel",
+  "title": "Post by someone",
+  "uploader": null,
+  "channel": null,
+  "uploader_id": "someone",
+  "extractor": "Instagram",
+  "extractor_key": "Instagram",
+  "entries": [
+    {
+      "id": "3100000000000000001",
+      "title": "Video 1",
+      "ext": "jpg",
+      "url": "https://scontent.cdninstagram.com/v/t51/1.jpg?stp=x",
+      "thumbnails": [
+        { "url": "https://scontent.cdninstagram.com/v/t51/1_small.jpg" },
+        { "url": "https://scontent.cdninstagram.com/v/t51/1_big.jpg" }
+      ]
+    },
+    {
+      "id": "3100000000000000002",
+      "ext": "mp4",
+      "vcodec": "avc1.64001f",
+      "acodec": "mp4a.40.2",
+      "duration": 12.5,
+      "url": "https://scontent.cdninstagram.com/v/t50/2.mp4?efg=x",
+      "webpage_url": "https://www.instagram.com/p/C0ffeeCarousel/?img_index=2",
+      "thumbnail": "https://scontent.cdninstagram.com/v/t51/2_cover.jpg"
+    },
+    {
+      "ext": "webp",
+      "vcodec": "none",
+      "duration": 0
+    },
+    null
+  ]
+}

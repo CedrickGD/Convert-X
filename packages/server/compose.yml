@@ -1,0 +1,138 @@
+# docker compose for the Convert-X downloader on the UGREEN NAS. See README.md.
+# Project "convertx" — fully separate from the razorreaper project: its own
+# networks, its own Cloudflare Tunnel, its own directories under
+# /volume1/docker/convertx. Project dir on the NAS:
+#   /volume1/docker/convertx/src/Convert-X/packages/server   (git clone)
+# Paths come from .env next to this file (copy .env.example). Secrets never
+# live in this tree: ${ENV_DIR}/api.env, egress.env and tunnel.env.
+#
+# No published ports. The only way in is the tunnel (cloudflared → api), used
+# by the gateway Worker's Workers VPC binding. The only way out is `egress`:
+#
+#                Cloudflare                  internet (public addresses only)
+#                    ▲                                ▲
+#   outbound ────────┼────────────────────────────────┼────────  bridge with NAT
+#               cloudflared                     egress :8899
+#   internal ────────┼────────────────────────────────┼────────  internal: true (no gateway)
+#                    ▼ convertx-api:8080              │
+#                api :8080 ─── all outbound traffic ──┘
+#
+#  - api: ONLY on `internal`. It reaches egress:8899 and is reached by
+#    cloudflared as convertx-api:8080; it has no route anywhere else. Every
+#    outbound byte (yt-dlp, ffmpeg, pip, its own /http /direct /image) is
+#    proxied by egress, authenticated with EGRESS_TOKEN.
+#  - egress: same image, `node src/egressMain.mjs`. On `internal` (to serve
+#    api) and `outbound` (to reach the internet). Resolves every destination
+#    itself and refuses private/LAN/loopback/link-local/… addresses and ports
+#    outside EGRESS_ALLOWED_PORTS. Speaks HTTP proxy only (CONNECT +
+#    absolute-URI), so no other protocol can leave through it.
+#  - cloudflared: on `internal` (to reach convertx-api:8080) and `outbound`
+#    (to reach Cloudflare). Its metrics endpoint stays on its own loopback.
+name: convertx
+
+services:
+  api:
+    build:
+      context: .
+      args:
+        # Set to a date to pull the newest yt-dlp on rebuild (README → Updating yt-dlp).
+        YTDLP_REFRESH: ${YTDLP_REFRESH:-}
+    image: convertx-api:local # egress runs the same image
+    restart: unless-stopped
+    env_file:
+      - ${ENV_DIR}/api.env # ORIGIN_KEY (+ optional tuning, see api.env.example)
+      - ${ENV_DIR}/egress.env # EGRESS_TOKEN — the same file egress reads
+    environment:
+      - PORT=8080
+      - DATA_DIR=/data
+      - EGRESS_MODE=remote
+      - EGRESS_HOST=egress
+      - EGRESS_PROXY_PORT=8899
+    volumes:
+      - ${DATA_DIR}:/data # jobs/ staging + optional cookies.txt; owned by uid 1000
+    networks:
+      internal:
+        aliases:
+          - convertx-api # the hostname the Workers VPC service points at
+    depends_on:
+      egress:
+        condition: service_healthy
+    mem_limit: 1g
+    cpus: 2
+    pids_limit: 256 # yt-dlp + ffmpeg + node per job, 2 jobs + 4 probes
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    healthcheck:
+      test: ["CMD", "node", "-e", "fetch('http://127.0.0.1:8080/health').then(r=>process.exit(r.ok?0:1),()=>process.exit(1))"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 20s
+    logging:
+      driver: json-file
+      options:
+        max-size: 10m
+        max-file: "3"
+
+  egress:
+    image: convertx-api:local # built by the api service above
+    pull_policy: never
+    command: ["node", "src/egressMain.mjs"]
+    restart: unless-stopped
+    env_file:
+      - ${ENV_DIR}/egress.env # EGRESS_TOKEN (+ optional EGRESS_ALLOWED_PORTS)
+    environment:
+      - EGRESS_LISTEN_HOST=0.0.0.0 # its internal-network address; nothing is published
+      - EGRESS_PROXY_PORT=8899
+    networks:
+      - internal
+      - outbound
+    read_only: true
+    mem_limit: 256m
+    cpus: 1
+    pids_limit: 64
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    healthcheck:
+      test: ["CMD", "node", "-e", "require('net').connect(8899,'127.0.0.1').on('connect',()=>process.exit(0)).on('error',()=>process.exit(1))"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 10s
+    logging:
+      driver: json-file
+      options:
+        max-size: 10m
+        max-file: "3"
+
+  # Remotely-managed tunnel (token only, no config file, NO public hostname).
+  # Workers VPC resolves "convertx-api" through this container's resolver,
+  # i.e. Docker's DNS on the `internal` network.
+  cloudflared:
+    image: cloudflare/cloudflared:latest
+    restart: unless-stopped
+    command: tunnel --no-autoupdate --metrics 127.0.0.1:20241 run
+    env_file: ${ENV_DIR}/tunnel.env # TUNNEL_TOKEN=…
+    networks:
+      - internal
+      - outbound
+    depends_on:
+      - api
+    security_opt:
+      - no-new-privileges:true
+    logging:
+      driver: json-file
+      options:
+        max-size: 10m
+        max-file: "3"
+
+networks:
+  # No gateway out: containers on it can only talk to each other.
+  internal:
+    internal: true
+  # An ordinary bridge with NAT — only egress and cloudflared are on it.
+  outbound: {}
