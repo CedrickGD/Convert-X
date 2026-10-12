@@ -1281,7 +1281,9 @@ export function createWebAdapter() {
           if (st.state === "done") {
             const fileUrl = `${GATEWAY_BASE}/v1/file/${encodeURIComponent(jobId)}?t=${encodeURIComponent(token)}`;
             const fileName = st.fileName || "download";
-            triggerBrowserDownload(fileUrl, fileName);
+            if (params?.autoTrigger !== false) {
+              triggerBrowserDownload(fileUrl, fileName);
+            }
             return {
               status: "done",
               outputPath: fileName,

@@ -28,6 +28,7 @@
   } from "../lib/stickerBatch.js";
   import { renderLottiePoster } from "../lib/lottieRender.js";
   import { TARGETS, availableTargets, planExport, sniffMedia } from "../core/discordMedia.js";
+  import { createZip } from "../lib/zip.js";
   import DesktopDownload from "./DesktopDownload.svelte";
   import GatewayKeyCard from "./GatewayKeyCard.svelte";
 
@@ -293,23 +294,97 @@
     return parts.join(" · ");
   }
 
+  function triggerBrowserUrlDownload(href, fileName) {
+    const a = document.createElement("a");
+    a.href = href;
+    if (fileName) a.download = fileName;
+    a.rel = "noopener";
+    a.style.display = "none";
+    document.body.appendChild(a);
+    a.click();
+    document.body.removeChild(a);
+  }
+
   async function saveResult(r) {
-    if (!r?.outputBlob) return;
+    if (!r) return;
     try {
-      await platform.saveFile(r.outputBlob, resultFileName(r));
-      savedIds = new Set(savedIds).add(r.id);
+      if (r.outputBlob) {
+        await platform.saveFile(r.outputBlob, resultFileName(r));
+        savedIds = new Set(savedIds).add(r.id);
+      } else if (r.fileUrl) {
+        triggerBrowserUrlDownload(r.fileUrl, resultFileName(r));
+        savedIds = new Set(savedIds).add(r.id);
+      }
     } catch (e) {
       logError("download", e, r.title);
       toast("Couldn't save that file.", "error");
     }
   }
 
+  let savingAll = false;
   async function saveAll() {
-    const list = doneResults.filter((r) => r.outputBlob);
-    for (let i = 0; i < list.length; i += 1) {
-      await saveResult(list[i]);
-      // Browsers throttle bursts of downloads — space them out a little.
-      if (i < list.length - 1) await new Promise((res) => setTimeout(res, 250));
+    if (savingAll) return;
+    savingAll = true;
+    try {
+      const list = doneResults.filter((r) => r.outputBlob || r.fileUrl);
+      for (let i = 0; i < list.length; i += 1) {
+        await saveResult(list[i]);
+        // Browsers throttle bursts of downloads — space them out a little.
+        if (i < list.length - 1) await new Promise((res) => setTimeout(res, 350));
+      }
+    } finally {
+      savingAll = false;
+    }
+  }
+
+  let zipping = false;
+  let zipProgress = "";
+
+  async function downloadZip() {
+    if (zipping || doneResults.length === 0) return;
+    zipping = true;
+    zipProgress = "Preparing…";
+    try {
+      const zipFiles = [];
+      const seenNames = new Map();
+
+      for (let i = 0; i < doneResults.length; i++) {
+        const r = doneResults[i];
+        zipProgress = `Fetching ${i + 1} of ${doneResults.length}…`;
+        let data = null;
+        if (r.outputBlob) {
+          data = new Uint8Array(await r.outputBlob.arrayBuffer());
+        } else if (r.fileUrl) {
+          const res = await fetch(r.fileUrl);
+          if (!res.ok) throw new Error(`Could not fetch ${r.title || "file"} (HTTP ${res.status})`);
+          data = new Uint8Array(await res.arrayBuffer());
+        }
+        if (data) {
+          let name = resultFileName(r);
+          const count = seenNames.get(name) || 0;
+          seenNames.set(name, count + 1);
+          if (count > 0) {
+            const dot = name.lastIndexOf(".");
+            name = dot > 0
+              ? `${name.slice(0, dot)} (${count})${name.slice(dot)}`
+              : `${name} (${count})`;
+          }
+          zipFiles.push({ name, data });
+        }
+      }
+
+      zipProgress = "Creating ZIP…";
+      const zipBlob = createZip(zipFiles);
+      const rawTitle = probe?.title || "Convert-X-Downloads";
+      const cleanTitle = rawTitle.replace(/[^A-Za-z0-9_\-\s]/g, "").trim().replace(/\s+/g, "_") || "Convert-X-Downloads";
+      await platform.saveFile(zipBlob, `${cleanTitle}.zip`);
+      toast("ZIP downloaded!", "success");
+    } catch (e) {
+      logError("zip", e);
+      toast(e instanceof Error ? e.message : "Failed to create ZIP.", "error");
+    } finally {
+      zipping = false;
+      zipProgress = "";
     }
   }
 
@@ -411,8 +486,6 @@
     validUrls.every((u) => !!SITE_PATTERNS.find((p) => p.match.test(u))?.audioOnly);
   $: if (audioForced && format !== "mp3") format = "mp3";
 
-  // Parse multi-URL input: one URL per line, blanks ignored. Discord stealer
-  // input (emoji markup, bare IDs, a pasted message line) counts too.
   $: urlList = url.split(/\r?\n/).map((l) => l.trim()).filter((l) => l.length > 0);
   $: validUrls = urlList.filter(
     (u) => /^https?:\/\//i.test(u) || /^spotify:/i.test(u) || isDiscordInputToken(u)
@@ -473,7 +546,7 @@
     stickerTotal > 0 && batchTotal === 0 && spotPct.length === 0
       ? stickerLabel || "Working…"
       : "Downloading…";
-  $: webSaveable = !isDesktop && doneResults.some((r) => r.outputBlob);
+  $: webSaveable = !isDesktop && doneResults.some((r) => r.outputBlob || r.fileUrl);
 
   // Force audio category for Spotify/SoundCloud and for audio-only picks.
   $: if (audioForced && category !== "audio") category = "audio";
@@ -622,8 +695,26 @@
     doneResults = [];
 
     clearThumbBlobs();
-    const settled = await Promise.allSettled(
-      validUrls.map((u) => probeOne(u).then((r) => ({ u, r })))
+    const mapConcurrent = async (items, limit, fn) => {
+      const results = new Array(items.length);
+      let cursor = 0;
+      const workers = Array.from({ length: Math.min(limit, items.length) }, async () => {
+        while (cursor < items.length) {
+          const idx = cursor++;
+          try {
+            const val = await fn(items[idx], idx);
+            results[idx] = { status: "fulfilled", value: val };
+          } catch (reason) {
+            results[idx] = { status: "rejected", reason };
+          }
+        }
+      });
+      await Promise.all(workers);
+      return results;
+    };
+
+    const settled = await mapConcurrent(validUrls, 3, (u) =>
+      probeOne(u).then((r) => ({ u, r }))
     );
 
     const flat = [];
@@ -715,6 +806,9 @@
     doneInfo = null;
     doneResults = [];
     savedIds = new Set();
+    zipping = false;
+    zipProgress = "";
+    savingAll = false;
     clearThumbBlobs();
     downloadOp.set("idle");
   }
@@ -968,9 +1062,13 @@
       progress = 100;
       downloadOp.set("done");
       // Web: a lone file goes straight to the browser's downloads; several
-      // wait for Save / Save all (browsers block download bursts).
-      if (!isDesktop && doneResults.length === 1 && doneResults[0].outputBlob && !savedIds.has(doneResults[0].id)) {
-        saveResult(doneResults[0]);
+      // wait for Save / Save all / Download as ZIP (browsers block download bursts).
+      if (!isDesktop && doneResults.length === 1 && !savedIds.has(doneResults[0].id)) {
+        if (doneResults[0].outputBlob) {
+          saveResult(doneResults[0]);
+        } else if (doneResults[0].fileUrl) {
+          savedIds = new Set(savedIds).add(doneResults[0].id);
+        }
       }
     } catch (err) {
       logError("download", err, probedSourceUrl ?? undefined);
@@ -1221,11 +1319,13 @@
           {detectedSite}
         </span>
       {:else if multiUrlInput}
-        <span class="site-chip multi-chip">{validUrls.length} URLs</span>
+        <span class="site-chip multi-chip">
+          {validUrls.length} URLs
+        </span>
       {/if}
     </div>
     <p class="input-hint">
-      Discord: paste an emoji, sticker or GIF link, <code>&lt;:name:id&gt;</code>, or a sticker ID.
+      Paste one link or multiple (one per line). Playlists and multi-item posts are supported.
     </p>
 
     {#if recent.length > 0 && !url.trim()}
@@ -1474,7 +1574,9 @@
       <!-- Multi-item grid -->
       <div class="multi-toolbar">
         <div class="multi-title">
-          <strong>{probe?.title || "Multi-item post"}</strong>
+          <div class="multi-title-row">
+            <strong>{probe?.title || "Multi-item post"}</strong>
+          </div>
           <span class="multi-count">{entries.length} items · {selectedCount} selected</span>
         </div>
         <div class="multi-actions">
@@ -1721,12 +1823,10 @@
                 {#if isDesktop}
                   <button class="btn ghost small" on:click={() => handleOpenFolder(r.outputPath)}>Folder</button>
                   <button class="btn ghost small" on:click={() => handleOpenFile(r.outputPath)}>Open</button>
-                {:else if r.outputBlob}
+                {:else if r.outputBlob || r.fileUrl}
                   <button class="btn ghost small" class:saved={savedIds.has(r.id)} on:click={() => saveResult(r)}>
                     {savedIds.has(r.id) ? "Save again" : "Save"}
                   </button>
-                {:else if r.fileUrl}
-                  <a class="btn ghost small" href={r.fileUrl} download={resultFileName(r)} rel="noopener">Save again</a>
                 {/if}
               </div>
             </li>
@@ -1750,26 +1850,30 @@
           <button class="btn ghost" on:click={() => handleOpenFolder(doneResults[0]?.outputPath)}>Open folder</button>
           <button class="btn primary" on:click={() => handleOpenFile(doneResults[0]?.outputPath)}>Open file</button>
         </div>
-      {:else if doneResults[0]?.outputBlob}
+      {:else if doneResults[0]?.outputBlob || doneResults[0]?.fileUrl}
         <div class="actions done-actions">
           <button class="btn primary" on:click={() => saveResult(doneResults[0])}>
             {savedIds.has(doneResults[0].id) ? "Save again" : "Save"}
           </button>
         </div>
-      {:else if doneResults[0]?.fileUrl}
-        <div class="actions done-actions">
-          <a class="btn ghost" href={doneResults[0].fileUrl} download={resultFileName(doneResults[0])} rel="noopener">Save again</a>
-        </div>
       {/if}
     {:else if webSaveable}
       <div class="actions done-actions">
-        <button class="btn primary" on:click={saveAll}>
+        <button class="btn primary" disabled={zipping || savingAll} on:click={downloadZip}>
+          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+            <path d="M21 16V8a2 2 0 0 0-1-1.73l-7-4a2 2 0 0 0-2 0l-7 4A2 2 0 0 0 3 8v8a2 2 0 0 0 1 1.73l7 4a2 2 0 0 0 2 0l7-4A2 2 0 0 0 21 16z"/>
+            <polyline points="3.27 6.96 12 12.01 20.73 6.96"/>
+            <line x1="12" y1="22.08" x2="12" y2="12"/>
+          </svg>
+          {zipping ? zipProgress : "Download as ZIP"}
+        </button>
+        <button class="btn ghost" disabled={zipping || savingAll} on:click={saveAll}>
           <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
             <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4" />
             <polyline points="7 10 12 15 17 10" />
             <line x1="12" y1="15" x2="12" y2="3" />
           </svg>
-          Save all
+          {savingAll ? "Saving…" : "Save all"}
         </button>
       </div>
     {/if}
@@ -1988,6 +2092,7 @@
 
   .multi-toolbar { display: flex; align-items: center; justify-content: space-between; gap: 10px; padding: 10px 12px; background: var(--bg-card); border: 1px solid var(--border); border-radius: var(--radius-sm); }
   .multi-title { display: flex; flex-direction: column; min-width: 0; }
+  .multi-title-row { display: flex; align-items: center; gap: 6px; min-width: 0; }
   .multi-title strong { font-size: 0.86rem; color: var(--text-primary); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
   .multi-count { font-size: 0.7rem; color: var(--text-muted); margin-top: 2px; }
   .multi-actions { display: flex; gap: 6px; flex-shrink: 0; }

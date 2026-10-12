@@ -717,6 +717,7 @@ export async function downloadBatch(opts) {
       // share a title can't land on the same filename.
       dedupeNames: dedupeNames || entry.playlistIndex != null,
       cookiesPath,
+      autoTrigger: total === 1,
     });
     if (r?.status === "cancelled" || r?.cancelled === true) return { cancelled: true };
     // Web: the gateway already handed the file to the browser's downloads;
