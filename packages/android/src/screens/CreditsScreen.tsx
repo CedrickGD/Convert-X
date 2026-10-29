@@ -490,14 +490,19 @@ function UpdateCard() {
   const { theme } = useTheme();
   const [state, setState] = useState<UpdateState>({ kind: 'idle' });
 
-  // Auto-check once on mount. Silent on failure.
+  // Auto-check once on mount. A failed check shows as such — "latest
+  // version" must never be the message for "GitHub was unreachable".
   useEffect(() => {
     let cancelled = false;
     (async () => {
       setState({ kind: 'checking' });
-      const info = await checkForUpdate();
-      if (cancelled) return;
-      setState(info ? { kind: 'available', info } : { kind: 'up-to-date' });
+      try {
+        const info = await checkForUpdate();
+        if (cancelled) return;
+        setState(info ? { kind: 'available', info } : { kind: 'up-to-date' });
+      } catch {
+        if (!cancelled) setState({ kind: 'error' });
+      }
     })();
     return () => {
       cancelled = true;
@@ -535,7 +540,7 @@ function UpdateCard() {
     state.kind === 'up-to-date' ? 'You have the latest version.' :
     state.kind === 'available' ? `v${state.info.version} · ${prettyBytes(state.info.apkSize)}` :
     state.kind === 'downloading' ? `Downloading… ${state.pct}%` :
-    state.kind === 'error' ? 'Could not check for updates.' :
+    state.kind === 'error' ? 'Could not reach GitHub — check your connection and tap to retry.' :
     'Tap to check for updates.';
 
   const cta =

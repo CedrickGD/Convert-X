@@ -2,11 +2,20 @@
  * Self-update from GitHub Releases — for sideloaded builds.
  *
  * Flow:
- *   1. checkForUpdate() — fetch /releases/latest, semver-compare the tag
- *      against pkg.version, pick an ABI-matched APK asset.
+ *   1. checkForUpdate() — list releases, semver-compare the newest Android
+ *      tag against pkg.version, pick an ABI-matched APK asset.
  *   2. downloadAndInstall(info) — download the APK to cache, then hand
  *      off to the Android system installer via ACTION_VIEW + FileProvider
  *      (see modules/convert-x-ffmpeg installApk).
+ *
+ * Two sources for step 1. The GitHub REST API is rich (asset sizes, notes)
+ * but rate-limited to 60 requests/hour PER IP, and a phone on carrier NAT
+ * shares its IP with thousands of users — so it answers HTTP 403 much of
+ * the time, which used to read as "You have the latest version". The
+ * releases Atom feed and the asset download URLs are ordinary web
+ * endpoints with no such limit; they are the fallback (and a HEAD on the
+ * asset URL doubles as the ABI check). Only when BOTH fail does the check
+ * throw, so the card can say "could not check" instead of lying.
  *
  * Idempotent: in-flight checks/downloads are de-duped so double-taps are
  * harmless.
@@ -22,6 +31,9 @@ import pkg from '../../package.json';
 // release LIST and pick the newest one that has an ABI-matched APK asset.
 const RELEASES_API =
   'https://api.github.com/repos/CedrickGD/Convert-X/releases?per_page=30';
+const RELEASES_ATOM = 'https://github.com/CedrickGD/Convert-X/releases.atom';
+const RELEASE_DOWNLOAD_BASE = 'https://github.com/CedrickGD/Convert-X/releases/download';
+const FETCH_TIMEOUT_MS = 15000;
 
 export type UpdateInfo = {
   version: string;
@@ -87,48 +99,151 @@ function pickAssetForAbi(assets: GhAsset[], abis: string[]): GhAsset | null {
 let inflightCheck: Promise<UpdateInfo | null> | null = null;
 let inflightDownload: Promise<void> | null = null;
 
+async function fetchWithTimeout(url: string, init: RequestInit = {}): Promise<Response> {
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), FETCH_TIMEOUT_MS);
+  try {
+    return await fetch(url, { ...init, signal: controller.signal });
+  } finally {
+    clearTimeout(timeout);
+  }
+}
+
+/** Source 1: the REST API (asset sizes + notes; rate-limited per IP). */
+async function checkViaApi(abis: string[]): Promise<UpdateInfo | null> {
+  const res = await fetchWithTimeout(RELEASES_API, {
+    headers: {
+      Accept: 'application/vnd.github+json',
+      'X-GitHub-Api-Version': '2022-11-28',
+    },
+  });
+  if (!res.ok) throw new Error(`GitHub API HTTP ${res.status}`);
+  const rels = (await res.json()) as GhRelease[];
+
+  // The list is newest-first. Take the newest published release that has an
+  // APK matching this device's ABI — this skips desktop (MSI) releases that
+  // share the same repo.
+  let rel: GhRelease | null = null;
+  let asset: GhAsset | null = null;
+  for (const r of rels) {
+    if (r.draft || r.prerelease) continue;
+    const a = pickAssetForAbi(r.assets, abis);
+    if (a) {
+      rel = r;
+      asset = a;
+      break;
+    }
+  }
+  if (!rel || !asset) return null;
+
+  const latest = rel.tag_name.replace(/^v/, '');
+  if (cmpSemver(latest, pkg.version) <= 0) return null;
+
+  return {
+    version: latest,
+    releaseNotes: rel.body ?? '',
+    apkUrl: asset.browser_download_url,
+    apkSize: asset.size,
+    publishedAt: rel.published_at,
+  };
+}
+
+function decodeEntities(s: string): string {
+  return s
+    .replace(/&lt;/g, '<')
+    .replace(/&gt;/g, '>')
+    .replace(/&quot;/g, '"')
+    .replace(/&#39;/g, "'")
+    .replace(/&amp;/g, '&');
+}
+
+/** Rough HTML → text for the feed's release notes. */
+function htmlToText(html: string): string {
+  return decodeEntities(
+    html
+      .replace(/<br\s*\/?>/gi, '\n')
+      .replace(/<\/(p|li|h\d|tr)>/gi, '\n')
+      .replace(/<[^>]+>/g, '')
+  )
+    .replace(/\n{3,}/g, '\n\n')
+    .trim();
+}
+
+/**
+ * Source 2: the releases Atom feed + a HEAD on the asset URL. No API, no
+ * rate limit. Entries are newest-first; a tag with a `-` suffix is a
+ * prerelease by this repo's convention (android-release.yml marks exactly
+ * those as prerelease), desktop tags are `desktop-v*`, so plain `vX.Y.Z`
+ * is an Android release. The HEAD confirms the ABI asset exists and
+ * yields its size for the integrity check.
+ */
+async function checkViaFeed(abis: string[]): Promise<UpdateInfo | null> {
+  const res = await fetchWithTimeout(RELEASES_ATOM, {
+    headers: { Accept: 'application/atom+xml, application/xml, text/xml' },
+  });
+  if (!res.ok) throw new Error(`Releases feed HTTP ${res.status}`);
+  const xml = await res.text();
+  const entries = xml.match(/<entry>[\s\S]*?<\/entry>/g) ?? [];
+  if (entries.length === 0) throw new Error('Releases feed carried no entries');
+
+  for (const entry of entries) {
+    const tag = entry.match(/\/releases\/tag\/([^"<]+)"/)?.[1];
+    if (!tag || !/^v\d+\.\d+\.\d+$/.test(tag)) continue;
+    const latest = tag.slice(1);
+    // Newest Android release first: if it isn't newer, nothing is.
+    if (cmpSemver(latest, pkg.version) <= 0) return null;
+
+    for (const abi of abis) {
+      for (const name of ASSETS_FOR_ABI[abi] ?? []) {
+        const apkUrl = `${RELEASE_DOWNLOAD_BASE}/${tag}/${name}`;
+        try {
+          const head = await fetchWithTimeout(apkUrl, { method: 'HEAD' });
+          if (!head.ok) continue;
+          const size = parseInt(head.headers.get('content-length') ?? '0', 10) || 0;
+          return {
+            version: latest,
+            releaseNotes: htmlToText(
+              entry.match(/<content[^>]*>([\s\S]*?)<\/content>/)?.[1] ?? ''
+            ),
+            apkUrl,
+            apkSize: size,
+            publishedAt: entry.match(/<updated>([^<]+)<\/updated>/)?.[1] ?? '',
+          };
+        } catch {
+          // network hiccup on this asset — try the next candidate
+        }
+      }
+    }
+    // A newer Android release without an APK for this ABI (e.g. a 32-bit
+    // phone looking at an arm64-only release): keep looking at older ones.
+  }
+  return null;
+}
+
+/**
+ * Resolve the newest installable release for this device, or null when
+ * the installed build is current. Throws when GitHub could not be reached
+ * through either source — callers must show "could not check", never
+ * "up to date", for that.
+ */
 export async function checkForUpdate(): Promise<UpdateInfo | null> {
   if (inflightCheck) return inflightCheck;
   inflightCheck = (async () => {
     try {
-      const res = await fetch(RELEASES_API, {
-        headers: {
-          Accept: 'application/vnd.github+json',
-          'X-GitHub-Api-Version': '2022-11-28',
-        },
-      });
-      if (!res.ok) return null;
-      const rels = (await res.json()) as GhRelease[];
-
       const abis = await getSupportedAbis();
-      // The list is newest-first. Take the newest published release that has an
-      // APK matching this device's ABI — this skips desktop (MSI) releases that
-      // share the same repo.
-      let rel: GhRelease | null = null;
-      let asset: GhAsset | null = null;
-      for (const r of rels) {
-        if (r.draft || r.prerelease) continue;
-        const a = pickAssetForAbi(r.assets, abis);
-        if (a) {
-          rel = r;
-          asset = a;
-          break;
-        }
+      let apiError: unknown = null;
+      try {
+        return await checkViaApi(abis);
+      } catch (e) {
+        apiError = e;
       }
-      if (!rel || !asset) return null;
-
-      const latest = rel.tag_name.replace(/^v/, '');
-      if (cmpSemver(latest, pkg.version) <= 0) return null;
-
-      return {
-        version: latest,
-        releaseNotes: rel.body ?? '',
-        apkUrl: asset.browser_download_url,
-        apkSize: asset.size,
-        publishedAt: rel.published_at,
-      };
-    } catch {
-      return null;
+      try {
+        return await checkViaFeed(abis);
+      } catch (feedError) {
+        const a = apiError instanceof Error ? apiError.message : String(apiError);
+        const f = feedError instanceof Error ? feedError.message : String(feedError);
+        throw new Error(`Could not reach GitHub (${a}; ${f})`);
+      }
     } finally {
       // Allow re-check on next user tap; result is fresh after this turn.
       inflightCheck = null;
