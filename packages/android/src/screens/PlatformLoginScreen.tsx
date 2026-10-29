@@ -57,6 +57,10 @@ export function PlatformLoginScreen() {
     CookieManager.clearAll(true)
       .catch(() => {})
       .finally(() => {
+        // The Instagram transport shares this jar — tell it the jar is
+        // empty now, or the next logged-in request would trust a jar
+        // this wipe just emptied and read as "login expired".
+        resetInstagramTransport();
         if (!active) return;
         setReady(true);
         if (platform) setStatus(`Sign in to ${platform.label}.`);

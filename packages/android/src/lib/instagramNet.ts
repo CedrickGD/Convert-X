@@ -75,15 +75,19 @@ let transportEpoch = 0;
 export function instagramTransportEpoch(): number {
   return transportEpoch;
 }
-/** Set once the native bridge rejected with WEBVIEW_UNAVAILABLE — no
- *  point retrying it on every single request afterwards. */
-let bridgeBroken = false;
+/** After the native bridge rejected with WEBVIEW_UNAVAILABLE, skip it
+ *  until this time — a WebView mid-update comes back within minutes, so a
+ *  permanent latch would strand the user on the bot-fingerprinted path
+ *  for the rest of the process. */
+let bridgeUnavailableUntil = 0;
+const BRIDGE_RETRY_MS = 2 * 60 * 1000;
 
 /** Forget what we believe about the WebView jar. Call after cookies.txt
  *  changes outside this module (login, import, logout). */
 export function resetInstagramTransport(): void {
   jarState = null;
   transportEpoch += 1;
+  bridgeUnavailableUntil = 0;
 }
 
 function fingerprintOf(cookies: CookieRecord[]): string {
@@ -225,9 +229,17 @@ export async function igRequest(url: string, opts: IgRequestOptions): Promise<Ig
     throw new Error('No Instagram login on this device — sign in under Credits → Platform logins.');
   }
 
-  if (!bridgeBroken && typeof Downloader.webFetch === 'function') {
+  if (Date.now() >= bridgeUnavailableUntil && typeof Downloader.webFetch === 'function') {
     const fingerprint = opts.mode === 'session' ? fingerprintOf(sessionCookies) : '';
     const jarMatches = jarState?.mode === opts.mode && jarState.fingerprint === fingerprint;
+    // The native side applies a 'replace' the moment the request is
+    // dequeued, whether or not the fetch afterwards succeeds — so record
+    // the jar's new state up front, and forget it on failure so the next
+    // request re-syncs instead of trusting a jar we never confirmed.
+    if (!jarMatches) {
+      jarState = { mode: opts.mode, fingerprint };
+      transportEpoch += 1;
+    }
     try {
       const result = await Downloader.webFetch({
         url,
@@ -240,12 +252,16 @@ export async function igRequest(url: string, opts: IgRequestOptions): Promise<Ig
         cookieMode: jarMatches ? 'keep' : 'replace',
         cookies: jarMatches ? [] : sessionCookies,
       });
-      if (!jarMatches) {
-        jarState = { mode: opts.mode, fingerprint };
-        transportEpoch += 1;
-      }
-      if (opts.mode === 'session' && result.cookies) {
-        await writeBackSession(result.cookies, sessionCookies);
+      if (opts.mode === 'session') {
+        const jar = result.cookies ? parseJar(result.cookies) : {};
+        if (!jar.sessionid) {
+          // Something outside this module emptied the WebView jar (the
+          // login screen's clearAll, or Instagram revoking the session):
+          // re-install cookies.txt on the next logged-in request.
+          jarState = null;
+        } else if (result.cookies) {
+          await writeBackSession(result.cookies, sessionCookies);
+        }
       }
       const headers: Record<string, string> = {};
       for (const [k, v] of Object.entries(result.headers ?? {})) headers[k.toLowerCase()] = v;
@@ -259,8 +275,9 @@ export async function igRequest(url: string, opts: IgRequestOptions): Promise<Ig
         cookies: result.cookies || undefined,
       };
     } catch (e) {
+      jarState = null;
       if (!isBridgeUnavailable(e)) throw e;
-      bridgeBroken = true;
+      bridgeUnavailableUntil = Date.now() + BRIDGE_RETRY_MS;
       console.warn(
         '[instagramNet] WebView bridge unavailable, falling back to fetch:',
         e instanceof Error ? e.message : String(e)

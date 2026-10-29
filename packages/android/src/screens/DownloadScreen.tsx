@@ -121,6 +121,8 @@ export function DownloadScreen() {
         toast(
           result.status === 'ALREADY_UP_TO_DATE'
             ? `Engine already up to date${version}`
+            : result.status === 'DEFERRED'
+            ? 'Engine downloaded — installs when the current download finishes'
             : `Engine updated${version} — tap Find to retry`,
           result.status === 'ALREADY_UP_TO_DATE' ? 'info' : 'success'
         );

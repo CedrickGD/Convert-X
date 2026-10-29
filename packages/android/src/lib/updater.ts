@@ -186,19 +186,30 @@ async function checkViaFeed(abis: string[]): Promise<UpdateInfo | null> {
   const entries = xml.match(/<entry>[\s\S]*?<\/entry>/g) ?? [];
   if (entries.length === 0) throw new Error('Releases feed carried no entries');
 
+  // Only a definite 404 means "this release has no APK for my ABI". A
+  // timeout or a blocked CDN is NOT "up to date" — remember it and, if a
+  // newer release was seen but none of its assets could be confirmed,
+  // report the check as failed rather than lying.
+  let transportError: unknown = null;
+  let sawNewer = false;
   for (const entry of entries) {
     const tag = entry.match(/\/releases\/tag\/([^"<]+)"/)?.[1];
     if (!tag || !/^v\d+\.\d+\.\d+$/.test(tag)) continue;
     const latest = tag.slice(1);
     // Newest Android release first: if it isn't newer, nothing is.
-    if (cmpSemver(latest, pkg.version) <= 0) return null;
+    if (cmpSemver(latest, pkg.version) <= 0) break;
+    sawNewer = true;
 
     for (const abi of abis) {
       for (const name of ASSETS_FOR_ABI[abi] ?? []) {
         const apkUrl = `${RELEASE_DOWNLOAD_BASE}/${tag}/${name}`;
         try {
           const head = await fetchWithTimeout(apkUrl, { method: 'HEAD' });
-          if (!head.ok) continue;
+          if (head.status === 404) continue;
+          if (!head.ok) {
+            transportError = new Error(`HEAD ${name} → HTTP ${head.status}`);
+            continue;
+          }
           const size = parseInt(head.headers.get('content-length') ?? '0', 10) || 0;
           return {
             version: latest,
@@ -209,13 +220,16 @@ async function checkViaFeed(abis: string[]): Promise<UpdateInfo | null> {
             apkSize: size,
             publishedAt: entry.match(/<updated>([^<]+)<\/updated>/)?.[1] ?? '',
           };
-        } catch {
-          // network hiccup on this asset — try the next candidate
+        } catch (e) {
+          transportError = e;
         }
       }
     }
     // A newer Android release without an APK for this ABI (e.g. a 32-bit
     // phone looking at an arm64-only release): keep looking at older ones.
+  }
+  if (sawNewer && transportError) {
+    throw transportError instanceof Error ? transportError : new Error(String(transportError));
   }
   return null;
 }

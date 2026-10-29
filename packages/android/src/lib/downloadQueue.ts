@@ -23,10 +23,12 @@ import {
   instagramErrorKind,
   instagramMessage,
   instagramProfileToStoriesUrl,
+  isInstagramShareUrl,
   isInstagramStoryUrl,
   probeInstagramPost,
   probeInstagramPostAnonymous,
   probeInstagramStory,
+  resolveInstagramShareUrl,
   type InstagramErrorKind,
 } from './instagramStories';
 import { isTwitterStatusUrl, probeTwitterAnonymous } from './twitterScraper';
@@ -144,7 +146,14 @@ export async function updateYtDlp(opts: { force?: boolean } = {}): Promise<Engin
     try {
       await Downloader.init();
       const result = await Downloader.updateYtDlp({ force: !!opts.force });
-      if (result?.status === 'DONE' || result?.status === 'ALREADY_UP_TO_DATE') {
+      // DEFERRED: verified and staged, installs the moment no yt-dlp
+      // process is running (the native side swaps it in before the next
+      // probe/download) — a successful check as far as cadence goes.
+      if (
+        result?.status === 'DONE' ||
+        result?.status === 'ALREADY_UP_TO_DATE' ||
+        result?.status === 'DEFERRED'
+      ) {
         await AsyncStorage.setItem(YTDLP_LAST_CHECK_KEY, String(Date.now())).catch(() => {});
       }
       return {
@@ -324,7 +333,19 @@ export async function probeUrl(
 
   // Instagram posts (/p/, /reel/, /tv/) — a chain of independent paths,
   // most capable first, so one Instagram change never takes everything
-  // down at once. See probeInstagramPostChain.
+  // down at once. See probeInstagramPostChain. Share-sheet links
+  // (instagram.com/share/…) carry no shortcode; resolve the redirect
+  // first and run the chain on the real post URL.
+  if (isInstagramShareUrl(url)) {
+    try {
+      const resolved = await resolveInstagramShareUrl(url);
+      if (resolved) return probeInstagramPostChain(resolved, resolvedOpts);
+    } catch (e) {
+      logError('probe', e, `share link: ${url}`);
+    }
+    // Not a post (or the redirect failed) — yt-dlp follows redirects too.
+    return probeWithYtDlp(url, resolvedOpts);
+  }
   if (isInstagramPostUrl(url)) {
     return probeInstagramPostChain(url, resolvedOpts);
   }
@@ -349,60 +370,87 @@ function isAuthFailure(e: unknown): boolean {
  *     and the one surface Instagram has never gated by client.
  *  4. yt-dlp with cookies — videos only, but a maintained extractor.
  * All four run through transports Instagram accepts (1–3 via the hidden
- * WebView). When every path fails, the most actionable classified error
- * wins: "session expired" beats "yt-dlp exited 1".
+ * WebView). When every path fails, composeInstagramError picks the one
+ * error worth showing: "session expired" beats "yt-dlp exited 1".
  */
+type ChainStep = 'api' | 'graphql' | 'embed' | 'yt-dlp';
+type ChainFailure = { step: ChainStep; error: unknown };
+
 async function probeInstagramPostChain(
   url: string,
   opts: { cookies?: string; spotifyClientId?: string; spotifyClientSecret?: string }
 ): Promise<ProbeResult> {
   const loggedIn = await hasLoginCookiesForDomain('instagram.com', ['sessionid']);
-  const failures: unknown[] = [];
-  const attempt = async (step: string, fn: () => Promise<ProbeResult>) => {
+  const failures: ChainFailure[] = [];
+  const attempt = async (step: ChainStep, fn: () => Promise<ProbeResult>) => {
     try {
       return await fn();
     } catch (e) {
-      failures.push(e);
-      logError('probe', e, `${step}: ${url}`);
+      failures.push({ step, error: e });
+      logError('probe', e, `instagram ${step}: ${url}`);
       return null;
     }
   };
 
   if (loggedIn) {
-    const viaApi = await attempt('instagram api', () => probeInstagramPost(url));
+    const viaApi = await attempt('api', () => probeInstagramPost(url));
     if (viaApi) return viaApi;
   }
-  const viaGraphql = await attempt('instagram graphql', () => probeInstagramPostAnonymous(url));
+  const viaGraphql = await attempt('graphql', () => probeInstagramPostAnonymous(url));
   if (viaGraphql) return viaGraphql;
-  const viaEmbed = await attempt('instagram embed', () => probeInstagramEmbed(url));
+  const viaEmbed = await attempt('embed', () => probeInstagramEmbed(url));
   if (viaEmbed) return viaEmbed;
   try {
     return await probeWithYtDlp(url, opts);
   } catch (e) {
-    failures.push(e);
-    logError('probe', e, `yt-dlp: ${url}`);
+    failures.push({ step: 'yt-dlp', error: e });
+    logError('probe', e, `instagram yt-dlp: ${url}`);
     throw composeInstagramError(failures, loggedIn);
   }
 }
 
-/** Pick the one error worth showing out of a failed Instagram chain. */
-function composeInstagramError(failures: unknown[], loggedIn: boolean): Error {
+/**
+ * Pick the one error worth showing out of a failed Instagram chain.
+ *
+ * A session-level refusal (checkpoint, expired) from any step wins: no
+ * other path can fix it. For a logged-in user the cookied API is the
+ * authoritative path — its verdict (or its own failure text) outranks
+ * what the ANONYMOUS steps say, which would otherwise send a logged-in
+ * user to the login screen ("needs a login") for a post they can see.
+ */
+function composeInstagramError(failures: ChainFailure[], loggedIn: boolean): Error {
+  const kindOf = (f: ChainFailure) => instagramErrorKind(f.error);
+  const toError = (f: ChainFailure) =>
+    f.error instanceof Error ? f.error : new Error(String(f.error ?? 'Instagram probe failed.'));
   const kinds = new Set<InstagramErrorKind>();
   for (const f of failures) {
-    const k = instagramErrorKind(f);
+    const k = kindOf(f);
     if (k && k !== 'other') kinds.add(k);
   }
-  const order: Array<Exclude<InstagramErrorKind, 'other'>> = loggedIn
-    ? ['checkpoint', 'expired', 'rate_limited', 'login_required', 'not_found']
-    : ['checkpoint', 'rate_limited', 'login_required', 'expired', 'not_found'];
+  if (kinds.has('checkpoint')) return new Error(instagramMessage('checkpoint'));
+  if (kinds.has('expired')) return new Error(instagramMessage('expired'));
+
+  if (loggedIn) {
+    const api = failures.find((f) => f.step === 'api');
+    if (api) {
+      const k = kindOf(api);
+      if (k && k !== 'other') return new Error(instagramMessage(k));
+      return toError(api);
+    }
+  }
+
+  const order: Array<Exclude<InstagramErrorKind, 'other'>> = [
+    'rate_limited',
+    'login_required',
+    'not_found',
+  ];
   for (const k of order) {
     if (kinds.has(k)) return new Error(instagramMessage(k));
   }
   // Nothing classified — the last failure (yt-dlp) carries the most
   // detail (stderr tail); fall back to the first otherwise.
   const pick = failures[failures.length - 1] ?? failures[0];
-  if (pick instanceof Error) return pick;
-  return new Error(pick ? String(pick) : 'Instagram probe failed.');
+  return pick ? toError(pick) : new Error('Instagram probe failed.');
 }
 
 async function probeWithYtDlp(

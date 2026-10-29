@@ -43,7 +43,11 @@ const LOGGED_OUT_POST_DOC_ID = '27130156389949648';
 const LOGGED_OUT_POST_QUERY = 'PolarisLoggedOutDesktopWWWPostRootContentQuery';
 
 const STORY_RE = /instagram\.com\/stories\/([^/?#]+)(?:\/(\d+))?/;
-const POST_RE = /instagram\.com\/(?:[^/?#]+\/)?(?:p|reels?|tv)\/([A-Za-z0-9_-]+)/;
+// Same constraints as yt-dlp's InstagramIE: a `share/…` prefix is a
+// share-sheet redirect (no shortcode in it), `reels/audio/…` is an audio
+// page — neither is a post.
+const POST_RE = /instagram\.com\/(?:(?!share\/)[^/?#]+\/)?(?:p|tv|reels?(?!\/audio\/))\/([A-Za-z0-9_-]+)/;
+const SHARE_RE = /^https?:\/\/(?:www\.)?instagram\.com\/share\/[^?#]+/i;
 
 export function isInstagramStoryUrl(url: string): boolean {
   return STORY_RE.test(url);
@@ -316,6 +320,27 @@ export function shortcodeToPk(shortcode: string): string {
 export function instagramPostShortcode(url: string): string | null {
   const m = url.match(POST_RE);
   return m ? m[1] : null;
+}
+
+/** instagram.com/share/<kind>/<token> — the share sheet's opaque link
+ *  that redirects to the real post. */
+export function isInstagramShareUrl(url: string): boolean {
+  return SHARE_RE.test(url.trim());
+}
+
+/**
+ * Follow a share link to the post it points at (through the browser
+ * bridge, anonymously). Returns the canonical post URL, or null when the
+ * redirect didn't land on a post.
+ */
+export async function resolveInstagramShareUrl(url: string): Promise<string | null> {
+  const resp = await igRequest(url.trim(), {
+    mode: 'anonymous',
+    headers: { Accept: 'text/html,application/xhtml+xml' },
+    timeoutMs: 15000,
+  });
+  const final = resp.url || '';
+  return instagramPostShortcode(final) ? final.split('?')[0] : null;
 }
 
 // ── User id resolution (stories) ────────────────────────────────────────
@@ -605,10 +630,19 @@ export async function probeInstagramPostAnonymous(url: string): Promise<ProbeRes
     referrer: postUrl,
   });
 
-  const media = (data.data as Record<string, unknown> | undefined)?.xig_polaris_media as
-    | Record<string, unknown>
-    | null
-    | undefined;
+  const payload = data.data as Record<string, unknown> | null | undefined;
+  const errors = Array.isArray(data.errors) ? (data.errors as Array<Record<string, unknown>>) : [];
+  const media = payload?.xig_polaris_media as Record<string, unknown> | null | undefined;
+  if (!payload || (media === undefined && errors.length > 0)) {
+    // A rotated query id or a Relay-level error is NOT a login wall —
+    // keep it 'other' so the embed / yt-dlp fallbacks and the final error
+    // don't send the user to the login screen for a public post.
+    const first = typeof errors[0]?.message === 'string' ? (errors[0].message as string) : '';
+    throw new InstagramError(
+      'other',
+      `Instagram GraphQL query failed${first ? `: ${first.slice(0, 160)}` : ''}`
+    );
+  }
   if (media === null) {
     // The query resolves but the media node is null: removed, or a
     // private post whose id the viewer may not see. Long shortcodes

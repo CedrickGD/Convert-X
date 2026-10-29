@@ -643,17 +643,26 @@ function YtDlpUpdateCard() {
       // Tell the user what actually happened — the old card said
       // "Updated." even when the library skipped the download.
       const version = result.version ? ` (${result.version})` : '';
+      const latest = result.latest ? ` (${result.latest})` : '';
       setState({
         kind: 'success',
         message:
           result.status === 'ALREADY_UP_TO_DATE'
             ? `Already up to date${version}.`
+            : result.status === 'DEFERRED'
+            ? `Downloaded${latest} — installs as soon as the current download finishes.`
             : `Updated${version}. Try the failing URL again.`,
       });
     } else {
+      const raw = result.error ?? 'Update failed';
+      // Network errors get the actionable hint; anything else is shown as
+      // reported, or a real defect would read as "check your connection".
+      const network = /connect|timeout|timed out|unknown host|unreachable|network|SSL|HTTP 5/i.test(raw);
       setState({
         kind: 'error',
-        message: `Could not reach GitHub — check your connection and try again. (${result.error ?? 'Update failed'})`,
+        message: network
+          ? `Could not reach GitHub — check your connection and try again. (${raw})`
+          : `Update failed: ${raw}`,
       });
     }
   }, [state.kind]);

@@ -98,6 +98,27 @@ requests/hour per IP; on carrier NAT that is HTTP 403 much of the time.
   and ONE retry when a newer build was actually installed. Credits engine
   card shows the installed yt-dlp version and says it checks daily.
 
+**Found on the emulator / in the adversarial review (fixed before the final tag):**
+Android's `java.util.zip.ZipFile` cannot open the shebang-prefixed zipapp
+(the updater rejected every download as "not a loadable zipapp" and the
+version reader returned nothing) — now read with `ZipInputStream` from the
+first `PK`. The engine is never swapped under a running yt-dlp
+process (lazy imports would read the new archive at old offsets, and the
+corruption recovery would then wipe it): probe/download count processes,
+an update that lands mid-run is parked as `yt-dlp.pending` (status
+`DEFERRED`) and installed by `beginEngineProcess()` before the next spawn.
+`instagramNet` records the jar state BEFORE the native call (the Kotlin
+side replaces the jar at dequeue even if the fetch then fails), clears it on
+failure or when a logged-in response comes back without `sessionid`, and
+the bridge-unavailable latch is a 2-minute back-off instead of permanent;
+`PlatformLoginScreen` resets the transport after its `clearAll`. Share-sheet
+links (`instagram.com/share/…`) are resolved through the bridge first;
+`reels/audio/` is not a post. `composeInstagramError` weights the cookied
+API's verdict above the anonymous steps for a logged-in user. The app
+updater's feed fallback throws on transport errors instead of reporting "up
+to date". GraphQL `data: null` / Relay errors classify as `other`, not
+`login_required`.
+
 Verification: `npx tsc --noEmit` clean; `:convert-x-downloader:compileDebugKotlin`
 compiles locally (needs `android/local.properties` with
 `sdk.dir=C:/Users/cedri/AppData/Local/Android/Sdk` — forward slashes, the file

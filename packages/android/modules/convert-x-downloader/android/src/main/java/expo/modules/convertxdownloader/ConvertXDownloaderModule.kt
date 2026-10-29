@@ -25,8 +25,10 @@ import java.io.IOException
 import java.net.HttpURLConnection
 import java.net.URL
 import java.security.MessageDigest
+import java.io.BufferedInputStream
 import java.util.concurrent.ConcurrentHashMap
-import java.util.zip.ZipFile
+import java.util.concurrent.atomic.AtomicInteger
+import java.util.zip.ZipInputStream
 
 /**
  * Convert-X yt-dlp bridge.
@@ -232,13 +234,18 @@ class ConvertXDownloaderModule : Module() {
           // python's zipimport rejects. Catch the specific error, wipe
           // the cache so the bundled zip gets re-extracted from the
           // `.zip.so` payloads in the APK, and retry once.
+          beginEngineProcess()
           val response: com.yausername.youtubedl_android.YoutubeDLResponse = try {
-            YoutubeDL.getInstance().execute(request)
-          } catch (first: Throwable) {
-            if (!looksCorrupted(first)) throw first
-            resetCacheSync()
-            ensureInitializedSync()
-            YoutubeDL.getInstance().execute(request)
+            try {
+              YoutubeDL.getInstance().execute(request)
+            } catch (first: Throwable) {
+              if (!looksCorrupted(first)) throw first
+              resetCacheSync()
+              ensureInitializedSync()
+              YoutubeDL.getInstance().execute(request)
+            }
+          } finally {
+            activeProcesses.decrementAndGet()
           }
           val out = response.out.trim()
           val lines = out.lines().filter { it.isNotBlank() && it.startsWith("{") }
@@ -371,13 +378,18 @@ class ConvertXDownloaderModule : Module() {
             )
           }
 
+          beginEngineProcess()
           val response = try {
-            YoutubeDL.getInstance().execute(request, processId, progressCb)
-          } catch (first: Throwable) {
-            if (!looksCorrupted(first)) throw first
-            resetCacheSync()
-            ensureInitializedSync()
-            YoutubeDL.getInstance().execute(request, processId, progressCb)
+            try {
+              YoutubeDL.getInstance().execute(request, processId, progressCb)
+            } catch (first: Throwable) {
+              if (!looksCorrupted(first)) throw first
+              resetCacheSync()
+              ensureInitializedSync()
+              YoutubeDL.getInstance().execute(request, processId, progressCb)
+            }
+          } finally {
+            activeProcesses.decrementAndGet()
           }
           sessions.remove(sessionId)
 
@@ -610,6 +622,7 @@ class ConvertXDownloaderModule : Module() {
       .remove("dlpVersion")
       .remove("dlpVersionName")
       .remove("convertxDlpUpdatedAt")
+      .remove("convertxDlpPendingTag")
       .commit()
   }
 
@@ -619,6 +632,71 @@ class ConvertXDownloaderModule : Module() {
   private val PREF_DLP_VERSION = "dlpVersion"
   private val PREF_DLP_VERSION_NAME = "dlpVersionName"
   private val PREF_UPDATED_AT = "convertxDlpUpdatedAt"
+  private val PREF_PENDING_TAG = "convertxDlpPendingTag"
+
+  // ── Engine process accounting ──────────────────────────────────────────
+  // yt-dlp is a zipapp Python imports lazily while it runs: replacing the
+  // file under a live process makes its later imports read the NEW
+  // archive at the OLD offsets ("bad local file header"), which the
+  // corruption recovery then answers by wiping the freshly installed
+  // engine. So the swap only happens while no yt-dlp process is running;
+  // otherwise the verified download waits as `yt-dlp.pending` and is
+  // promoted right before the next probe/download starts.
+  private val activeProcesses = AtomicInteger(0)
+  private val engineLock = Any()
+
+  /** Promote a staged engine if nothing is running, then count this
+   *  process in — both under one lock so an update can't slip its rename
+   *  in between the check and the spawn. */
+  private fun beginEngineProcess() {
+    synchronized(engineLock) {
+      appContext.reactContext?.let { ctx ->
+        try {
+          promotePendingYtDlp(ctx)
+        } catch (_: Throwable) {
+        }
+      }
+      activeProcesses.incrementAndGet()
+    }
+  }
+
+  private fun pendingYtDlp(ctx: android.content.Context): File = File(ytDlpDir(ctx), "yt-dlp.pending")
+
+  /** Atomically move a verified zipapp into place and record its tag. */
+  private fun installYtDlpFile(ctx: android.content.Context, staged: File, tag: String) {
+    val binary = ytDlpBinary(ctx)
+    if (!staged.renameTo(binary)) {
+      // Fallback for exotic filesystems where rename over an existing
+      // file fails: delete + rename (not atomic, but the bundled copy is
+      // restored by init_ytdlp on the next run if this is torn).
+      binary.delete()
+      if (!staged.renameTo(binary)) throw IOException("Could not install the new yt-dlp")
+    }
+    ctx.getSharedPreferences(YTDLP_PREFS, android.content.Context.MODE_PRIVATE).edit()
+      .putString(PREF_DLP_VERSION, tag)
+      .putString(PREF_DLP_VERSION_NAME, tag)
+      .putLong(PREF_UPDATED_AT, System.currentTimeMillis())
+      .remove(PREF_PENDING_TAG)
+      .commit()
+  }
+
+  /** Install a deferred update, if one is waiting and no process runs.
+   *  Caller holds engineLock. */
+  private fun promotePendingYtDlp(ctx: android.content.Context) {
+    val pending = pendingYtDlp(ctx)
+    if (!pending.isFile) return
+    if (activeProcesses.get() > 0) return
+    val prefs = ctx.getSharedPreferences(YTDLP_PREFS, android.content.Context.MODE_PRIVATE)
+    if (!zipLooksLoadable(pending)) {
+      pending.delete()
+      prefs.edit().remove(PREF_PENDING_TAG).commit()
+      return
+    }
+    val tag = prefs.getString(PREF_PENDING_TAG, null)
+      ?: readYtDlpVersionFromZip(pending)
+      ?: "unknown"
+    installYtDlpFile(ctx, pending, tag)
+  }
   private val YTDLP_LATEST_URL = "https://github.com/yt-dlp/yt-dlp/releases/latest"
   private val YTDLP_DOWNLOAD_BASE = "https://github.com/yt-dlp/yt-dlp/releases/download"
   private val YTDLP_TAG_RE = Regex("""^\d{4}\.\d{2}\.\d{2}(?:\.\d+)?$""")
@@ -629,29 +707,93 @@ class ConvertXDownloaderModule : Module() {
 
   private fun ytDlpBinary(ctx: android.content.Context): File = File(ytDlpDir(ctx), "yt-dlp")
 
-  /** Version string baked into the zipapp (yt_dlp/version.py). Null when
-   *  the file is missing or unreadable. */
-  private fun readYtDlpVersionFromZip(file: File): String? {
-    if (!file.isFile || file.length() == 0L) return null
+  /**
+   * Open the yt-dlp zipapp as a sequential zip stream.
+   *
+   * The release asset is `#!/usr/bin/env python3\n` followed by a zip.
+   * Python's zipimport copes with that prefix (it finds the end-of-
+   * central-directory record from the back), but Android's
+   * java.util.zip.ZipFile does not — on-device it reports a shebang-
+   * prefixed zipapp as unreadable, which made the updater reject every
+   * downloaded engine ("not a loadable zipapp") and the version reader
+   * return nothing. ZipInputStream walks local headers from the first
+   * `PK\x03\x04` signature and needs no central-directory offsets, so
+   * skip the prefix and read it that way.
+   */
+  private fun openZipapp(file: File): ZipInputStream? {
+    if (!file.isFile || file.length() < 1024) return null
+    val input = BufferedInputStream(file.inputStream(), 64 * 1024)
+    // The shebang is one short line; look for the local-header signature
+    // within the first 4 KB and position the stream on it.
+    input.mark(4096)
+    val head = ByteArray(4096)
+    var n = 0
+    while (n < head.size) {
+      val r = input.read(head, n, head.size - n)
+      if (r < 0) break
+      n += r
+    }
+    var offset = -1
+    var i = 0
+    while (i + 3 < n) {
+      if (head[i] == 0x50.toByte() && head[i + 1] == 0x4B.toByte() &&
+          head[i + 2] == 0x03.toByte() && head[i + 3] == 0x04.toByte()) {
+        offset = i
+        break
+      }
+      i += 1
+    }
+    if (offset < 0) {
+      input.close()
+      return null
+    }
+    input.reset()
+    var skipped = 0L
+    while (skipped < offset) {
+      val s = input.skip(offset - skipped)
+      if (s <= 0) break
+      skipped += s
+    }
+    return ZipInputStream(input)
+  }
+
+  /** Read one entry's text out of the zipapp, or null when absent. */
+  private fun readZipappEntry(file: File, name: String): String? {
     return try {
-      ZipFile(file).use { zip ->
-        val entry = zip.getEntry("yt_dlp/version.py") ?: return null
-        val text = zip.getInputStream(entry).bufferedReader().use { it.readText() }
-        Regex("""__version__\s*=\s*['"]([^'"]+)['"]""").find(text)?.groupValues?.get(1)
+      openZipapp(file)?.use { zip ->
+        while (true) {
+          val entry = zip.nextEntry ?: break
+          if (entry.name == name) {
+            return zip.bufferedReader().readText()
+          }
+          zip.closeEntry()
+        }
+        null
       }
     } catch (_: Throwable) {
       null
     }
   }
 
-  /** Does python's zipimport stand a chance with this file? Opens the
-   *  central directory and checks the package is there. */
+  /** Version string baked into the zipapp (yt_dlp/version.py). Null when
+   *  the file is missing or unreadable. */
+  private fun readYtDlpVersionFromZip(file: File): String? {
+    val text = readZipappEntry(file, "yt_dlp/version.py") ?: return null
+    return Regex("""__version__\s*=\s*['"]([^'"]+)['"]""").find(text)?.groupValues?.get(1)
+  }
+
+  /** Does python's zipimport stand a chance with this file? Walks the
+   *  archive and checks the package is there. */
   private fun zipLooksLoadable(file: File): Boolean {
-    if (!file.isFile || file.length() < 1024) return false
     return try {
-      ZipFile(file).use { zip ->
-        zip.getEntry("yt_dlp/__init__.py") != null || zip.getEntry("__main__.py") != null
-      }
+      openZipapp(file)?.use { zip ->
+        while (true) {
+          val entry = zip.nextEntry ?: break
+          if (entry.name == "yt_dlp/__init__.py" || entry.name == "__main__.py") return true
+          zip.closeEntry()
+        }
+        false
+      } ?: false
     } catch (_: Throwable) {
       false
     }
@@ -759,6 +901,12 @@ class ConvertXDownloaderModule : Module() {
     force: Boolean,
     checkOnly: Boolean
   ): Map<String, Any?> {
+    synchronized(engineLock) {
+      try {
+        promotePendingYtDlp(ctx)
+      } catch (_: Throwable) {
+      }
+    }
     val binary = ytDlpBinary(ctx)
     val installed = installedYtDlpVersion(ctx)
     val latest = resolveLatestYtDlpTag()
@@ -796,19 +944,21 @@ class ConvertXDownloaderModule : Module() {
         throw IOException("Downloaded yt-dlp is not a loadable zipapp")
       }
       val zipVersion = readYtDlpVersionFromZip(staged)
-      if (!staged.renameTo(binary)) {
-        // Fallback for exotic filesystems where rename over an existing
-        // file fails: delete + rename (not atomic, but the bundled copy
-        // is restored by init_ytdlp on the next run if this is torn).
-        binary.delete()
-        if (!staged.renameTo(binary)) throw IOException("Could not install the new yt-dlp")
+      synchronized(engineLock) {
+        if (activeProcesses.get() > 0) {
+          // A probe/download is running on the current engine: park the
+          // verified file; beginEngineProcess() installs it before the
+          // next yt-dlp process starts.
+          val pending = pendingYtDlp(ctx)
+          pending.delete()
+          if (!staged.renameTo(pending)) throw IOException("Could not stage the new yt-dlp")
+          ctx.getSharedPreferences(YTDLP_PREFS, android.content.Context.MODE_PRIVATE).edit()
+            .putString(PREF_PENDING_TAG, latest)
+            .commit()
+          return mapOf("status" to "DEFERRED", "version" to installed, "latest" to latest)
+        }
+        installYtDlpFile(ctx, staged, latest)
       }
-      val prefs = ctx.getSharedPreferences(YTDLP_PREFS, android.content.Context.MODE_PRIVATE)
-      prefs.edit()
-        .putString(PREF_DLP_VERSION, latest)
-        .putString(PREF_DLP_VERSION_NAME, latest)
-        .putLong(PREF_UPDATED_AT, System.currentTimeMillis())
-        .commit()
       return mapOf("status" to "DONE", "version" to (zipVersion ?: latest), "latest" to latest)
     } finally {
       staged.delete()
@@ -851,6 +1001,12 @@ class ConvertXDownloaderModule : Module() {
     }
   }
 
+  /** Thrown when the device cannot give us a WebView at all (missing,
+   *  disabled, mid-update) — the one case JS should fall back to plain
+   *  fetch for. Everything else is a per-request failure. */
+  private class BridgeUnavailable(cause: Throwable) :
+    RuntimeException(cause.message ?: "WebView unavailable", cause)
+
   private inner class BridgeInterface {
     @JavascriptInterface
     fun done(id: String, json: String) {
@@ -867,7 +1023,11 @@ class ConvertXDownloaderModule : Module() {
     bridgeView?.let { return it }
     val ctx = appContext.reactContext
       ?: throw IllegalStateException("Application context unavailable")
-    val view = WebView(ctx)
+    val view = try {
+      WebView(ctx)
+    } catch (e: Throwable) {
+      throw BridgeUnavailable(e)
+    }
     val s = view.settings
     s.javaScriptEnabled = true
     s.domStorageEnabled = true
@@ -934,7 +1094,8 @@ class ConvertXDownloaderModule : Module() {
       runBridgeRequest(next.first, next.second)
     } catch (e: Throwable) {
       bridgeBusy = false
-      next.second.reject(CodedException("WEBVIEW_UNAVAILABLE", describe(e), e))
+      val code = if (e is BridgeUnavailable) "WEBVIEW_UNAVAILABLE" else "WEBFETCH_FAILED"
+      next.second.reject(CodedException(code, describe(e), e))
       pumpBridgeQueue()
     }
   }
