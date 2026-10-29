@@ -123,8 +123,12 @@ Verification: `npx tsc --noEmit` clean; `:convert-x-downloader:compileDebugKotli
 compiles locally (needs `android/local.properties` with
 `sdk.dir=C:/Users/cedri/AppData/Local/Android/Sdk` — forward slashes, the file
 is gitignored). Request recipes verified in a real browser against public
-posts. On-device: see the release notes / the session that cut v0.9.1 for the
-emulator run (`ConvertX_Test` AVD, port 5562).
+posts. On-device (emulator `ConvertX_Test`, port 5562, release APK
+`v0.9.1-beta.2`): daily check installed yt-dlp 2026.10.26 on launch (file +
+prefs verified), the Credits card reports "Already up to date (2026.10.26)";
+anonymous carousel `/p/BQ0eAlwhDrw/` probes to 3 video entries in ~9 s and all
+three download into the gallery; reel `/reel/Chunk8-jurw/` probes to a video
+entry. `v0.9.1` is tagged on the same commit (9a7c128).
 
 Not verified: a LOGGED-IN run (no test account on this machine) — the
 transport is identical for anonymous and session mode, so the bridge test
