@@ -23,7 +23,8 @@ import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import * as Clipboard from 'expo-clipboard';
 
 import { removePlatformCookies } from '../lib/cookies';
-import { updateYtDlp } from '../lib/downloadQueue';
+import { getEngineVersion, updateYtDlp } from '../lib/downloadQueue';
+import { resetInstagramTransport } from '../lib/instagramNet';
 import {
   clearErrorLog,
   ErrorLogEntry,
@@ -601,10 +602,10 @@ function UpdateCard() {
 }
 
 // ── yt-dlp engine refresh ───────────────────────────────────────────────
-// Pulls the latest yt-dlp from yt-dlp/yt-dlp GitHub releases via the
-// youtubedl-android bundle. Fixes Instagram CSRF, TikTok extractor
-// breakage, etc. The first-ever launch already auto-triggers this; the
-// button is for re-running after a future site breaks.
+// Pulls the latest yt-dlp release straight from GitHub's release CDN (no
+// REST API, so no per-IP rate limit — the old library updater hit HTTP
+// 403 on carrier networks). The app checks once a day on its own; the
+// button is for forcing a check right after a site breaks.
 
 type YtDlpState =
   | { kind: 'idle' }
@@ -615,6 +616,19 @@ type YtDlpState =
 function YtDlpUpdateCard() {
   const { theme } = useTheme();
   const [state, setState] = useState<YtDlpState>({ kind: 'idle' });
+  const [installed, setInstalled] = useState<string | null>(null);
+
+  // Show the engine that is actually on disk — users could never tell
+  // whether an update had landed before.
+  useEffect(() => {
+    let active = true;
+    void getEngineVersion().then((v) => {
+      if (active && v?.version) setInstalled(v.version);
+    });
+    return () => {
+      active = false;
+    };
+  }, [state.kind]);
 
   const onTap = useCallback(async () => {
     if (state.kind === 'updating') return;
@@ -632,15 +646,18 @@ function YtDlpUpdateCard() {
             : `Updated${version}. Try the failing URL again.`,
       });
     } else {
-      setState({ kind: 'error', message: result.error ?? 'Update failed' });
+      setState({
+        kind: 'error',
+        message: `Could not reach GitHub — check your connection and try again. (${result.error ?? 'Update failed'})`,
+      });
     }
   }, [state.kind]);
 
   const subline =
-    state.kind === 'updating' ? 'Fetching latest extractors…' :
+    state.kind === 'updating' ? 'Checking the latest release…' :
     state.kind === 'success' ? state.message :
     state.kind === 'error' ? state.message :
-    'Refresh if a site (Instagram, TikTok…) stopped working.';
+    `${installed ? `yt-dlp ${installed} · ` : ''}checks daily on its own. Tap to check now.`;
 
   const cta = state.kind === 'updating' ? null : 'Update';
   const busy = state.kind === 'updating';
@@ -889,6 +906,7 @@ function PlatformLoginsCard() {
       // thought was connected via in-app login may no longer be in the
       // file — clear the flags rather than show a false "Connected".
       invalidateInstagramSessionCache();
+      resetInstagramTransport();
       updateSettings({ cookiesPath: destPath, connectedPlatforms: [] });
     } catch (e) {
       setError(e instanceof Error ? e.message : String(e));
@@ -901,7 +919,10 @@ function PlatformLoginsCard() {
     async (p: LoginPlatform) => {
       setBusyKey(p.key);
       try {
-        if (p.key === 'instagram') invalidateInstagramSessionCache();
+        if (p.key === 'instagram') {
+          invalidateInstagramSessionCache();
+          resetInstagramTransport();
+        }
         const remains = await removePlatformCookies(p.cookieDomain);
         const nextConnected = connected.filter((k) => k !== p.key);
         updateSettings({

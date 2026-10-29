@@ -1,5 +1,14 @@
 package expo.modules.convertxdownloader
 
+import android.net.Uri
+import android.os.Handler
+import android.os.Looper
+import android.webkit.CookieManager
+import android.webkit.JavascriptInterface
+import android.webkit.WebResourceRequest
+import android.webkit.WebResourceResponse
+import android.webkit.WebView
+import android.webkit.WebViewClient
 import com.yausername.youtubedl_android.YoutubeDL
 import com.yausername.youtubedl_android.YoutubeDLRequest
 import expo.modules.kotlin.Promise
@@ -10,7 +19,14 @@ import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
 import org.json.JSONObject
+import java.io.ByteArrayInputStream
+import java.io.File
+import java.io.IOException
+import java.net.HttpURLConnection
+import java.net.URL
+import java.security.MessageDigest
 import java.util.concurrent.ConcurrentHashMap
+import java.util.zip.ZipFile
 
 /**
  * Convert-X yt-dlp bridge.
@@ -57,6 +73,10 @@ class ConvertXDownloaderModule : Module() {
     Name("ConvertXDownloader")
     Events("onProgress", "onStage")
 
+    OnDestroy {
+      mainHandler.post { destroyBridgeView() }
+    }
+
     AsyncFunction("init") { promise: Promise ->
       scope.launch {
         try {
@@ -82,35 +102,104 @@ class ConvertXDownloaderModule : Module() {
       }
     }
 
-    /** Pull the latest yt-dlp from GitHub. Explicit, not on-init.
-     *  If the download corrupts the local zip, the next probe will
-     *  detect "bad local file header" and auto-reset. Resolves with the
-     *  real outcome ({status, version}) so the UI can distinguish
-     *  "updated to 2026.x" from "already up to date" instead of lying. */
-    AsyncFunction("updateYtDlp") { promise: Promise ->
+    /**
+     * Update yt-dlp WITHOUT the GitHub REST API.
+     *
+     * youtubedl-android's own updater calls api.github.com/releases/latest,
+     * which is rate-limited to 60 requests per hour PER IP. Phones on
+     * carrier NAT share one public IP with thousands of users, so the call
+     * fails with HTTP 403 much of the time — the "Check for update
+     * sometimes just errors" users hit. The release redirect
+     * (github.com/.../releases/latest → /releases/tag/<ver>) and the asset
+     * download URLs are plain CDN endpoints with no such limit, so this
+     * resolves the version from the redirect, downloads the asset only
+     * when it differs from the installed one, verifies it against the
+     * release's SHA2-256SUMS and as a loadable zip, then swaps it in with
+     * an atomic rename. A killed app can therefore never leave a half-
+     * written yt-dlp behind (the corruption the old in-place copy caused).
+     *
+     * opts.force     — re-download even when the version matches.
+     * opts.checkOnly — only resolve the latest tag, never download.
+     * Resolves {status: DONE|ALREADY_UP_TO_DATE|AVAILABLE, version, latest}.
+     */
+    AsyncFunction("updateYtDlp") { opts: Map<String, Any?>?, promise: Promise ->
       scope.launch {
         try {
           ensureInitializedSync()
           val ctx = appContext.reactContext
             ?: throw CodedException("NO_CONTEXT", "Application context unavailable", null)
-          // Same one-shot corruption recovery as probe/download — a
-          // half-applied previous update must not brick the updater.
-          val status = try {
-            YoutubeDL.getInstance().updateYoutubeDL(ctx)
+          val force = opts?.get("force") as? Boolean ?: false
+          val checkOnly = opts?.get("checkOnly") as? Boolean ?: false
+          val result = try {
+            runYtDlpUpdate(ctx, force, checkOnly)
           } catch (first: Throwable) {
             if (!looksCorrupted(first)) throw first
             resetCacheSync()
             ensureInitializedSync()
-            YoutubeDL.getInstance().updateYoutubeDL(ctx)
+            runYtDlpUpdate(ctx, force, checkOnly)
           }
+          promise.resolve(result)
+        } catch (e: Throwable) {
+          promise.reject(CodedException("UPDATE_FAILED", describe(e), e))
+        }
+      }
+    }
+
+    /** Installed yt-dlp version, read from the on-disk zipapp itself (the
+     *  library's SharedPreferences only know about versions ITS updater
+     *  installed, so the bundled build reads as "unknown" there). */
+    AsyncFunction("getYtDlpVersion") { promise: Promise ->
+      scope.launch {
+        try {
+          ensureInitializedSync()
+          val ctx = appContext.reactContext
+            ?: throw CodedException("NO_CONTEXT", "Application context unavailable", null)
           promise.resolve(
             mapOf(
-              "status" to (status?.name ?: "UNKNOWN"),
-              "version" to installedYtDlpVersion(ctx)
+              "version" to installedYtDlpVersion(ctx),
+              "updatedAt" to ctx.getSharedPreferences(YTDLP_PREFS, android.content.Context.MODE_PRIVATE)
+                .getLong(PREF_UPDATED_AT, 0L)
             )
           )
         } catch (e: Throwable) {
-          promise.reject(CodedException("UPDATE_FAILED", describe(e), e))
+          promise.reject(CodedException("VERSION_FAILED", describe(e), e))
+        }
+      }
+    }
+
+    /**
+     * HTTP through a hidden Android System WebView — i.e. a real Chromium.
+     *
+     * Instagram (and increasingly other Meta properties) fingerprint the
+     * TLS/HTTP2 handshake and serve non-browser clients a JS shell, a
+     * login redirect or an HTML page where JSON was asked for — WITH valid
+     * session cookies. React Native's fetch (OkHttp) and yt-dlp's Python
+     * stack both look like bots to it; yt-dlp works around this on
+     * desktop with curl_cffi impersonation, which does not exist on
+     * Android. The WebView is the one HTTP client on the device that IS
+     * a browser, so requests sent from it are indistinguishable from the
+     * in-app login the cookies came from.
+     *
+     * The page the fetch runs in is a blank document served by
+     * shouldInterceptRequest under the target origin
+     * (https://www.instagram.com/__convertx_bridge__), so fetch() is
+     * same-origin: cookies attach, Origin/Referer/Sec-Fetch-* are set by
+     * Chromium, and responses are readable without CORS. Cookies come
+     * from the caller (cookies.txt stays the source of truth) and are
+     * installed into the WebView jar before the request; the jar's
+     * state for the origin is returned afterwards so rotated values can
+     * be written back.
+     *
+     * opts: url, method, headers{}, body, referrer, userAgent, timeoutMs,
+     *       cookies [{name,value,domain}] + cookieMode "replace"|"keep".
+     * Resolves {status, url, redirected, headers{}, body, cookies}.
+     */
+    AsyncFunction("webFetch") { opts: Map<String, Any?>, promise: Promise ->
+      mainHandler.post {
+        try {
+          enqueueBridgeRequest(opts, promise)
+        } catch (e: Throwable) {
+          promise.reject(CodedException("WEBVIEW_UNAVAILABLE", describe(e), e))
         }
       }
     }
@@ -520,15 +609,511 @@ class ConvertXDownloaderModule : Module() {
       .edit()
       .remove("dlpVersion")
       .remove("dlpVersionName")
+      .remove("convertxDlpUpdatedAt")
       .commit()
   }
 
-  /** Read the installed yt-dlp version from the library's own bookkeeping
-   *  (SharedPreferences) — avoids depending on version-getter methods whose
-   *  names shift across youtubedl-android releases. */
+  // ── yt-dlp updater ────────────────────────────────────────────────────
+
+  private val YTDLP_PREFS = "youtubedl-android"
+  private val PREF_DLP_VERSION = "dlpVersion"
+  private val PREF_DLP_VERSION_NAME = "dlpVersionName"
+  private val PREF_UPDATED_AT = "convertxDlpUpdatedAt"
+  private val YTDLP_LATEST_URL = "https://github.com/yt-dlp/yt-dlp/releases/latest"
+  private val YTDLP_DOWNLOAD_BASE = "https://github.com/yt-dlp/yt-dlp/releases/download"
+  private val YTDLP_TAG_RE = Regex("""^\d{4}\.\d{2}\.\d{2}(?:\.\d+)?$""")
+  private val UPDATER_UA = "Convert-X-Android (+https://github.com/CedrickGD/Convert-X)"
+
+  private fun ytDlpDir(ctx: android.content.Context): File =
+    File(File(ctx.noBackupFilesDir, "youtubedl-android"), "yt-dlp")
+
+  private fun ytDlpBinary(ctx: android.content.Context): File = File(ytDlpDir(ctx), "yt-dlp")
+
+  /** Version string baked into the zipapp (yt_dlp/version.py). Null when
+   *  the file is missing or unreadable. */
+  private fun readYtDlpVersionFromZip(file: File): String? {
+    if (!file.isFile || file.length() == 0L) return null
+    return try {
+      ZipFile(file).use { zip ->
+        val entry = zip.getEntry("yt_dlp/version.py") ?: return null
+        val text = zip.getInputStream(entry).bufferedReader().use { it.readText() }
+        Regex("""__version__\s*=\s*['"]([^'"]+)['"]""").find(text)?.groupValues?.get(1)
+      }
+    } catch (_: Throwable) {
+      null
+    }
+  }
+
+  /** Does python's zipimport stand a chance with this file? Opens the
+   *  central directory and checks the package is there. */
+  private fun zipLooksLoadable(file: File): Boolean {
+    if (!file.isFile || file.length() < 1024) return false
+    return try {
+      ZipFile(file).use { zip ->
+        zip.getEntry("yt_dlp/__init__.py") != null || zip.getEntry("__main__.py") != null
+      }
+    } catch (_: Throwable) {
+      false
+    }
+  }
+
+  /** Installed yt-dlp version: the zipapp's own version.py first, the
+   *  library's SharedPreferences bookkeeping as a fallback. */
   private fun installedYtDlpVersion(ctx: android.content.Context): String? {
-    val prefs = ctx.getSharedPreferences("youtubedl-android", android.content.Context.MODE_PRIVATE)
-    return prefs.getString("dlpVersion", null) ?: prefs.getString("dlpVersionName", null)
+    readYtDlpVersionFromZip(ytDlpBinary(ctx))?.let { return it }
+    val prefs = ctx.getSharedPreferences(YTDLP_PREFS, android.content.Context.MODE_PRIVATE)
+    return prefs.getString(PREF_DLP_VERSION, null) ?: prefs.getString(PREF_DLP_VERSION_NAME, null)
+  }
+
+  private fun openHttp(url: String, followRedirects: Boolean): HttpURLConnection {
+    val conn = URL(url).openConnection() as HttpURLConnection
+    conn.instanceFollowRedirects = followRedirects
+    conn.connectTimeout = 15_000
+    conn.readTimeout = 30_000
+    conn.setRequestProperty("User-Agent", UPDATER_UA)
+    conn.setRequestProperty("Accept", "*/*")
+    return conn
+  }
+
+  /** Latest stable tag via the /releases/latest redirect — no API call. */
+  private fun resolveLatestYtDlpTag(): String {
+    // GitHub bounces /releases/latest to /releases/tag/<tag>; one hop is
+    // all we need. Extra hops (rare) are followed manually so a redirect
+    // chain can't be mistaken for a missing one.
+    var url = YTDLP_LATEST_URL
+    repeat(3) {
+      val conn = openHttp(url, false)
+      try {
+        val code = conn.responseCode
+        val location = conn.getHeaderField("Location")
+        if (code in 300..399 && !location.isNullOrBlank()) {
+          val resolved = URL(URL(url), location).toString()
+          val tag = resolved.trimEnd('/').substringAfterLast('/')
+          if (resolved.contains("/releases/tag/") && YTDLP_TAG_RE.matches(tag)) return tag
+          url = resolved
+        } else {
+          throw IOException("GitHub did not redirect to the latest yt-dlp release (HTTP $code)")
+        }
+      } finally {
+        conn.disconnect()
+      }
+    }
+    throw IOException("Could not resolve the latest yt-dlp release")
+  }
+
+  private fun downloadToFile(url: String, dest: File) {
+    val conn = openHttp(url, true)
+    try {
+      val code = conn.responseCode
+      if (code != 200) throw IOException("Download failed: HTTP $code for $url")
+      conn.inputStream.use { input ->
+        dest.outputStream().use { output -> input.copyTo(output, 64 * 1024) }
+      }
+    } finally {
+      conn.disconnect()
+    }
+  }
+
+  private fun fetchText(url: String): String {
+    val conn = openHttp(url, true)
+    try {
+      val code = conn.responseCode
+      if (code != 200) throw IOException("HTTP $code for $url")
+      return conn.inputStream.bufferedReader().use { it.readText() }
+    } finally {
+      conn.disconnect()
+    }
+  }
+
+  private fun sha256Hex(file: File): String {
+    val md = MessageDigest.getInstance("SHA-256")
+    file.inputStream().use { input ->
+      val buf = ByteArray(64 * 1024)
+      while (true) {
+        val n = input.read(buf)
+        if (n < 0) break
+        md.update(buf, 0, n)
+      }
+    }
+    return md.digest().joinToString("") { "%02x".format(it) }
+  }
+
+  /** The release's published SHA-256 for the `yt-dlp` asset, or null when
+   *  the checksum file can't be fetched (then only the zip check gates
+   *  the install — better than refusing every update on a flaky link). */
+  private fun publishedYtDlpSha256(tag: String): String? {
+    return try {
+      fetchText("$YTDLP_DOWNLOAD_BASE/$tag/SHA2-256SUMS")
+        .lineSequence()
+        .map { it.trim().split(Regex("""\s+""")) }
+        .firstOrNull { it.size >= 2 && it.last() == "yt-dlp" }
+        ?.first()
+        ?.lowercase()
+    } catch (_: Throwable) {
+      null
+    }
+  }
+
+  private fun runYtDlpUpdate(
+    ctx: android.content.Context,
+    force: Boolean,
+    checkOnly: Boolean
+  ): Map<String, Any?> {
+    val binary = ytDlpBinary(ctx)
+    val installed = installedYtDlpVersion(ctx)
+    val latest = resolveLatestYtDlpTag()
+    val healthy = zipLooksLoadable(binary)
+    if (checkOnly) {
+      return mapOf(
+        "status" to if (installed == latest && healthy) "ALREADY_UP_TO_DATE" else "AVAILABLE",
+        "version" to installed,
+        "latest" to latest
+      )
+    }
+    if (!force && installed == latest && healthy) {
+      return mapOf("status" to "ALREADY_UP_TO_DATE", "version" to installed, "latest" to latest)
+    }
+
+    val dir = ytDlpDir(ctx)
+    if (!dir.isDirectory && !dir.mkdirs()) {
+      throw IOException("Could not create ${dir.absolutePath}")
+    }
+    // Stage in the SAME directory so the final rename is an atomic
+    // same-filesystem swap; a crash mid-download only ever leaves a
+    // `.part` file behind, never a torn yt-dlp.
+    val staged = File(dir, "yt-dlp.$latest.part")
+    staged.delete()
+    try {
+      downloadToFile("$YTDLP_DOWNLOAD_BASE/$latest/yt-dlp", staged)
+      val expected = publishedYtDlpSha256(latest)
+      if (expected != null) {
+        val actual = sha256Hex(staged)
+        if (actual != expected) {
+          throw IOException("Downloaded yt-dlp failed its checksum (got $actual, expected $expected)")
+        }
+      }
+      if (!zipLooksLoadable(staged)) {
+        throw IOException("Downloaded yt-dlp is not a loadable zipapp")
+      }
+      val zipVersion = readYtDlpVersionFromZip(staged)
+      if (!staged.renameTo(binary)) {
+        // Fallback for exotic filesystems where rename over an existing
+        // file fails: delete + rename (not atomic, but the bundled copy
+        // is restored by init_ytdlp on the next run if this is torn).
+        binary.delete()
+        if (!staged.renameTo(binary)) throw IOException("Could not install the new yt-dlp")
+      }
+      val prefs = ctx.getSharedPreferences(YTDLP_PREFS, android.content.Context.MODE_PRIVATE)
+      prefs.edit()
+        .putString(PREF_DLP_VERSION, latest)
+        .putString(PREF_DLP_VERSION_NAME, latest)
+        .putLong(PREF_UPDATED_AT, System.currentTimeMillis())
+        .commit()
+      return mapOf("status" to "DONE", "version" to (zipVersion ?: latest), "latest" to latest)
+    } finally {
+      staged.delete()
+    }
+  }
+
+  // ── Hidden WebView HTTP bridge ─────────────────────────────────────────
+
+  private val mainHandler = Handler(Looper.getMainLooper())
+  private val BRIDGE_PATH = "/__convertx_bridge__"
+  private var bridgeView: WebView? = null
+  /** Origin (scheme://host) the blank bridge document is currently loaded
+   *  under, once onPageFinished confirmed it. */
+  private var bridgeOrigin: String? = null
+  private var bridgeLoading: String? = null
+  private val bridgeLoadWaiters = ArrayList<(Throwable?) -> Unit>()
+  private val bridgeQueue = ArrayDeque<Pair<Map<String, Any?>, Promise>>()
+  private var bridgeBusy = false
+  private var bridgeSeq = 0L
+  private class BridgeCall(val promise: Promise, val origin: String, val timeout: Runnable)
+  private val bridgeCalls = HashMap<String, BridgeCall>()
+
+  private fun originOf(url: String): String {
+    val u = Uri.parse(url)
+    val scheme = u.scheme ?: throw IllegalArgumentException("URL has no scheme: $url")
+    val host = u.host ?: throw IllegalArgumentException("URL has no host: $url")
+    val port = u.port
+    return if (port > 0) "$scheme://$host:$port" else "$scheme://$host"
+  }
+
+  private fun destroyBridgeView() {
+    val view = bridgeView ?: return
+    bridgeView = null
+    bridgeOrigin = null
+    bridgeLoading = null
+    try {
+      view.stopLoading()
+      view.destroy()
+    } catch (_: Throwable) {
+    }
+  }
+
+  private inner class BridgeInterface {
+    @JavascriptInterface
+    fun done(id: String, json: String) {
+      mainHandler.post { completeBridgeCall(id, json, null) }
+    }
+
+    @JavascriptInterface
+    fun fail(id: String, message: String) {
+      mainHandler.post { completeBridgeCall(id, null, message) }
+    }
+  }
+
+  private fun ensureBridgeView(): WebView {
+    bridgeView?.let { return it }
+    val ctx = appContext.reactContext
+      ?: throw IllegalStateException("Application context unavailable")
+    val view = WebView(ctx)
+    val s = view.settings
+    s.javaScriptEnabled = true
+    s.domStorageEnabled = true
+    s.blockNetworkImage = true
+    s.loadsImagesAutomatically = false
+    s.mediaPlaybackRequiresUserGesture = true
+    s.cacheMode = android.webkit.WebSettings.LOAD_NO_CACHE
+    val cm = CookieManager.getInstance()
+    cm.setAcceptCookie(true)
+    cm.setAcceptThirdPartyCookies(view, true)
+    view.addJavascriptInterface(BridgeInterface(), "ConvertXBridge")
+    view.webViewClient = object : WebViewClient() {
+      override fun shouldInterceptRequest(
+        view: WebView,
+        request: WebResourceRequest
+      ): WebResourceResponse? {
+        if (request.url.path == BRIDGE_PATH) {
+          val html = "<!doctype html><html><head><meta charset=\"utf-8\"></head><body></body></html>"
+          return WebResourceResponse(
+            "text/html", "utf-8", 200, "OK",
+            mapOf("Cache-Control" to "no-store"),
+            ByteArrayInputStream(html.toByteArray(Charsets.UTF_8))
+          )
+        }
+        return null
+      }
+
+      override fun onPageFinished(view: WebView, url: String) {
+        if (Uri.parse(url).path != BRIDGE_PATH) return
+        bridgeOrigin = try { originOf(url) } catch (_: Throwable) { null }
+        bridgeLoading = null
+        val waiters = ArrayList(bridgeLoadWaiters)
+        bridgeLoadWaiters.clear()
+        for (w in waiters) w(null)
+      }
+
+      override fun onReceivedError(
+        view: WebView,
+        request: WebResourceRequest,
+        error: android.webkit.WebResourceError
+      ) {
+        if (!request.isForMainFrame) return
+        bridgeLoading = null
+        val waiters = ArrayList(bridgeLoadWaiters)
+        bridgeLoadWaiters.clear()
+        val msg = "Bridge page failed to load: ${error.description}"
+        for (w in waiters) w(IOException(msg))
+      }
+    }
+    bridgeView = view
+    return view
+  }
+
+  private fun enqueueBridgeRequest(opts: Map<String, Any?>, promise: Promise) {
+    bridgeQueue.addLast(opts to promise)
+    pumpBridgeQueue()
+  }
+
+  private fun pumpBridgeQueue() {
+    if (bridgeBusy) return
+    val next = bridgeQueue.removeFirstOrNull() ?: return
+    bridgeBusy = true
+    try {
+      runBridgeRequest(next.first, next.second)
+    } catch (e: Throwable) {
+      bridgeBusy = false
+      next.second.reject(CodedException("WEBVIEW_UNAVAILABLE", describe(e), e))
+      pumpBridgeQueue()
+    }
+  }
+
+  private fun finishBridgeSlot() {
+    bridgeBusy = false
+    pumpBridgeQueue()
+  }
+
+  private fun syncBridgeCookies(origin: String, cookies: List<Map<String, Any?>>) {
+    val cm = CookieManager.getInstance()
+    val host = Uri.parse(origin).host ?: return
+    val wanted = cookies.mapNotNull { it["name"] as? String }.toSet()
+    // Expire what the jar holds for this origin that the caller did not
+    // send — a logged-out account's leftovers must not ride along on the
+    // next (anonymous or re-logged-in) request.
+    val existing = cm.getCookie(origin)
+      ?.split(';')
+      ?.mapNotNull { it.trim().substringBefore('=').takeIf { n -> n.isNotBlank() } }
+      ?: emptyList()
+    val apex = host.removePrefix("www.")
+    for (name in existing) {
+      if (name in wanted) continue
+      cm.setCookie(origin, "$name=; Domain=.$apex; Path=/; Max-Age=0")
+      cm.setCookie(origin, "$name=; Domain=$host; Path=/; Max-Age=0")
+      cm.setCookie(origin, "$name=; Path=/; Max-Age=0")
+    }
+    for (c in cookies) {
+      val name = c["name"] as? String ?: continue
+      val value = c["value"] as? String ?: ""
+      val domain = (c["domain"] as? String)?.takeIf { it.isNotBlank() } ?: ".$apex"
+      cm.setCookie(origin, "$name=$value; Domain=$domain; Path=/; Secure; Max-Age=31536000")
+    }
+    cm.flush()
+  }
+
+  @Suppress("UNCHECKED_CAST")
+  private fun runBridgeRequest(opts: Map<String, Any?>, promise: Promise) {
+    val url = opts["url"] as? String
+      ?: throw IllegalArgumentException("url is required")
+    val origin = originOf(url)
+    val view = ensureBridgeView()
+
+    (opts["userAgent"] as? String)?.takeIf { it.isNotBlank() }?.let { ua ->
+      if (view.settings.userAgentString != ua) view.settings.userAgentString = ua
+    }
+    val cookieMode = opts["cookieMode"] as? String ?: "keep"
+    if (cookieMode == "replace") {
+      val cookies = (opts["cookies"] as? List<*>)
+        ?.mapNotNull { it as? Map<String, Any?> }
+        ?: emptyList()
+      syncBridgeCookies(origin, cookies)
+    }
+
+    val go: (Throwable?) -> Unit = { loadErr ->
+      if (loadErr != null) {
+        finishBridgeSlot()
+        promise.reject(CodedException("WEBFETCH_FAILED", describe(loadErr), loadErr))
+      } else {
+        try {
+          dispatchBridgeFetch(view, origin, opts, promise)
+        } catch (e: Throwable) {
+          finishBridgeSlot()
+          promise.reject(CodedException("WEBFETCH_FAILED", describe(e), e))
+        }
+      }
+    }
+
+    if (bridgeOrigin == origin && bridgeLoading == null) {
+      go(null)
+      return
+    }
+    bridgeLoadWaiters.add(go)
+    if (bridgeLoading != origin) {
+      bridgeLoading = origin
+      bridgeOrigin = null
+      val timeoutMs = (opts["timeoutMs"] as? Number)?.toLong() ?: 20_000L
+      val loadTimeout = Runnable {
+        if (bridgeLoading == origin && bridgeOrigin != origin) {
+          bridgeLoading = null
+          val waiters = ArrayList(bridgeLoadWaiters)
+          bridgeLoadWaiters.clear()
+          for (w in waiters) w(IOException("Bridge page load timed out"))
+        }
+      }
+      mainHandler.postDelayed(loadTimeout, timeoutMs)
+      view.loadUrl("$origin$BRIDGE_PATH")
+    }
+  }
+
+  @Suppress("UNCHECKED_CAST")
+  private fun dispatchBridgeFetch(
+    view: WebView,
+    origin: String,
+    opts: Map<String, Any?>,
+    promise: Promise
+  ) {
+    val id = "b${++bridgeSeq}"
+    val req = JSONObject()
+    req.put("url", opts["url"] as String)
+    req.put("method", (opts["method"] as? String)?.uppercase() ?: "GET")
+    val headers = JSONObject()
+    (opts["headers"] as? Map<String, Any?>)?.forEach { (k, v) ->
+      if (v != null) headers.put(k, v.toString())
+    }
+    req.put("headers", headers)
+    (opts["body"] as? String)?.let { req.put("body", it) }
+    (opts["referrer"] as? String)?.let { req.put("referrer", it) }
+    val maxBody = (opts["maxBodyBytes"] as? Number)?.toInt() ?: 6_000_000
+    req.put("maxBody", maxBody)
+
+    val script = """
+      (function(){
+        var id = ${JSONObject.quote(id)};
+        var req = $req;
+        function fail(e){ try { ConvertXBridge.fail(id, String(e && e.message || e)); } catch(_) {} }
+        try {
+          var init = { method: req.method, headers: req.headers, credentials: 'include', redirect: 'follow', cache: 'no-store' };
+          if (req.body != null) init.body = req.body;
+          if (req.referrer) init.referrer = req.referrer;
+          fetch(req.url, init).then(function(r){
+            var h = {};
+            try { r.headers.forEach(function(v, k){ h[k] = v; }); } catch(_) {}
+            return r.text().then(function(t){
+              if (t.length > req.maxBody) t = t.slice(0, req.maxBody);
+              ConvertXBridge.done(id, JSON.stringify({ status: r.status, url: r.url, redirected: !!r.redirected, headers: h, body: t }));
+            });
+          }).catch(fail);
+        } catch (e) { fail(e); }
+      })();
+    """.trimIndent()
+
+    val timeoutMs = (opts["timeoutMs"] as? Number)?.toLong() ?: 20_000L
+    val timeout = Runnable {
+      val call = bridgeCalls.remove(id) ?: return@Runnable
+      finishBridgeSlot()
+      call.promise.reject(
+        CodedException("WEBFETCH_TIMEOUT", "Request timed out after ${timeoutMs}ms", null)
+      )
+    }
+    bridgeCalls[id] = BridgeCall(promise, origin, timeout)
+    mainHandler.postDelayed(timeout, timeoutMs)
+    view.evaluateJavascript(script, null)
+  }
+
+  private fun completeBridgeCall(id: String, json: String?, error: String?) {
+    val call = bridgeCalls.remove(id) ?: return
+    mainHandler.removeCallbacks(call.timeout)
+    finishBridgeSlot()
+    if (error != null || json == null) {
+      call.promise.reject(
+        CodedException("WEBFETCH_FAILED", error ?: "Bridge returned nothing", null)
+      )
+      return
+    }
+    try {
+      val obj = JSONObject(json)
+      val headers = HashMap<String, String>()
+      obj.optJSONObject("headers")?.let { h ->
+        val keys = h.keys()
+        while (keys.hasNext()) {
+          val k = keys.next()
+          headers[k] = h.optString(k)
+        }
+      }
+      val jar = try { CookieManager.getInstance().getCookie(call.origin) } catch (_: Throwable) { null }
+      call.promise.resolve(
+        mapOf(
+          "status" to obj.optInt("status", 0),
+          "url" to obj.optString("url", ""),
+          "redirected" to obj.optBoolean("redirected", false),
+          "headers" to headers,
+          "body" to obj.optString("body", ""),
+          "cookies" to (jar ?: "")
+        )
+      )
+    } catch (e: Throwable) {
+      call.promise.reject(CodedException("WEBFETCH_FAILED", describe(e), e))
+    }
   }
 
   /** True when the throwable's chain mentions a corrupted yt-dlp zip. */

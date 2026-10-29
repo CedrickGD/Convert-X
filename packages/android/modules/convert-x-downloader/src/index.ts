@@ -42,10 +42,53 @@ export type DownloadOptions = {
 };
 
 export type UpdateResult = {
-  /** youtubedl-android UpdateStatus name: DONE | ALREADY_UP_TO_DATE | UNKNOWN. */
+  /** DONE (installed a new build), ALREADY_UP_TO_DATE, or AVAILABLE
+   *  (checkOnly: a newer release exists, nothing was downloaded). */
   status?: string;
-  /** Installed yt-dlp version after the call, e.g. "2026.06.30". */
+  /** Installed yt-dlp version after the call, e.g. "2026.10.26". */
   version?: string | null;
+  /** Newest stable release tag on GitHub. */
+  latest?: string | null;
+};
+
+export type UpdateOptions = {
+  /** Re-download even when the installed version already matches. */
+  force?: boolean;
+  /** Only resolve the latest release; never download. */
+  checkOnly?: boolean;
+};
+
+export type EngineVersion = {
+  /** Installed yt-dlp version read from the zipapp (null if unreadable). */
+  version: string | null;
+  /** Epoch ms of the last successful in-app update, 0 if never. */
+  updatedAt: number;
+};
+
+export type WebFetchOptions = {
+  url: string;
+  method?: 'GET' | 'POST';
+  headers?: Record<string, string>;
+  body?: string;
+  referrer?: string;
+  userAgent?: string;
+  timeoutMs?: number;
+  /** `replace` installs exactly `cookies` for the URL's origin (expiring
+   *  everything else the WebView jar holds for it); `keep` sends the jar
+   *  as-is. */
+  cookieMode: 'replace' | 'keep';
+  cookies: Array<{ name: string; value: string; domain?: string }>;
+  maxBodyBytes?: number;
+};
+
+export type WebFetchResult = {
+  status: number;
+  url: string;
+  redirected: boolean;
+  headers: Record<string, string>;
+  body: string;
+  /** The WebView jar's `name=value; …` string for the origin afterwards. */
+  cookies: string;
 };
 
 export type SaveToGalleryResult = {
@@ -73,8 +116,13 @@ interface NativeModule {
   /** Wipe extracted Python / yt-dlp cache and re-init from the APK
    *  payload. Use to recover from a corrupted yt-dlp.zip. */
   resetCache(): Promise<void>;
-  /** Pull the latest yt-dlp from GitHub. Optional, not on-init. */
-  updateYtDlp(): Promise<UpdateResult>;
+  /** Pull the latest yt-dlp from GitHub (release redirect + asset
+   *  download, no REST API). Optional, not on-init. */
+  updateYtDlp(opts: UpdateOptions): Promise<UpdateResult>;
+  /** Installed yt-dlp version straight from the zipapp on disk. */
+  getYtDlpVersion(): Promise<EngineVersion>;
+  /** HTTP request through a hidden Android WebView (real Chromium TLS). */
+  webFetch(opts: WebFetchOptions): Promise<WebFetchResult>;
   /** Publish a finished file into the gallery via a MediaStore insert the
    *  app owns — no per-file consent dialog, clean display name. */
   saveToGallery(filePath: string, displayName: string): Promise<SaveToGalleryResult>;
@@ -136,8 +184,25 @@ export function resetCache(): Promise<void> {
  * resetCache. Resolves with the real outcome so the UI can tell
  * "updated to X" apart from "already up to date".
  */
-export function updateYtDlp(): Promise<UpdateResult> {
-  return native.updateYtDlp();
+export function updateYtDlp(opts: UpdateOptions = {}): Promise<UpdateResult> {
+  return native.updateYtDlp(opts);
+}
+
+/** Installed yt-dlp version (read from the zipapp's own version.py). */
+export function getYtDlpVersion(): Promise<EngineVersion> {
+  return native.getYtDlpVersion();
+}
+
+/**
+ * Perform an HTTP request from a hidden Android System WebView. Needed
+ * for sites that fingerprint the TLS client (Instagram): the WebView is
+ * the one HTTP stack on the device that IS a browser. Rejects with code
+ * WEBVIEW_UNAVAILABLE when the device has no usable WebView — callers
+ * fall back to fetch(). Absent on native builds older than the bridge,
+ * so callers must feature-test `typeof webFetch === 'function'`.
+ */
+export function webFetch(opts: WebFetchOptions): Promise<WebFetchResult> {
+  return native.webFetch(opts);
 }
 
 /**

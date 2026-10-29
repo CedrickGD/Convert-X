@@ -47,6 +47,42 @@ export async function resolveCookiesPath(): Promise<string | undefined> {
   return undefined;
 }
 
+export type CookieRecord = { name: string; value: string; domain: string };
+
+/**
+ * Every cookie stored for a domain (and its subdomains), as records. The
+ * Instagram transport installs these into the WebView jar before a
+ * logged-in request.
+ */
+export async function getCookiesForDomain(cookieDomain: string): Promise<CookieRecord[]> {
+  const base = baseDomain(cookieDomain);
+  const out: CookieRecord[] = [];
+  for (const line of await readLines()) {
+    if (!lineBelongsTo(line, base)) continue;
+    const fields = line.split('\t');
+    const domain = (fields[0] ?? '').trim().replace(/^#HttpOnly_/i, '');
+    const name = fields[5]?.trim();
+    const value = fields[6]?.trim();
+    if (name && value !== undefined) out.push({ name, value, domain });
+  }
+  return out;
+}
+
+/**
+ * Is the user actually LOGGED IN to a platform? "Some cookie exists for
+ * the domain" is not enough: an anonymous Instagram visit sets csrftoken,
+ * mid, ig_did… and a cookies.txt holding only those would make the app
+ * route a logged-out user down the login-only paths. Require the
+ * platform's session cookie(s) by name.
+ */
+export async function hasLoginCookiesForDomain(
+  cookieDomain: string,
+  requiredNames: string[]
+): Promise<boolean> {
+  const present = new Set((await getCookiesForDomain(cookieDomain)).map((c) => c.name));
+  return requiredNames.every((n) => present.has(n));
+}
+
 /**
  * Does cookies.txt hold cookies for a specific domain (e.g. "instagram.com")?
  * The file is shared across every platform, so "a cookie file exists" does

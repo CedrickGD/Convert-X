@@ -15,7 +15,7 @@ import { SafeAreaProvider } from 'react-native-safe-area-context';
 
 import { ErrorBoundary } from './src/components/ErrorBoundary';
 import { FeedbackProvider } from './src/components/Feedback';
-import { runFirstLaunchYtDlpUpdate } from './src/lib/downloadQueue';
+import { runPeriodicYtDlpUpdate } from './src/lib/downloadQueue';
 import { installErrorCapture } from './src/lib/errorLog';
 import { purgeOldExports } from './src/lib/storage';
 import { RootNavigator } from './src/navigation/RootNavigator';
@@ -87,14 +87,15 @@ function Root({ fontsReady }: { fontsReady: boolean }) {
     if (ready) SplashScreen.hideAsync().catch(() => {});
   }, [ready]);
 
-  // Pull the latest yt-dlp on first launch ever — the bundled extractor
-  // in youtubedl-android 0.18.1 is too old for modern Instagram (no CSRF
-  // token sent, API returns nothing). Fire-and-forget; success is
-  // persisted so this runs at most once. Probe-time corruption recovery
-  // handles a half-applied update if the user kills the app mid-fetch.
+  // Keep yt-dlp fresh: a silent daily check (one redirect request, no
+  // GitHub API) that downloads only when a new release exists. Extractors
+  // rot within days of a site change and yt-dlp ships fixes weekly — the
+  // old once-a-month check left users on a broken engine for weeks.
+  // Fire-and-forget; the native updater installs atomically, so a kill
+  // mid-download can't corrupt the engine.
   useEffect(() => {
     if (!ready) return;
-    void runFirstLaunchYtDlpUpdate();
+    void runPeriodicYtDlpUpdate();
   }, [ready]);
 
   // Reclaim stale app-private exports/downloads on launch so the working

@@ -8,6 +8,7 @@ import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { WebView, WebViewNavigation } from 'react-native-webview';
 
 import { mergePlatformCookies } from '../lib/cookies';
+import { resetInstagramTransport } from '../lib/instagramNet';
 import { invalidateInstagramSessionCache } from '../lib/instagramStories';
 import { LOGIN_USER_AGENT, platformByKey } from '../lib/loginPlatforms';
 import { RootStackParamList } from '../navigation/types';
@@ -79,7 +80,10 @@ export function PlatformLoginScreen() {
         const path = await mergePlatformCookies(platform.cookieDomain, cookieMap);
         // Fresh session on disk — the cached "expired" verdict (if any)
         // is now about a login that no longer exists.
-        if (platform.key === 'instagram') invalidateInstagramSessionCache();
+        if (platform.key === 'instagram') {
+          invalidateInstagramSessionCache();
+          resetInstagramTransport();
+        }
         const connected = Array.from(
           new Set([...state.settings.connectedPlatforms, platform.key])
         );

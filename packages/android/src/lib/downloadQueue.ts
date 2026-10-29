@@ -14,28 +14,33 @@ import * as FileSystem from 'expo-file-system/legacy';
 import { activateKeepAwakeAsync, deactivateKeepAwake } from 'expo-keep-awake';
 
 import * as Downloader from '../../modules/convert-x-downloader/src';
-import { hasCookiesForDomain, resolveCookiesPath } from './cookies';
+import { hasLoginCookiesForDomain, resolveCookiesPath } from './cookies';
 import type { DiscordMedia } from './discordMedia';
 import { isDiscordInputToken, probeDiscordInput } from './discordScraper';
 import { logError } from './errorLog';
-import { isInstagramPostUrl, probeInstagramAnonymous } from './instagramScraper';
+import { isInstagramPostUrl, probeInstagramEmbed } from './instagramScraper';
 import {
+  instagramErrorKind,
+  instagramMessage,
   instagramProfileToStoriesUrl,
   isInstagramStoryUrl,
   probeInstagramPost,
+  probeInstagramPostAnonymous,
   probeInstagramStory,
+  type InstagramErrorKind,
 } from './instagramStories';
 import { isTwitterStatusUrl, probeTwitterAnonymous } from './twitterScraper';
 
-// Keyed by yt-dlp release cadence (year.month) rather than a one-shot
-// boolean: extractors rot within weeks when sites change their APIs, so
-// re-check for a fresh yt-dlp once per calendar month instead of exactly
-// once in the app's lifetime.
-const YTDLP_FRESHNESS_KEY = '@convertx/ytdlp-freshness';
-function currentFreshnessStamp(): string {
-  const now = new Date();
-  return `${now.getFullYear()}-${now.getMonth() + 1}`;
-}
+// yt-dlp extractors rot within days when a site changes its API, and
+// yt-dlp ships fixes weekly. The engine check is a single redirect
+// request (no GitHub API, no rate limit — see the Kotlin updater), so it
+// runs silently once a day; the download itself only happens when the
+// release tag actually changed.
+const YTDLP_LAST_CHECK_KEY = '@convertx/ytdlp-last-check';
+const YTDLP_CHECK_INTERVAL_MS = 24 * 60 * 60 * 1000;
+// A failed probe may try one engine refresh on its own, at most this often.
+const YTDLP_FAILURE_REFRESH_KEY = '@convertx/ytdlp-failure-refresh';
+const YTDLP_FAILURE_REFRESH_INTERVAL_MS = 60 * 60 * 1000;
 
 /** What the probe determined a downloadable item actually is. Drives the
  *  adaptive options UI (an image post must not offer a "video/audio"
@@ -115,27 +120,39 @@ export function cancelActive(): void {
   inflightCancels.clear();
 }
 
-let ytdlpUpdateInflight: Promise<{
-  ok: boolean;
-  status?: string;
-  version?: string | null;
-  error?: string;
-}> | null = null;
-
-export async function updateYtDlp(): Promise<{
+export type EngineUpdateResult = {
   ok: boolean;
   /** DONE = new version installed, ALREADY_UP_TO_DATE = nothing to do. */
   status?: string;
   /** Installed yt-dlp version after the call. */
   version?: string | null;
+  /** Newest stable release on GitHub. */
+  latest?: string | null;
   error?: string;
-}> {
+};
+
+let ytdlpUpdateInflight: Promise<EngineUpdateResult> | null = null;
+
+/**
+ * Install the latest yt-dlp if the installed one is older. One call at a
+ * time — a tap during the daily background check joins that check
+ * instead of starting a second download.
+ */
+export async function updateYtDlp(opts: { force?: boolean } = {}): Promise<EngineUpdateResult> {
   if (ytdlpUpdateInflight) return ytdlpUpdateInflight;
-  const run = (async () => {
+  const run = (async (): Promise<EngineUpdateResult> => {
     try {
       await Downloader.init();
-      const result = await Downloader.updateYtDlp();
-      return { ok: true, status: result?.status, version: result?.version };
+      const result = await Downloader.updateYtDlp({ force: !!opts.force });
+      if (result?.status === 'DONE' || result?.status === 'ALREADY_UP_TO_DATE') {
+        await AsyncStorage.setItem(YTDLP_LAST_CHECK_KEY, String(Date.now())).catch(() => {});
+      }
+      return {
+        ok: true,
+        status: result?.status,
+        version: result?.version,
+        latest: result?.latest,
+      };
     } catch (e) {
       return { ok: false, error: e instanceof Error ? e.message : String(e) };
     }
@@ -148,17 +165,50 @@ export async function updateYtDlp(): Promise<{
   }
 }
 
-export async function runFirstLaunchYtDlpUpdate(): Promise<void> {
+/** Installed yt-dlp version (from the zipapp on disk), or null. */
+export async function getEngineVersion(): Promise<{ version: string | null; updatedAt: number } | null> {
   try {
-    const stamp = await AsyncStorage.getItem(YTDLP_FRESHNESS_KEY);
-    if (stamp === currentFreshnessStamp()) return;
-    const result = await updateYtDlp();
-    if (result.ok) {
-      await AsyncStorage.setItem(YTDLP_FRESHNESS_KEY, currentFreshnessStamp());
-    }
+    if (typeof Downloader.getYtDlpVersion !== 'function') return null;
+    return await Downloader.getYtDlpVersion();
   } catch {
-    // Silent — will retry on next launch. Probe-time corruption recovery
-    // already handles a half-applied yt-dlp.zip from a killed update.
+    return null;
+  }
+}
+
+/**
+ * Daily silent engine refresh. Cheap when nothing changed (one redirect
+ * request); downloads ~3 MB when yt-dlp shipped a new release. Failures
+ * are silent — the next launch retries, and the probe-time corruption
+ * recovery covers a half-applied install.
+ */
+export async function runPeriodicYtDlpUpdate(): Promise<void> {
+  try {
+    const last = Number(await AsyncStorage.getItem(YTDLP_LAST_CHECK_KEY)) || 0;
+    if (Date.now() - last < YTDLP_CHECK_INTERVAL_MS) return;
+    await updateYtDlp();
+  } catch {
+    // ignore
+  }
+}
+
+/** yt-dlp failure signatures that a newer extractor typically fixes. */
+const ENGINE_ROT_RE =
+  /yt-dlp -U|latest version|Confirm you are on|unable to extract|Unsupported URL|HTTP Error 403|empty media response|Requested format is not available/i;
+
+/**
+ * After a yt-dlp probe failed with an extractor-rot signature, try ONE
+ * engine refresh (throttled to once an hour) and report whether a newer
+ * build was actually installed — the caller retries the probe only then.
+ */
+async function refreshEngineAfterFailure(): Promise<boolean> {
+  try {
+    const last = Number(await AsyncStorage.getItem(YTDLP_FAILURE_REFRESH_KEY)) || 0;
+    if (Date.now() - last < YTDLP_FAILURE_REFRESH_INTERVAL_MS) return false;
+    await AsyncStorage.setItem(YTDLP_FAILURE_REFRESH_KEY, String(Date.now()));
+    const result = await updateYtDlp();
+    return result.ok && result.status === 'DONE';
+  } catch {
+    return false;
   }
 }
 
@@ -230,11 +280,14 @@ export async function probeUrl(
   // "grab their active stories" — the reels_media prober takes the whole
   // reel. Anonymous profile links keep the old yt-dlp behavior.
   const profileStories = instagramProfileToStoriesUrl(url);
-  if (profileStories && (await hasCookiesForDomain('instagram.com'))) {
+  if (profileStories && (await hasLoginCookiesForDomain('instagram.com', ['sessionid']))) {
     try {
       return await probeInstagramStory(profileStories);
     } catch (e) {
       logError('probe', e, url);
+      // A dead session can't be rescued by yt-dlp with the same cookies —
+      // surface the actionable fix instead of yt-dlp's cryptic tail.
+      if (isAuthFailure(e)) throw e;
     }
   }
 
@@ -245,7 +298,7 @@ export async function probeUrl(
   // CDN entry. On any prober failure fall through to cookied yt-dlp,
   // which still handles the video items.
   if (isInstagramStoryUrl(url)) {
-    if (await hasCookiesForDomain('instagram.com')) {
+    if (await hasLoginCookiesForDomain('instagram.com', ['sessionid'])) {
       try {
         return await probeInstagramStory(url);
       } catch (e) {
@@ -253,6 +306,7 @@ export async function probeUrl(
         // rots (API shape change) silently downgrades stories to
         // videos-only forever with nobody the wiser.
         logError('probe', e, url);
+        if (isAuthFailure(e)) throw e;
         console.warn(
           '[instagramStories] prober failed, falling back to yt-dlp:',
           e instanceof Error ? e.message : String(e)
@@ -268,38 +322,107 @@ export async function probeUrl(
     }
   }
 
-  // Instagram posts (/p/, /reel/, /tv/).
-  //  - Logged in: hit the cookied media-info API. Cookied yt-dlp drops
-  //    every IMAGE item (its formats come only from video_versions), so a
-  //    photo carousel would probe to nothing — the API returns all
-  //    children with photo AND video CDN URLs.
-  //  - Anonymous: the public embed endpoint (first carousel item only —
-  //    the rest are login-gated). Gating on the instagram.com domain
-  //    specifically, not the shared cookies file's existence, so a user
-  //    logged into an unrelated platform keeps the anonymous path.
-  // Both fall through to yt-dlp on failure.
+  // Instagram posts (/p/, /reel/, /tv/) — a chain of independent paths,
+  // most capable first, so one Instagram change never takes everything
+  // down at once. See probeInstagramPostChain.
   if (isInstagramPostUrl(url)) {
-    if (await hasCookiesForDomain('instagram.com')) {
-      try {
-        return await probeInstagramPost(url);
-      } catch (e) {
-        logError('probe', e, url);
-        console.warn(
-          '[instagramStories] post prober failed, falling back to yt-dlp:',
-          e instanceof Error ? e.message : String(e)
-        );
-      }
-    } else {
-      try {
-        return await probeInstagramAnonymous(url);
-      } catch {
-        // Fall through to yt-dlp.
-      }
-    }
+    return probeInstagramPostChain(url, resolvedOpts);
   }
 
+  return probeWithYtDlp(url, resolvedOpts);
+}
+
+/** Session-level Instagram refusals that no fallback with the same
+ *  cookies can fix — they must reach the user as-is. */
+function isAuthFailure(e: unknown): boolean {
+  const kind = instagramErrorKind(e);
+  return kind === 'expired' || kind === 'checkpoint';
+}
+
+/**
+ * Instagram post probe chain:
+ *  1. Logged in → cookied media/<pk>/info API: every carousel child with
+ *     photo AND video CDN URLs (cookied yt-dlp drops the photos).
+ *  2. Logged-out GraphQL (the web app's own public-post query): full
+ *     carousels + videos for any public post, no login needed.
+ *  3. The /embed/ page's structured data: same coverage for most posts,
+ *     and the one surface Instagram has never gated by client.
+ *  4. yt-dlp with cookies — videos only, but a maintained extractor.
+ * All four run through transports Instagram accepts (1–3 via the hidden
+ * WebView). When every path fails, the most actionable classified error
+ * wins: "session expired" beats "yt-dlp exited 1".
+ */
+async function probeInstagramPostChain(
+  url: string,
+  opts: { cookies?: string; spotifyClientId?: string; spotifyClientSecret?: string }
+): Promise<ProbeResult> {
+  const loggedIn = await hasLoginCookiesForDomain('instagram.com', ['sessionid']);
+  const failures: unknown[] = [];
+  const attempt = async (step: string, fn: () => Promise<ProbeResult>) => {
+    try {
+      return await fn();
+    } catch (e) {
+      failures.push(e);
+      logError('probe', e, `${step}: ${url}`);
+      return null;
+    }
+  };
+
+  if (loggedIn) {
+    const viaApi = await attempt('instagram api', () => probeInstagramPost(url));
+    if (viaApi) return viaApi;
+  }
+  const viaGraphql = await attempt('instagram graphql', () => probeInstagramPostAnonymous(url));
+  if (viaGraphql) return viaGraphql;
+  const viaEmbed = await attempt('instagram embed', () => probeInstagramEmbed(url));
+  if (viaEmbed) return viaEmbed;
+  try {
+    return await probeWithYtDlp(url, opts);
+  } catch (e) {
+    failures.push(e);
+    logError('probe', e, `yt-dlp: ${url}`);
+    throw composeInstagramError(failures, loggedIn);
+  }
+}
+
+/** Pick the one error worth showing out of a failed Instagram chain. */
+function composeInstagramError(failures: unknown[], loggedIn: boolean): Error {
+  const kinds = new Set<InstagramErrorKind>();
+  for (const f of failures) {
+    const k = instagramErrorKind(f);
+    if (k && k !== 'other') kinds.add(k);
+  }
+  const order: Array<Exclude<InstagramErrorKind, 'other'>> = loggedIn
+    ? ['checkpoint', 'expired', 'rate_limited', 'login_required', 'not_found']
+    : ['checkpoint', 'rate_limited', 'login_required', 'expired', 'not_found'];
+  for (const k of order) {
+    if (kinds.has(k)) return new Error(instagramMessage(k));
+  }
+  // Nothing classified — the last failure (yt-dlp) carries the most
+  // detail (stderr tail); fall back to the first otherwise.
+  const pick = failures[failures.length - 1] ?? failures[0];
+  if (pick instanceof Error) return pick;
+  return new Error(pick ? String(pick) : 'Instagram probe failed.');
+}
+
+async function probeWithYtDlp(
+  url: string,
+  resolvedOpts: { cookies?: string; spotifyClientId?: string; spotifyClientSecret?: string },
+  retried = false
+): Promise<ProbeResult> {
   const site = Downloader.detectSite(url);
-  const raw = await Downloader.probe(url, resolvedOpts);
+  let raw: Downloader.ProbeResult;
+  try {
+    raw = await Downloader.probe(url, resolvedOpts);
+  } catch (e) {
+    // A crashed/outdated extractor (not the exit-code path below) — try
+    // once with a refreshed engine when a newer one exists.
+    const msg = e instanceof Error ? e.message : String(e);
+    if (!retried && ENGINE_ROT_RE.test(msg) && (await refreshEngineAfterFailure())) {
+      return probeWithYtDlp(url, resolvedOpts, true);
+    }
+    throw e;
+  }
 
   // The Kotlin probe surfaces yt-dlp's own error (e.g. "Unsupported URL",
   // missing extractor) via raw.error. Treat it as a thrown error so the
@@ -324,7 +447,14 @@ export async function probeUrl(
       stderrTail && stderrTail !== '(empty stderr)' ? stderrTail :
       stdoutTail && stdoutTail !== '(empty stdout)' ? stdoutTail :
       '';
-    throw new Error(detail ? `${err}\n${detail}` : err);
+    const message = detail ? `${err}\n${detail}` : err;
+    // Extractor rot ("unable to extract", "yt-dlp -U") is usually fixed
+    // upstream within days: refresh the engine once (hourly throttle)
+    // and retry before bothering the user.
+    if (!retried && ENGINE_ROT_RE.test(message) && (await refreshEngineAfterFailure())) {
+      return probeWithYtDlp(url, resolvedOpts, true);
+    }
+    throw new Error(message);
   }
 
   const isPlaylist = Boolean(raw.isPlaylist);

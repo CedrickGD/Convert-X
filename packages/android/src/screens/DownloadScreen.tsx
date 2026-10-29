@@ -106,7 +106,7 @@ export function DownloadScreen() {
     site === 'Instagram' &&
     // "require login" covers probeUrl's own stories-need-login message —
     // that error IS a login problem, so it must surface the one-tap fix.
-    /login required|require login|cookies|empty media response|restricted|private|rate.?limit/i.test(
+    /login required|require login|needs a login|log in to instagram|sign in again|login has expired|confirm it's you|connect instagram|no instagram login|cookies|empty media response|restricted|private|rate.?limit/i.test(
       error
     );
   const suggestsEngineUpdate =

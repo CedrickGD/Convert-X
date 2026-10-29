@@ -1,5 +1,5 @@
 /**
- * Cookied Instagram story prober.
+ * Instagram post + story probers (cookied web API and logged-out GraphQL).
  *
  * yt-dlp's instagram:story extractor builds formats exclusively from
  * `video_versions` and silently drops story items without them — i.e.
@@ -13,16 +13,34 @@
  * Endpoints (mirrors yt-dlp's InstagramBaseIE in web-app mode):
  *   - /api/v1/users/web_profile_info/?username=X  → story owner's user id
  *   - /api/v1/feed/reels_media/?reel_ids=Y        → story/highlight items
- * Both need the X-IG-App-ID header plus the logged-in session cookies.
+ *   - /api/v1/media/<pk>/info/                    → post + carousel children
+ *   - /api/graphql (PolarisLoggedOutDesktopWWWPostRootContentQuery)
+ *                                                 → public posts, no login
+ * All need the X-IG-App-ID header; the first three the session cookies.
+ *
+ * Every request goes through instagramNet.igRequest — a hidden WebView
+ * (real Chromium) — because Instagram refuses non-browser TLS clients
+ * even with a valid session. See that module for the full story.
  */
 
 import type { DownloadEntry, ProbeResult } from './downloadQueue';
-import { getCookieHeaderForDomain, getCookieValue } from './cookies';
-import { LOGIN_USER_AGENT } from './loginPlatforms';
+import {
+  IG_ORIGIN,
+  igRequest,
+  instagramTransportEpoch,
+  parseCookieJar,
+  type IgRequestMode,
+  type IgResponse,
+} from './instagramNet';
 
-const API_BASE = 'https://www.instagram.com/api/v1';
+const API_BASE = `${IG_ORIGIN}/api/v1`;
 /** Instagram's public web-app id — same constant yt-dlp ships. */
 const IG_WEB_APP_ID = '936619743392459';
+/** Persisted GraphQL query id of the logged-out post page (yt-dlp master,
+ *  Oct 2026). Rotates rarely; when it does, the embed and yt-dlp
+ *  fallbacks in downloadQueue still cover public posts. */
+const LOGGED_OUT_POST_DOC_ID = '27130156389949648';
+const LOGGED_OUT_POST_QUERY = 'PolarisLoggedOutDesktopWWWPostRootContentQuery';
 
 const STORY_RE = /instagram\.com\/stories\/([^/?#]+)(?:\/(\d+))?/;
 const POST_RE = /instagram\.com\/(?:[^/?#]+\/)?(?:p|reels?|tv)\/([A-Za-z0-9_-]+)/;
@@ -56,6 +74,192 @@ export function instagramProfileToStoriesUrl(url: string): string | null {
   return `https://www.instagram.com/stories/${username}/`;
 }
 
+// ── Errors ──────────────────────────────────────────────────────────────
+
+export type InstagramErrorKind =
+  /** The saved session is no longer accepted — re-login fixes it. */
+  | 'expired'
+  /** Instagram wants the account owner to pass a checkpoint/challenge in
+   *  the real app before the session works again. */
+  | 'checkpoint'
+  /** Content needs a login we don't have (private, age-gated). */
+  | 'login_required'
+  /** Instagram throttled this device/IP. */
+  | 'rate_limited'
+  /** The post/story does not exist (or was removed). */
+  | 'not_found'
+  /** Anything else — network, parse, unexpected shape. */
+  | 'other';
+
+export class InstagramError extends Error {
+  kind: InstagramErrorKind;
+  constructor(kind: InstagramErrorKind, message: string) {
+    super(message);
+    this.name = 'InstagramError';
+    this.kind = kind;
+  }
+}
+
+export function instagramErrorKind(e: unknown): InstagramErrorKind | null {
+  return e instanceof InstagramError ? e.kind : null;
+}
+
+const MESSAGES: Record<Exclude<InstagramErrorKind, 'other'>, string> = {
+  expired:
+    'Your Instagram login has expired — sign in again under Credits → Platform logins.',
+  checkpoint:
+    "Instagram wants you to confirm it's you — open the Instagram app, complete the check, then sign in again under Credits.",
+  login_required:
+    'This Instagram content needs a login — connect Instagram under Credits → Platform logins.',
+  rate_limited:
+    'Instagram is rate-limiting this device — wait a few minutes and try again.',
+  not_found: 'This Instagram post does not exist or was removed.',
+};
+
+export function instagramMessage(kind: Exclude<InstagramErrorKind, 'other'>): string {
+  return MESSAGES[kind];
+}
+
+// ── Transport helpers ───────────────────────────────────────────────────
+
+const API_HEADERS: Record<string, string> = {
+  'X-IG-App-ID': IG_WEB_APP_ID,
+  'X-ASBD-ID': '359341',
+  'X-IG-WWW-Claim': '0',
+  Accept: '*/*',
+};
+
+function isLoginWall(resp: IgResponse): boolean {
+  const path = (() => {
+    try {
+      return new URL(resp.url).pathname;
+    } catch {
+      return resp.url;
+    }
+  })();
+  return (
+    path.startsWith('/accounts/login') ||
+    path.startsWith('/challenge') ||
+    path.startsWith('/accounts/suspended')
+  );
+}
+
+function looksLikeHtml(body: string): boolean {
+  const head = body.slice(0, 200).trimStart().toLowerCase();
+  return head.startsWith('<!doctype') || head.startsWith('<html') || head.startsWith('<');
+}
+
+/** Map Instagram's JSON refusals (`{"message": "..."}`) to error kinds. */
+function classifyApiMessage(message: string | undefined, loggedIn: boolean): InstagramErrorKind | null {
+  if (!message) return null;
+  const m = message.toLowerCase();
+  if (m.includes('checkpoint') || m.includes('challenge')) return 'checkpoint';
+  if (m.includes('login_required') || m.includes('login required') || m.includes('not logged in')) {
+    return loggedIn ? 'expired' : 'login_required';
+  }
+  if (m.includes('feedback_required') || m.includes('rate limit') || m.includes('please wait')) {
+    return 'rate_limited';
+  }
+  if (m.includes('media not found') || m.includes('cannot be found') || m.includes('not found')) {
+    return 'not_found';
+  }
+  if (m.includes('useragent mismatch')) return loggedIn ? 'expired' : 'other';
+  return null;
+}
+
+/**
+ * Fetch a JSON API endpoint. Throws InstagramError with a classified kind
+ * for every refusal shape Instagram uses: HTTP 401/403, a redirect to the
+ * login wall, an HTML page where JSON was asked for (the "bot" treatment
+ * and the login wall both look like that), or a JSON error payload.
+ */
+async function igApiJson(
+  url: string,
+  mode: IgRequestMode,
+  init: { method?: 'GET' | 'POST'; headers?: Record<string, string>; body?: string; referrer?: string } = {}
+): Promise<Record<string, unknown>> {
+  const loggedIn = mode === 'session';
+  let resp: IgResponse;
+  try {
+    resp = await igRequest(url, {
+      mode,
+      method: init.method ?? 'GET',
+      headers: { ...API_HEADERS, ...(init.headers ?? {}) },
+      body: init.body,
+      referrer: init.referrer ?? `${IG_ORIGIN}/`,
+      timeoutMs: 20000,
+    });
+  } catch (e) {
+    if (e instanceof InstagramError) throw e;
+    throw new InstagramError('other', e instanceof Error ? e.message : String(e));
+  }
+
+  if (isLoginWall(resp)) {
+    throw new InstagramError(loggedIn ? 'expired' : 'login_required', instagramMessage(loggedIn ? 'expired' : 'login_required'));
+  }
+  if (resp.status === 401 || resp.status === 403) {
+    const viaBody = tryParseJson(resp.body);
+    const kind =
+      classifyApiMessage(typeof viaBody?.message === 'string' ? viaBody.message : undefined, loggedIn) ??
+      (loggedIn ? 'expired' : 'login_required');
+    throw new InstagramError(
+      kind,
+      kind === 'other'
+        ? `Instagram refused the request (HTTP ${resp.status})`
+        : instagramMessage(kind)
+    );
+  }
+  if (resp.status === 429) {
+    throw new InstagramError('rate_limited', instagramMessage('rate_limited'));
+  }
+  if (resp.status === 404) {
+    throw new InstagramError('not_found', instagramMessage('not_found'));
+  }
+  const data = tryParseJson(resp.body);
+  if (!data) {
+    if (looksLikeHtml(resp.body)) {
+      // JSON was requested, a page came back: Instagram either bounced us
+      // to the (unredirected) login wall or decided we are a bot.
+      const kind: InstagramErrorKind = loggedIn ? 'expired' : 'login_required';
+      throw new InstagramError(kind, instagramMessage(kind));
+    }
+    throw new InstagramError(
+      'other',
+      `Instagram API returned HTTP ${resp.status} with an unreadable body${resp.body ? `: ${resp.body.slice(0, 120)}` : ''}`
+    );
+  }
+  const message = typeof data.message === 'string' ? data.message : undefined;
+  const status = typeof data.status === 'string' ? data.status : undefined;
+  if (status === 'fail' || !resp.status || resp.status >= 400) {
+    const kind = classifyApiMessage(message, loggedIn) ?? 'other';
+    throw new InstagramError(
+      kind,
+      kind === 'other'
+        ? `Instagram API refused the request${message ? `: ${message}` : ` (HTTP ${resp.status})`}`
+        : instagramMessage(kind)
+    );
+  }
+  return data;
+}
+
+function tryParseJson(text: string): Record<string, unknown> | null {
+  const trimmed = text.trimStart();
+  if (!trimmed.startsWith('{') && !trimmed.startsWith('[')) return null;
+  try {
+    const v = JSON.parse(trimmed) as unknown;
+    return v && typeof v === 'object' ? (v as Record<string, unknown>) : null;
+  } catch {
+    return null;
+  }
+}
+
+/** Logged-in JSON call (cookies.txt session). */
+function igApiFetch(url: string): Promise<Record<string, unknown>> {
+  return igApiJson(url, 'session');
+}
+
+// ── Session health ──────────────────────────────────────────────────────
+
 /**
  * Is the saved Instagram session still accepted? Hits topsearch (the
  * cheapest authenticated endpoint the probers already rely on). Cached
@@ -77,13 +281,13 @@ export async function checkInstagramSession(): Promise<'ok' | 'expired' | 'unkno
   try {
     const data = await igApiFetch(`${API_BASE}/web/search/topsearch/?query=instagram`);
     // A live session returns result arrays; a dead one bounces to the
-    // login wall (401/403 → igApiFetch throws) or an error payload.
+    // login wall (→ igApiJson throws) or an error payload.
     const ok = Array.isArray(data.users) || data.status === 'ok';
     sessionCheck = { at: Date.now(), ok };
     return ok ? 'ok' : 'expired';
   } catch (e) {
-    const msg = e instanceof Error ? e.message : String(e);
-    if (/rejected the saved login|HTTP 401|HTTP 403/.test(msg)) {
+    const kind = instagramErrorKind(e);
+    if (kind === 'expired' || kind === 'checkpoint' || kind === 'login_required') {
       sessionCheck = { at: Date.now(), ok: false };
       return 'expired';
     }
@@ -92,10 +296,12 @@ export async function checkInstagramSession(): Promise<'ok' | 'expired' | 'unkno
   }
 }
 
+// ── Shortcode / id helpers ──────────────────────────────────────────────
+
 /** Instagram media ids are the shortcode base-64-decoded with this table
  *  (yt-dlp's _id_to_pk). Shortcodes longer than 28 chars carry a user-id
  *  prefix that must be dropped first. */
-function shortcodeToPk(shortcode: string): string {
+export function shortcodeToPk(shortcode: string): string {
   const TABLE = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_';
   const s = shortcode.length > 28 ? shortcode.slice(0, -28) : shortcode;
   let pk = 0n;
@@ -107,55 +313,12 @@ function shortcodeToPk(shortcode: string): string {
   return pk.toString();
 }
 
-/** Fetch JSON with the session cookies + app-id headers Instagram's web
- *  API requires. `credentials: 'omit'` keeps React Native's WebView-backed
- *  cookie jar from overriding the manual Cookie header — cookies.txt (the
- *  same file yt-dlp reads) stays the single source of truth. */
-async function igApiFetch(url: string): Promise<Record<string, unknown>> {
-  const cookieHeader = await getCookieHeaderForDomain('instagram.com');
-  if (!cookieHeader) throw new Error('No Instagram cookies on disk.');
-  const csrf = await getCookieValue('instagram.com', 'csrftoken');
-
-  const controller = new AbortController();
-  const timeout = setTimeout(() => controller.abort(), 15000);
-  try {
-    const resp = await fetch(url, {
-      credentials: 'omit',
-      headers: {
-        'User-Agent': LOGIN_USER_AGENT,
-        Accept: '*/*',
-        Cookie: cookieHeader,
-        Origin: 'https://www.instagram.com',
-        Referer: 'https://www.instagram.com/',
-        'X-IG-App-ID': IG_WEB_APP_ID,
-        'X-ASBD-ID': '359341',
-        'X-IG-WWW-Claim': '0',
-        ...(csrf ? { 'X-CSRFToken': csrf } : {}),
-      },
-      signal: controller.signal,
-    });
-    if (resp.status === 401 || resp.status === 403) {
-      throw new Error('Instagram rejected the saved login — sign in again under Credits.');
-    }
-    if (!resp.ok) {
-      // Instagram's 4xx bodies name the actual refusal ("useragent
-      // mismatch", "login_required", "checkpoint_required") — surface it,
-      // a bare status code is undebuggable in the field.
-      const body = await resp.text().catch(() => '');
-      throw new Error(
-        `Instagram API returned HTTP ${resp.status}${body ? `: ${body.slice(0, 200)}` : ''}`
-      );
-    }
-    return (await resp.json()) as Record<string, unknown>;
-  } catch (e) {
-    if (controller.signal.aborted) {
-      throw new Error('Instagram took too long to respond — check your connection and try again.');
-    }
-    throw e;
-  } finally {
-    clearTimeout(timeout);
-  }
+export function instagramPostShortcode(url: string): string | null {
+  const m = url.match(POST_RE);
+  return m ? m[1] : null;
 }
+
+// ── User id resolution (stories) ────────────────────────────────────────
 
 /**
  * Resolve a username to Instagram's numeric user id.
@@ -175,6 +338,14 @@ async function igApiFetch(url: string): Promise<Record<string, unknown>> {
  * VIEWER's user JSON — a wrong-account footgun.)
  */
 async function resolveUserId(username: string, storyId?: string): Promise<string> {
+  let authError: InstagramError | null = null;
+  const remember = (e: unknown) => {
+    const kind = instagramErrorKind(e);
+    if (!authError && (kind === 'expired' || kind === 'checkpoint' || kind === 'login_required')) {
+      authError = e as InstagramError;
+    }
+  };
+
   // 1. topsearch — the web app's own search box endpoint.
   try {
     const data = await igApiFetch(
@@ -192,6 +363,7 @@ async function resolveUserId(username: string, storyId?: string): Promise<string
       }
     }
   } catch (e) {
+    remember(e);
     if (__DEV__) {
       console.log(
         '[instagramStories] topsearch failed:',
@@ -208,6 +380,7 @@ async function resolveUserId(username: string, storyId?: string): Promise<string
       const pk = (item?.user as Record<string, unknown> | undefined)?.pk;
       if (pk !== undefined && /^\d+$/.test(String(pk))) return String(pk);
     } catch (e) {
+      remember(e);
       if (__DEV__) {
         console.log(
           '[instagramStories] media info failed:',
@@ -218,18 +391,25 @@ async function resolveUserId(username: string, storyId?: string): Promise<string
   }
 
   // 3. web_profile_info API — last resort, known-flaky.
-  const data = await igApiFetch(
-    `${API_BASE}/users/web_profile_info/?username=${encodeURIComponent(username)}`
-  );
-  const user = (data.data as Record<string, unknown> | undefined)?.user as
-    | Record<string, unknown>
-    | undefined;
-  const id = user?.id ?? user?.pk;
-  if (id === undefined || id === null || String(id).length === 0) {
-    throw new Error(`Could not resolve Instagram user "${username}".`);
+  try {
+    const data = await igApiFetch(
+      `${API_BASE}/users/web_profile_info/?username=${encodeURIComponent(username)}`
+    );
+    const user = (data.data as Record<string, unknown> | undefined)?.user as
+      | Record<string, unknown>
+      | undefined;
+    const id = user?.id ?? user?.pk;
+    if (id !== undefined && id !== null && String(id).length > 0) return String(id);
+  } catch (e) {
+    remember(e);
   }
-  return String(id);
+  // Three endpoints refusing in the same way is an auth problem, not a
+  // username problem — say so, or the user re-types a correct handle.
+  if (authError) throw authError;
+  throw new Error(`Could not resolve Instagram user "${username}".`);
 }
+
+// ── Media item → entry ──────────────────────────────────────────────────
 
 type IgMediaVersion = { url?: string; width?: number; height?: number };
 
@@ -250,7 +430,9 @@ function pickLargest(versions: unknown): IgMediaVersion | undefined {
 }
 
 /** Map one API media item (post, carousel child, or story item) to a
- *  direct-CDN DownloadEntry. Returns null when the item exposes no media. */
+ *  direct-CDN DownloadEntry. Returns null when the item exposes no media.
+ *  The shape is shared by media/info, reels_media AND the logged-out
+ *  GraphQL product (`video_versions`, `image_versions2.candidates`). */
 function entryFromItem(
   item: Record<string, unknown>,
   title: string,
@@ -283,29 +465,11 @@ function entryFromItem(
   };
 }
 
-/**
- * Probe an instagram.com/p|reel|tv/... POST through the cookied web API.
- *
- * Needed because a logged-in user skips the anonymous embed prober, and
- * cookied yt-dlp drops every IMAGE item of a post/carousel (its formats
- * come exclusively from video_versions) — a 4-photo carousel probes to
- * nothing. media/<pk>/info returns every child with photo + video CDN
- * URLs; entries download via downloadDirect without yt-dlp.
- */
-export async function probeInstagramPost(url: string): Promise<ProbeResult> {
-  const m = url.match(POST_RE);
-  if (!m) throw new Error('Not a recognizable Instagram post URL.');
-  const shortcode = m[1];
-  const pk = shortcodeToPk(shortcode);
-
-  const data = await igApiFetch(`${API_BASE}/media/${pk}/info/`);
-  const item = (data.items as Array<Record<string, unknown>> | undefined)?.[0];
-  if (!item) throw new Error('Instagram returned no media for this post.');
-
+/** Turn a post product (single item or carousel parent) into entries. */
+function entriesFromProduct(product: Record<string, unknown>, shortcode: string): DownloadEntry[] {
   const webpageUrl = `https://www.instagram.com/p/${shortcode}/`;
-  const carousel = item.carousel_media as Array<Record<string, unknown>> | undefined;
-  const children = Array.isArray(carousel) && carousel.length > 0 ? carousel : [item];
-
+  const carousel = product.carousel_media as Array<Record<string, unknown>> | undefined;
+  const children = Array.isArray(carousel) && carousel.length > 0 ? carousel : [product];
   const entries: DownloadEntry[] = [];
   children.forEach((child, i) => {
     // Per-child suffix keeps direct-download filenames unique — children
@@ -317,12 +481,154 @@ export async function probeInstagramPost(url: string): Promise<ProbeResult> {
     const entry = entryFromItem(child, title, webpageUrl);
     if (entry) entries.push(entry);
   });
+  return entries;
+}
+
+// ── Posts ───────────────────────────────────────────────────────────────
+
+/**
+ * Probe an instagram.com/p|reel|tv/... POST through the cookied web API.
+ *
+ * Needed because a logged-in user skips the anonymous probers, and
+ * cookied yt-dlp drops every IMAGE item of a post/carousel (its formats
+ * come exclusively from video_versions) — a 4-photo carousel probes to
+ * nothing. media/<pk>/info returns every child with photo + video CDN
+ * URLs; entries download via downloadDirect without yt-dlp.
+ */
+export async function probeInstagramPost(url: string): Promise<ProbeResult> {
+  const shortcode = instagramPostShortcode(url);
+  if (!shortcode) throw new Error('Not a recognizable Instagram post URL.');
+  const pk = shortcodeToPk(shortcode);
+
+  const data = await igApiFetch(`${API_BASE}/media/${pk}/info/`);
+  const item = (data.items as Array<Record<string, unknown>> | undefined)?.[0];
+  if (!item) throw new InstagramError('not_found', 'Instagram returned no media for this post.');
+
+  const entries = entriesFromProduct(item, shortcode);
   if (entries.length === 0) {
     throw new Error('No downloadable media found in this post.');
   }
-
   return { site: 'Instagram', isPlaylist: entries.length > 1, entries };
 }
+
+/** LSD token + csrf from an anonymous page load, cached briefly — one
+ *  homepage fetch per probe is plenty and Instagram notices hammering. */
+let anonTokens: { at: number; epoch: number; lsd: string } | null = null;
+
+async function anonymousLsdToken(): Promise<string> {
+  if (
+    anonTokens &&
+    anonTokens.epoch === instagramTransportEpoch() &&
+    Date.now() - anonTokens.at < 10 * 60 * 1000
+  ) {
+    return anonTokens.lsd;
+  }
+  const resp = await igRequest(`${IG_ORIGIN}/`, {
+    mode: 'anonymous',
+    headers: { Accept: 'text/html,application/xhtml+xml' },
+    timeoutMs: 20000,
+  });
+  const html = resp.body;
+  let lsd = html.match(/"LSD",\[\],\{"token":"([^"]+)"/)?.[1];
+  if (!lsd) {
+    const eqmc = html.match(/<script\b[^>]*\bid="__eqmc"[^>]*>(\{[\s\S]*?\})<\/script>/)?.[1];
+    if (eqmc) {
+      try {
+        const parsed = JSON.parse(eqmc) as { l?: unknown };
+        if (typeof parsed.l === 'string') lsd = parsed.l;
+      } catch {
+        // fall through
+      }
+    }
+  }
+  if (!lsd) {
+    throw new InstagramError('other', 'Instagram did not hand out a session token for anonymous access.');
+  }
+  anonTokens = { at: Date.now(), epoch: instagramTransportEpoch(), lsd };
+  return lsd;
+}
+
+/**
+ * Probe a PUBLIC post without any login — the same logged-out GraphQL
+ * query Instagram's own web app (and yt-dlp with impersonation) uses.
+ * Returns every carousel child with photo + video CDN URLs. Throws
+ * InstagramError('login_required') for private/gated posts and
+ * ('not_found') for removed ones.
+ */
+export async function probeInstagramPostAnonymous(url: string): Promise<ProbeResult> {
+  const shortcode = instagramPostShortcode(url);
+  if (!shortcode) throw new Error('Not a recognizable Instagram post URL.');
+  const pk = shortcodeToPk(shortcode);
+  const postUrl = `https://www.instagram.com/p/${shortcode}/`;
+
+  const lsd = await anonymousLsdToken();
+
+  // The ruling call is what the web app does before rendering; Instagram
+  // only honours X-CSRFToken on the GraphQL call when it said "ok" here.
+  // Non-fatal: a flaky ruling must not block the actual query.
+  let rulingOk = false;
+  let csrf: string | undefined;
+  try {
+    const ruling = await igRequest(
+      `${API_BASE}/web/get_ruling_for_content/?content_type=MEDIA&target_id=${pk}`,
+      { mode: 'anonymous', headers: API_HEADERS, referrer: postUrl, timeoutMs: 15000 }
+    );
+    const parsed = tryParseJson(ruling.body);
+    rulingOk = parsed?.status === 'ok';
+    // Chromium keeps the jar; the csrftoken Instagram just set is in it.
+    if (ruling.cookies) csrf = parseCookieJar(ruling.cookies).csrftoken;
+  } catch {
+    // ignore — proceed without the csrf header
+  }
+
+  const form = new URLSearchParams({
+    lsd,
+    fb_api_caller_class: 'RelayModern',
+    fb_api_req_friendly_name: LOGGED_OUT_POST_QUERY,
+    server_timestamps: 'true',
+    variables: JSON.stringify({ media_id: pk }),
+    doc_id: LOGGED_OUT_POST_DOC_ID,
+  });
+  const headers: Record<string, string> = {
+    ...API_HEADERS,
+    'X-FB-Friendly-Name': LOGGED_OUT_POST_QUERY,
+    'X-FB-LSD': lsd,
+    'X-Requested-With': 'XMLHttpRequest',
+    'Content-Type': 'application/x-www-form-urlencoded',
+  };
+  if (rulingOk && csrf) headers['X-CSRFToken'] = csrf;
+
+  const data = await igApiJson(`${IG_ORIGIN}/api/graphql`, 'anonymous', {
+    method: 'POST',
+    headers,
+    body: form.toString(),
+    referrer: postUrl,
+  });
+
+  const media = (data.data as Record<string, unknown> | undefined)?.xig_polaris_media as
+    | Record<string, unknown>
+    | null
+    | undefined;
+  if (media === null) {
+    // The query resolves but the media node is null: removed, or a
+    // private post whose id the viewer may not see. Long shortcodes
+    // (>28 chars) are private-post share links — say "login" for those.
+    const kind: InstagramErrorKind = shortcode.length > 28 ? 'login_required' : 'not_found';
+    throw new InstagramError(kind, instagramMessage(kind));
+  }
+  const product = media?.if_not_gated_logged_out as Record<string, unknown> | null | undefined;
+  if (!product) {
+    throw new InstagramError('login_required', instagramMessage('login_required'));
+  }
+
+  const entries = entriesFromProduct(product, shortcode);
+  if (entries.length === 0) {
+    throw new Error('No downloadable media found in this post.');
+  }
+  return { site: 'Instagram', isPlaylist: entries.length > 1, entries };
+}
+
+// ── Stories ─────────────────────────────────────────────────────────────
 
 /**
  * Probe an instagram.com/stories/... URL (user stories or highlights)

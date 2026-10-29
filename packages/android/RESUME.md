@@ -4,6 +4,114 @@ Snapshot of where we left off, written to drop back in with zero ramp-up.
 
 ---
 
+## v0.9.1 — Instagram through a real browser + a rate-limit-free engine updater
+
+User report (2026-10-29): logged into Instagram in the app, login succeeds,
+every post download still errors; "Update" on the yt-dlp engine card fails
+intermittently.
+
+**Root cause 1 — Instagram fingerprints the HTTP client.** Verified from this
+PC: curl with a Chrome UA gets a 509 KB JS shell for `/p/<sc>/` (no
+`xig_polaris_media`), and `/api/graphql` answers with the homepage HTML
+instead of JSON; the identical requests from a real Chromium (the in-app
+browser) return the full post JSON. yt-dlp master added `impersonate=` to
+every Instagram call for exactly this reason — curl_cffi impersonation,
+which does not exist on Android. So React Native's fetch (OkHttp) in the JS
+probers AND the bundled yt-dlp both got the bot treatment even with a valid
+`sessionid`; the only transport on the phone Instagram accepts is the System
+WebView, i.e. the same engine the login happened in.
+
+- `ConvertXDownloaderModule.kt` — **`webFetch` bridge**: one hidden WebView
+  (created lazily on the main thread, destroyed in `OnDestroy`). A blank
+  document is served by `shouldInterceptRequest` under the target origin
+  (`https://www.instagram.com/__convertx_bridge__`), so a `fetch()` run via
+  `evaluateJavascript` is same-origin: cookies attach, Origin/Referer/
+  Sec-Fetch-* come from Chromium, responses are readable without CORS.
+  Results come back through a `@JavascriptInterface` (`ConvertXBridge`).
+  Requests are serialized through a queue; `cookieMode: "replace"` installs
+  exactly the caller's cookies into `CookieManager` (expiring everything else
+  the jar holds for the origin), `"keep"` sends the jar as-is; the jar string
+  for the origin is returned with every response. Rejects
+  `WEBVIEW_UNAVAILABLE` when the device has no usable WebView.
+- `src/lib/instagramNet.ts` (new) — `igRequest(url, {mode})`: `session` mode
+  installs the cookies.txt Instagram cookies (deduped per name, apex-domain
+  line wins), `anonymous` guarantees no session cookie rides along. The jar is
+  only re-synced when cookies.txt changed (fingerprint) or the mode flipped;
+  after a logged-in response the jar is written BACK into cookies.txt (only
+  while it still carries `sessionid` — a jar that lost it means the server
+  logged us out, and persisting that would silently delete the user's login).
+  `transportEpoch` bumps on every jar replace so anonymous tokens (LSD) can't
+  outlive their jar. Falls back to plain `fetch` + manual `Cookie` header when
+  the bridge is unavailable or absent (old native build under new JS).
+- `src/lib/instagramStories.ts` — all API calls via `igApiJson`, which
+  classifies every refusal shape into `InstagramError.kind`: login-wall
+  redirect (`/accounts/login`, `/challenge`), 401/403, HTML-where-JSON,
+  `{"message": "login_required|checkpoint_required|feedback_required|…"}`.
+  Messages are user-actionable ("login has expired — sign in again under
+  Credits", "confirm it's you in the Instagram app", "rate-limiting this
+  device"). New **`probeInstagramPostAnonymous`**: the web app's own
+  logged-out GraphQL query (`doc_id 27130156389949648`,
+  `PolarisLoggedOutDesktopWWWPostRootContentQuery`, LSD token from the
+  homepage, csrftoken from the jar after `get_ruling_for_content`) — full
+  carousels + videos for public posts with NO login; verified live in a real
+  browser: 3-video carousel + muted reel both return `video_versions`.
+  `resolveUserId` now re-throws an auth failure instead of "Could not resolve
+  user" when all three endpoints refused for auth reasons.
+- `src/lib/instagramScraper.ts` — embed prober rewritten around the page's
+  `contextJSON` → `gql_data.shortcode_media` (every carousel child, real
+  `video_url`s). A video post whose embed only carries the poster
+  (`is_video` true, no `video_url` — copyright-blocked reels) now throws
+  `login_required` instead of handing back a JPG for a video.
+- `src/lib/downloadQueue.ts` — **post chain** `probeInstagramPostChain`:
+  cookied API (logged in) → logged-out GraphQL → embed → cookied yt-dlp. When
+  all fail, `composeInstagramError` surfaces the most actionable classified
+  error (checkpoint > expired > rate-limited > login-required > not-found)
+  instead of yt-dlp's "exited 1". Instagram gates now use
+  `hasLoginCookiesForDomain('instagram.com', ['sessionid'])` — "some cookie
+  line exists" is no longer "logged in" (an anonymous visit writes
+  csrftoken/mid too). Story/profile probers re-throw `expired`/`checkpoint`
+  rather than falling to yt-dlp with the same dead cookies.
+- `DownloadScreen` `needsLogin` regex extended to the new messages so the
+  one-tap "Log in to Instagram" button shows for them.
+
+**Root cause 2 — youtubedl-android's updater uses the GitHub REST API**
+(`api.github.com/repos/yt-dlp/yt-dlp/releases/latest`), limited to 60
+requests/hour per IP; on carrier NAT that is HTTP 403 much of the time.
+
+- `ConvertXDownloaderModule.kt` `updateYtDlp` rewritten: latest tag from the
+  `/releases/latest` → `/releases/tag/<ver>` redirect (no API), asset from
+  `/releases/download/<tag>/yt-dlp`, SHA-256 checked against the release's
+  `SHA2-256SUMS` (when fetchable) plus a `ZipFile` open test
+  (`yt_dlp/__init__.py` present), staged in the SAME dir and swapped in with
+  `renameTo` — atomic, so a killed app can never leave a torn zipapp (the old
+  in-place `FileUtils.copyFile` was the source of the "bad local file header"
+  corruption). Writes the library's own prefs keys (`dlpVersion`,
+  `dlpVersionName`) so `YoutubeDL.version()` stays truthful, plus
+  `convertxDlpUpdatedAt`. `getYtDlpVersion` reads `yt_dlp/version.py` out of
+  the zipapp on disk (the prefs don't know the bundled build's version).
+  `{force, checkOnly}` options; `ALREADY_UP_TO_DATE` only when the tag
+  matches AND the on-disk zip is loadable.
+- `downloadQueue.ts` — `runPeriodicYtDlpUpdate` (daily, silent; replaces the
+  once-a-calendar-month check); `refreshEngineAfterFailure`: a yt-dlp probe
+  failing with an extractor-rot signature (`unable to extract`, `yt-dlp -U`,
+  `Confirm you are on`, 403, …) triggers one engine refresh (hourly throttle)
+  and ONE retry when a newer build was actually installed. Credits engine
+  card shows the installed yt-dlp version and says it checks daily.
+
+Verification: `npx tsc --noEmit` clean; `:convert-x-downloader:compileDebugKotlin`
+compiles locally (needs `android/local.properties` with
+`sdk.dir=C:/Users/cedri/AppData/Local/Android/Sdk` — forward slashes, the file
+is gitignored). Request recipes verified in a real browser against public
+posts. On-device: see the release notes / the session that cut v0.9.1 for the
+emulator run (`ConvertX_Test` AVD, port 5562).
+
+Not verified: a LOGGED-IN run (no test account on this machine) — the
+transport is identical for anonymous and session mode, so the bridge test
+covers the mechanism; the session-specific parts (cookie install/write-back)
+are reviewed, not exercised.
+
+---
+
 ## Old-Android compatibility (armv7 + API 24 hardening)
 
 The friend's phone couldn't install the APK. Root cause was almost certainly
