@@ -4,6 +4,54 @@ Snapshot of where we left off, written to drop back in with zero ramp-up.
 
 ---
 
+## v0.9.2 — logged-in stories via the web app's GraphQL queries
+
+Live on the S26U with v0.9.1 (2026-10-30): public posts worked end-to-end,
+but stories failed although Credits showed Instagram "Connected". The
+cookied `/api/v1/` REST endpoints (`feed/reels_media`, `media/<pk>/info`,
+`web/search/topsearch`, `users/web_profile_info`) now answer web sessions
+with a generic error ("Da ist leider etwas schiefgelaufen"), `401
+require_login` or a `/accounts/login/` redirect even when the session is
+valid. The anonymous post path survived only because it was already GraphQL.
+
+Fix (`src/lib/instagramStories.ts`): stories run the exact queries
+instagram.com runs, POSTed to `/api/graphql` through the WebView bridge by
+`igGraphqlSession` (session cookies + `fb_dtsg` + `lsd` + csrf + `av`,
+tokens scraped from the logged-in homepage by `sessionGraphqlTokens`):
+
+- owner id: `PolarisAPITopsearchQuery` (doc_id `40560838120170065`,
+  variables `{data:{context:'blended', include_reel:'true', query,
+  rank_token, search_session_id, search_surface:'web_top_search'}}`, root
+  `xdt_api__v1__fbsearch__topsearch_connection.users[].user.pk`), matched
+  on the exact username. Legacy REST `resolveUserId` is the fallback.
+- story: `PolarisStoriesV3ReelPageStandaloneQuery` (doc_id
+  `29170422829314651`, root `xdt_api__v1__feed__reels_media.reels_media[0]
+  .items`) with `{media_id, reel_ids_arr:[ownerId], is_highlight}` — the
+  web app's route entrypoint sends both; `media_id` alone yields
+  `field_exception` and no items (that was beta.1). Empty answer → one
+  retry without `media_id`. Highlights use `reel_ids_arr:['highlight:<id>']`.
+- The REST `reels_media` path stays as a fallback; every GraphQL miss is
+  logged with the error and the response shape.
+
+Doc ids come from the logged-in story-page JS bundles: search
+`<Name>_instagramRelayOperation` → `exports="<id>"`, and the route
+entrypoint (`PolarisStoriesV3Root.entrypoint`) shows the variables. Public
+bundles are fetchable anonymously; the logged-out pages themselves only
+render `PolarisErrorRoot` for non-browser clients.
+
+Verified live on the S26U (release APK `v0.9.2-beta.2`, same commit as the
+`v0.9.2` tag): `/stories/lifewit.gaja/4019330390749362563/` probes to all 4
+reel items (3 photos + 1 video, including the item that failed that
+morning) and all 4 land in the gallery; public reel `/reel/Chunk8-jurw/`
+still probes fine.
+
+Still open: logged-in PRIVATE posts use REST `media/<pk>/info` and will
+fail the same way (public posts are covered by the anonymous GraphQL).
+The logged-in post query is `PolarisPostRootQuery` (doc_id not yet
+extracted); needs a private post to test against.
+
+---
+
 ## v0.9.1 — Instagram through a real browser + a rate-limit-free engine updater
 
 User report (2026-10-29): logged into Instagram in the app, login succeeds,
