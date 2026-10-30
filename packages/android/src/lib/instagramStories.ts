@@ -24,6 +24,8 @@
  */
 
 import type { DownloadEntry, ProbeResult } from './downloadQueue';
+import { getCookieValue } from './cookies';
+import { logError } from './errorLog';
 import {
   IG_ORIGIN,
   igRequest,
@@ -41,6 +43,14 @@ const IG_WEB_APP_ID = '936619743392459';
  *  fallbacks in downloadQueue still cover public posts. */
 const LOGGED_OUT_POST_DOC_ID = '27130156389949648';
 const LOGGED_OUT_POST_QUERY = 'PolarisLoggedOutDesktopWWWPostRootContentQuery';
+/** Logged-in story query the Instagram web app runs for /stories/… — the
+ *  REST /api/v1/feed/reels_media endpoint is now soft-blocked for web
+ *  sessions (returns a generic error / login wall even when the session
+ *  is valid), so stories go through this GraphQL query instead. doc_id
+ *  from the logged-in story-page JS bundle (Oct 2026); rotates rarely,
+ *  and the REST path stays as a fallback. */
+const STORY_DOC_ID = '29170422829314651';
+const STORY_QUERY = 'PolarisStoriesV3ReelPageStandaloneQuery';
 
 const STORY_RE = /instagram\.com\/stories\/([^/?#]+)(?:\/(\d+))?/;
 // Same constraints as yt-dlp's InstagramIE: a `share/…` prefix is a
@@ -538,6 +548,23 @@ export async function probeInstagramPost(url: string): Promise<ProbeResult> {
 
 /** LSD token + csrf from an anonymous page load, cached briefly — one
  *  homepage fetch per probe is plenty and Instagram notices hammering. */
+/** Pull the LSD token out of an Instagram page's HTML. */
+function extractLsd(html: string): string | undefined {
+  let lsd = html.match(/"LSD",\[\],\{"token":"([^"]+)"/)?.[1];
+  if (!lsd) {
+    const eqmc = html.match(/<script\b[^>]*\bid="__eqmc"[^>]*>(\{[\s\S]*?\})<\/script>/)?.[1];
+    if (eqmc) {
+      try {
+        const parsed = JSON.parse(eqmc) as { l?: unknown };
+        if (typeof parsed.l === 'string') lsd = parsed.l;
+      } catch {
+        // fall through
+      }
+    }
+  }
+  return lsd;
+}
+
 let anonTokens: { at: number; epoch: number; lsd: string } | null = null;
 
 async function anonymousLsdToken(): Promise<string> {
@@ -553,24 +580,151 @@ async function anonymousLsdToken(): Promise<string> {
     headers: { Accept: 'text/html,application/xhtml+xml' },
     timeoutMs: 20000,
   });
-  const html = resp.body;
-  let lsd = html.match(/"LSD",\[\],\{"token":"([^"]+)"/)?.[1];
-  if (!lsd) {
-    const eqmc = html.match(/<script\b[^>]*\bid="__eqmc"[^>]*>(\{[\s\S]*?\})<\/script>/)?.[1];
-    if (eqmc) {
-      try {
-        const parsed = JSON.parse(eqmc) as { l?: unknown };
-        if (typeof parsed.l === 'string') lsd = parsed.l;
-      } catch {
-        // fall through
-      }
-    }
-  }
+  const lsd = extractLsd(resp.body);
   if (!lsd) {
     throw new InstagramError('other', 'Instagram did not hand out a session token for anonymous access.');
   }
   anonTokens = { at: Date.now(), epoch: instagramTransportEpoch(), lsd };
   return lsd;
+}
+
+/** Tokens a logged-in GraphQL POST needs: lsd + fb_dtsg (the web app's
+ *  authenticated form token), scraped from the logged-in homepage. */
+let sessionGqlTokens: { at: number; epoch: number; lsd: string; dtsg?: string } | null = null;
+
+async function sessionGraphqlTokens(): Promise<{ lsd: string; dtsg?: string }> {
+  if (
+    sessionGqlTokens &&
+    sessionGqlTokens.epoch === instagramTransportEpoch() &&
+    Date.now() - sessionGqlTokens.at < 10 * 60 * 1000
+  ) {
+    return sessionGqlTokens;
+  }
+  const resp = await igRequest(`${IG_ORIGIN}/`, {
+    mode: 'session',
+    headers: { Accept: 'text/html,application/xhtml+xml' },
+    timeoutMs: 20000,
+  });
+  const html = resp.body;
+  const lsd = extractLsd(html);
+  if (!lsd) {
+    throw new InstagramError('expired', instagramMessage('expired'));
+  }
+  const dtsg =
+    html.match(/"DTSGInitialData",\[\],\{"token":"([^"]+)"/)?.[1] ??
+    html.match(/\["DTSGInitData",\[\],\{"token":"([^"]+)"/)?.[1] ??
+    html.match(/"dtsg":\s*\{"token":"([^"]+)"/)?.[1];
+  sessionGqlTokens = { at: Date.now(), epoch: instagramTransportEpoch(), lsd, dtsg };
+  return sessionGqlTokens;
+}
+
+function jazoestFor(token: string): string {
+  let sum = 0;
+  for (let i = 0; i < token.length; i += 1) sum += token.charCodeAt(i);
+  return `2${sum}`;
+}
+
+/**
+ * Probe a story through the web app's own GraphQL query (session cookies +
+ * fb_dtsg via the bridge). This is the path the Instagram website uses;
+ * the legacy REST reels_media endpoint it replaced is soft-blocked for web
+ * sessions. Returns every reel item (photos + videos) as a direct-CDN
+ * entry. Throws an InstagramError on any refusal so the caller can fall
+ * back to REST / yt-dlp and compose the right message.
+ */
+async function probeInstagramStoryGraphql(
+  username: string,
+  storyId: string | undefined
+): Promise<ProbeResult> {
+  const isHighlight = username === 'highlights';
+  if (isHighlight && !storyId) {
+    throw new InstagramError('not_found', 'This highlight link is missing its id.');
+  }
+  // A single-item deep link (/stories/<user>/<itemId>/) resolves by
+  // media_id — no user-id lookup, which the broken topsearch REST needed.
+  // Highlights resolve by their reel id.
+  const variables: Record<string, unknown> = {
+    reel_ids_arr: isHighlight ? [`highlight:${storyId}`] : [],
+    media_id: isHighlight ? null : storyId ?? null,
+    is_highlight: isHighlight,
+    __relay_internal__pv__PolarisCommunityNoteStoriesLabelEnabledrelayprovider: false,
+  };
+  if (!isHighlight && !storyId) {
+    // Bare /stories/<user>/ needs a user id we can't resolve without the
+    // broken REST — let the caller's REST fallback handle it.
+    throw new InstagramError('other', 'A bare story link needs the REST path.');
+  }
+
+  const { lsd, dtsg } = await sessionGraphqlTokens();
+  const csrf = await getCookieValue('instagram.com', 'csrftoken');
+  const dsUser = await getCookieValue('instagram.com', 'ds_user_id');
+
+  const form = new URLSearchParams();
+  if (dsUser) form.set('av', dsUser);
+  form.set('__comet_req', '7');
+  if (dtsg) {
+    form.set('fb_dtsg', dtsg);
+    form.set('jazoest', jazoestFor(dtsg));
+  }
+  form.set('lsd', lsd);
+  form.set('fb_api_caller_class', 'RelayModern');
+  form.set('fb_api_req_friendly_name', STORY_QUERY);
+  form.set('variables', JSON.stringify(variables));
+  form.set('server_timestamps', 'true');
+  form.set('doc_id', STORY_DOC_ID);
+
+  const headers: Record<string, string> = {
+    'X-FB-Friendly-Name': STORY_QUERY,
+    'X-FB-LSD': lsd,
+    'X-Requested-With': 'XMLHttpRequest',
+    'Content-Type': 'application/x-www-form-urlencoded',
+  };
+  if (csrf) headers['X-CSRFToken'] = csrf;
+
+  const referrer = isHighlight
+    ? `${IG_ORIGIN}/stories/highlights/${storyId}/`
+    : `${IG_ORIGIN}/stories/${username}/${storyId}/`;
+
+  const data = await igApiJson(`${IG_ORIGIN}/api/graphql`, 'session', {
+    method: 'POST',
+    headers,
+    body: form.toString(),
+    referrer,
+  });
+
+  const root = (data.data as Record<string, unknown> | undefined)
+    ?.xdt_api__v1__feed__reels_media as Record<string, unknown> | undefined;
+  const reels = root?.reels_media as Array<Record<string, unknown>> | undefined;
+  const reel = Array.isArray(reels) ? reels[0] : undefined;
+  const items = (reel?.items as Array<Record<string, unknown>> | undefined) ?? [];
+  if (items.length === 0) {
+    const errors = Array.isArray(data.errors)
+      ? (data.errors as Array<Record<string, unknown>>)
+      : [];
+    const first = typeof errors[0]?.message === 'string' ? (errors[0].message as string) : '';
+    if (first) {
+      throw new InstagramError('other', `Instagram stories GraphQL failed: ${first.slice(0, 160)}`);
+    }
+    throw new Error('This story has expired or has no items.');
+  }
+
+  const sorted = items
+    .slice()
+    .sort((a, b) => (Number(a.taken_at) || 0) - (Number(b.taken_at) || 0));
+  const entries: DownloadEntry[] = [];
+  for (const item of sorted) {
+    const pk = String(item.pk ?? item.id ?? '');
+    const entry = entryFromItem(
+      item,
+      `Instagram-story-${username}-${pk}`,
+      `${IG_ORIGIN}/stories/${username}/${pk}/`
+    );
+    if (entry) entries.push(entry);
+  }
+  if (entries.length === 0) {
+    throw new Error('No downloadable media found in this story.');
+  }
+  return { site: 'Instagram', isPlaylist: entries.length > 1, entries };
 }
 
 /**
@@ -675,6 +829,20 @@ export async function probeInstagramStory(url: string): Promise<ProbeResult> {
   const m = url.match(STORY_RE);
   if (!m) throw new Error('Not a recognizable Instagram story URL.');
   const [, username, storyId] = m;
+
+  // Primary: the web app's GraphQL story query (the REST reels_media path
+  // below is soft-blocked for web sessions). A session-level refusal
+  // (expired / checkpoint) is authoritative — surface it, don't fall
+  // through to a REST path that will refuse the same way.
+  try {
+    return await probeInstagramStoryGraphql(username, storyId);
+  } catch (e) {
+    const kind = instagramErrorKind(e);
+    if (kind === 'expired' || kind === 'checkpoint' || kind === 'rate_limited') throw e;
+    // 'other' / no-items / bare-profile link → try the legacy REST path,
+    // but leave a trace so a rotted query id doesn't silently degrade.
+    logError('probe', e, `instagram story graphql: ${url}`);
+  }
 
   // Highlight links (/stories/highlights/<id>/) query the highlight reel
   // directly; user stories need the numeric user id first.
