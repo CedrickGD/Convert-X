@@ -51,6 +51,11 @@ const LOGGED_OUT_POST_QUERY = 'PolarisLoggedOutDesktopWWWPostRootContentQuery';
  *  and the REST path stays as a fallback. */
 const STORY_DOC_ID = '29170422829314651';
 const STORY_QUERY = 'PolarisStoriesV3ReelPageStandaloneQuery';
+/** The web app's GraphQL user search (the REST /web/search/topsearch it
+ *  wraps is soft-blocked). Resolves a username to the numeric user id the
+ *  story query needs in reel_ids_arr. */
+const TOPSEARCH_DOC_ID = '40560838120170065';
+const TOPSEARCH_QUERY = 'PolarisAPITopsearchQuery';
 
 const STORY_RE = /instagram\.com\/stories\/([^/?#]+)(?:\/(\d+))?/;
 // Same constraints as yt-dlp's InstagramIE: a `share/…` prefix is a
@@ -624,37 +629,31 @@ function jazoestFor(token: string): string {
   return `2${sum}`;
 }
 
-/**
- * Probe a story through the web app's own GraphQL query (session cookies +
- * fb_dtsg via the bridge). This is the path the Instagram website uses;
- * the legacy REST reels_media endpoint it replaced is soft-blocked for web
- * sessions. Returns every reel item (photos + videos) as a direct-CDN
- * entry. Throws an InstagramError on any refusal so the caller can fall
- * back to REST / yt-dlp and compose the right message.
- */
-async function probeInstagramStoryGraphql(
-  username: string,
-  storyId: string | undefined
-): Promise<ProbeResult> {
-  const isHighlight = username === 'highlights';
-  if (isHighlight && !storyId) {
-    throw new InstagramError('not_found', 'This highlight link is missing its id.');
+/** A random id in the shape Instagram's web search uses for its
+ *  rank_token / search_session_id (any unique string is accepted). */
+function randomToken(): string {
+  const hex = '0123456789abcdef';
+  let out = '';
+  for (let i = 0; i < 32; i += 1) {
+    out += hex[Math.floor(Math.random() * 16)];
+    if (i === 7 || i === 11 || i === 15 || i === 19) out += '-';
   }
-  // A single-item deep link (/stories/<user>/<itemId>/) resolves by
-  // media_id — no user-id lookup, which the broken topsearch REST needed.
-  // Highlights resolve by their reel id.
-  const variables: Record<string, unknown> = {
-    reel_ids_arr: isHighlight ? [`highlight:${storyId}`] : [],
-    media_id: isHighlight ? null : storyId ?? null,
-    is_highlight: isHighlight,
-    __relay_internal__pv__PolarisCommunityNoteStoriesLabelEnabledrelayprovider: false,
-  };
-  if (!isHighlight && !storyId) {
-    // Bare /stories/<user>/ needs a user id we can't resolve without the
-    // broken REST — let the caller's REST fallback handle it.
-    throw new InstagramError('other', 'A bare story link needs the REST path.');
-  }
+  return out;
+}
 
+/**
+ * POST one logged-in GraphQL query through the bridge with the same form
+ * the Instagram web app sends (session cookies + fb_dtsg + lsd + csrf).
+ * Returns the parsed JSON; GraphQL-level `errors` are NOT thrown here —
+ * Instagram routinely returns a partial `field_exception` next to valid
+ * data, so callers decide from the data they actually got.
+ */
+async function igGraphqlSession(
+  docId: string,
+  friendlyName: string,
+  variables: Record<string, unknown>,
+  referrer: string
+): Promise<Record<string, unknown>> {
   const { lsd, dtsg } = await sessionGraphqlTokens();
   const csrf = await getCookieValue('instagram.com', 'csrftoken');
   const dsUser = await getCookieValue('instagram.com', 'ds_user_id');
@@ -668,44 +667,154 @@ async function probeInstagramStoryGraphql(
   }
   form.set('lsd', lsd);
   form.set('fb_api_caller_class', 'RelayModern');
-  form.set('fb_api_req_friendly_name', STORY_QUERY);
+  form.set('fb_api_req_friendly_name', friendlyName);
   form.set('variables', JSON.stringify(variables));
   form.set('server_timestamps', 'true');
-  form.set('doc_id', STORY_DOC_ID);
+  form.set('doc_id', docId);
 
   const headers: Record<string, string> = {
-    'X-FB-Friendly-Name': STORY_QUERY,
+    'X-FB-Friendly-Name': friendlyName,
     'X-FB-LSD': lsd,
     'X-Requested-With': 'XMLHttpRequest',
     'Content-Type': 'application/x-www-form-urlencoded',
   };
   if (csrf) headers['X-CSRFToken'] = csrf;
 
-  const referrer = isHighlight
-    ? `${IG_ORIGIN}/stories/highlights/${storyId}/`
-    : `${IG_ORIGIN}/stories/${username}/${storyId}/`;
-
-  const data = await igApiJson(`${IG_ORIGIN}/api/graphql`, 'session', {
+  return igApiJson(`${IG_ORIGIN}/api/graphql`, 'session', {
     method: 'POST',
     headers,
     body: form.toString(),
     referrer,
   });
+}
 
-  const root = (data.data as Record<string, unknown> | undefined)
-    ?.xdt_api__v1__feed__reels_media as Record<string, unknown> | undefined;
-  const reels = root?.reels_media as Array<Record<string, unknown>> | undefined;
-  const reel = Array.isArray(reels) ? reels[0] : undefined;
-  const items = (reel?.items as Array<Record<string, unknown>> | undefined) ?? [];
-  if (items.length === 0) {
-    const errors = Array.isArray(data.errors)
-      ? (data.errors as Array<Record<string, unknown>>)
-      : [];
-    const first = typeof errors[0]?.message === 'string' ? (errors[0].message as string) : '';
-    if (first) {
-      throw new InstagramError('other', `Instagram stories GraphQL failed: ${first.slice(0, 160)}`);
+function firstGraphqlError(data: Record<string, unknown>): string {
+  const errors = Array.isArray(data.errors) ? (data.errors as Array<Record<string, unknown>>) : [];
+  return typeof errors[0]?.message === 'string' ? (errors[0].message as string).slice(0, 160) : '';
+}
+
+/**
+ * Username → numeric user id through the web app's GraphQL search. The
+ * result is matched against the exact username, so it can never return a
+ * different account's id (search ranks look-alikes too).
+ */
+async function resolveUserIdGraphql(username: string): Promise<string> {
+  const data = await igGraphqlSession(
+    TOPSEARCH_DOC_ID,
+    TOPSEARCH_QUERY,
+    {
+      data: {
+        context: 'blended',
+        include_reel: 'true',
+        query: username,
+        rank_token: randomToken(),
+        search_session_id: randomToken(),
+        search_surface: 'web_top_search',
+      },
+    },
+    `${IG_ORIGIN}/`
+  );
+  const conn = (data.data as Record<string, unknown> | undefined)
+    ?.xdt_api__v1__fbsearch__topsearch_connection as Record<string, unknown> | undefined;
+  const rows = (conn?.users as Array<Record<string, unknown>> | undefined) ?? [];
+  const wanted = username.toLowerCase();
+  for (const row of rows) {
+    const u = ((row.user as Record<string, unknown> | undefined) ?? row) as Record<string, unknown>;
+    if (typeof u.username === 'string' && u.username.toLowerCase() === wanted) {
+      const pk = u.pk ?? u.pk_id ?? u.id;
+      if (pk !== undefined && /^\d+$/.test(String(pk))) return String(pk);
     }
-    throw new Error('This story has expired or has no items.');
+  }
+  const err = firstGraphqlError(data);
+  throw new InstagramError(
+    'other',
+    `Instagram user search did not find "${username}"${err ? ` (${err})` : ` (${rows.length} results)`}`
+  );
+}
+
+/**
+ * Probe a story through the web app's own GraphQL query — exactly what
+ * instagram.com runs for /stories/<user>/<item>/: PolarisStoriesV3Reel-
+ * PageStandaloneQuery with {media_id, reel_ids_arr: [ownerId]}. The owner
+ * id comes from the GraphQL user search (its REST twin is soft-blocked).
+ * Returns every reel item (photos + videos) as a direct-CDN entry; throws
+ * an InstagramError on refusal so the caller can fall back.
+ */
+async function probeInstagramStoryGraphql(
+  username: string,
+  storyId: string | undefined
+): Promise<ProbeResult> {
+  const isHighlight = username === 'highlights';
+  if (isHighlight && !storyId) {
+    throw new InstagramError('not_found', 'This highlight link is missing its id.');
+  }
+
+  let reelIds: string[];
+  if (isHighlight) {
+    reelIds = [`highlight:${storyId}`];
+  } else {
+    let ownerId: string;
+    try {
+      ownerId = await resolveUserIdGraphql(username);
+    } catch (e) {
+      // Session-level refusals are final; anything else gets the legacy
+      // REST lookup chain as a second chance.
+      const kind = instagramErrorKind(e);
+      if (kind === 'expired' || kind === 'checkpoint' || kind === 'rate_limited') throw e;
+      logError('probe', e, `instagram user search: ${username}`);
+      ownerId = await resolveUserId(username, storyId);
+    }
+    reelIds = [ownerId];
+  }
+
+  const variables: Record<string, unknown> = {
+    reel_ids_arr: reelIds,
+    media_id: isHighlight ? null : storyId ?? null,
+    is_highlight: isHighlight,
+    __relay_internal__pv__PolarisCommunityNoteStoriesLabelEnabledrelayprovider: false,
+  };
+  const referrer = isHighlight
+    ? `${IG_ORIGIN}/stories/highlights/${storyId}/`
+    : `${IG_ORIGIN}/stories/${username}/${storyId ? `${storyId}/` : ''}`;
+
+  const readItems = (d: Record<string, unknown>) => {
+    const root = (d.data as Record<string, unknown> | undefined)
+      ?.xdt_api__v1__feed__reels_media as Record<string, unknown> | undefined;
+    const rs = root?.reels_media as Array<Record<string, unknown>> | undefined;
+    const r = Array.isArray(rs) ? rs[0] : undefined;
+    return {
+      reels: rs,
+      items: (r?.items as Array<Record<string, unknown>> | undefined) ?? [],
+    };
+  };
+
+  let data = await igGraphqlSession(STORY_DOC_ID, STORY_QUERY, variables, referrer);
+  let { reels, items } = readItems(data);
+  if (items.length === 0 && variables.media_id) {
+    // The deep-link form occasionally trips a server field_exception;
+    // the whole reel by owner id alone is the same set of items.
+    logError(
+      'probe',
+      new Error(`story graphql with media_id empty: ${firstGraphqlError(data) || 'no error'}`),
+      `${username}/${storyId}`
+    );
+    data = await igGraphqlSession(
+      STORY_DOC_ID,
+      STORY_QUERY,
+      { ...variables, media_id: null },
+      referrer
+    );
+    ({ reels, items } = readItems(data));
+  }
+  if (items.length === 0) {
+    const err = firstGraphqlError(data);
+    const shape = data.data && typeof data.data === 'object'
+      ? Object.keys(data.data as Record<string, unknown>).join(',')
+      : 'no data';
+    throw new InstagramError(
+      'other',
+      `Instagram stories GraphQL returned no items${err ? `: ${err}` : ''} [data: ${shape}; reels: ${Array.isArray(reels) ? reels.length : 'none'}]`
+    );
   }
 
   const sorted = items
