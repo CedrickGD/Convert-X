@@ -45,10 +45,21 @@ reel items (3 photos + 1 video, including the item that failed that
 morning) and all 4 land in the gallery; public reel `/reel/Chunk8-jurw/`
 still probes fine.
 
-Still open: logged-in PRIVATE posts use REST `media/<pk>/info` and will
-fail the same way (public posts are covered by the anonymous GraphQL).
-The logged-in post query is `PolarisPostRootQuery` (doc_id not yet
-extracted); needs a private post to test against.
+**v0.9.3 (2026-10-31) — logged-in posts too.** `probeInstagramPost` now
+runs `PolarisPostRootQuery` (doc_id `28796617543330760`, variables
+`{shortcode}` + three relay flags
+`__relay_internal__pv__Polaris{ShortDramaEnabled,ThreadsStyleCommentsEnabled,MultiCaptionCarouselEnabled}relayprovider: false`,
+root `xdt_api__v1__media__shortcode__web_info.items[0]` — same item shape
+as REST, carousels included) via `igGraphqlSession`; REST is the fallback.
+A clean answer without media throws `not_found` "Instagram doesn't show
+this post to your account" (private account not followed, or removed) and
+the "Log in to Instagram" button is hidden for it; when GraphQL already
+ran, its error is reported instead of the dead REST endpoint's misleading
+"expired". Verified live on the S26U (release APK `v0.9.3-beta.1`, same
+commit as the `v0.9.3` tag): a private post from the user's own private
+account (39-char shortcode) probed and saved; public carousel and the bare
+`/stories/lifewit.gaja/` link (owner via GraphQL user search) still work;
+zero error-log entries across all three.
 
 ---
 
