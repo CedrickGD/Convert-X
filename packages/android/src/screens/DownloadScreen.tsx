@@ -104,6 +104,9 @@ export function DownloadScreen() {
   const needsLogin =
     !!error &&
     site === 'Instagram' &&
+    // The account IS logged in and Instagram still won't show the post
+    // (private account it doesn't follow) — logging in again can't help.
+    !/to your account|may be private or removed/i.test(error) &&
     // "require login" covers probeUrl's own stories-need-login message —
     // that error IS a login problem, so it must surface the one-tap fix.
     /login required|require login|needs a login|log in to instagram|sign in again|login has expired|confirm it's you|connect instagram|no instagram login|cookies|empty media response|restricted|private|rate.?limit/i.test(

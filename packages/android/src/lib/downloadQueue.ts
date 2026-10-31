@@ -431,12 +431,10 @@ function composeInstagramError(failures: ChainFailure[], loggedIn: boolean): Err
   if (kinds.has('expired')) return new Error(instagramMessage('expired'));
 
   if (loggedIn) {
+    // The cookied step speaks for the account; keep its own wording (it
+    // can be more specific than the generic message for its kind).
     const api = failures.find((f) => f.step === 'api');
-    if (api) {
-      const k = kindOf(api);
-      if (k && k !== 'other') return new Error(instagramMessage(k));
-      return toError(api);
-    }
+    if (api) return toError(api);
   }
 
   const order: Array<Exclude<InstagramErrorKind, 'other'>> = [

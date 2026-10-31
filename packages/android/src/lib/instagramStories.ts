@@ -56,6 +56,11 @@ const STORY_QUERY = 'PolarisStoriesV3ReelPageStandaloneQuery';
  *  story query needs in reel_ids_arr. */
 const TOPSEARCH_DOC_ID = '40560838120170065';
 const TOPSEARCH_QUERY = 'PolarisAPITopsearchQuery';
+/** Logged-in post query the web app runs for /p/<shortcode>/ (root field
+ *  xdt_api__v1__media__shortcode__web_info — the GraphQL twin of the
+ *  soft-blocked REST media/<pk>/info, same item shape incl. carousels). */
+const POST_DOC_ID = '28796617543330760';
+const POST_QUERY = 'PolarisPostRootQuery';
 
 const STORY_RE = /instagram\.com\/stories\/([^/?#]+)(?:\/(\d+))?/;
 // Same constraints as yt-dlp's InstagramIE: a `share/…` prefix is a
@@ -538,17 +543,83 @@ function entriesFromProduct(product: Record<string, unknown>, shortcode: string)
 export async function probeInstagramPost(url: string): Promise<ProbeResult> {
   const shortcode = instagramPostShortcode(url);
   if (!shortcode) throw new Error('Not a recognizable Instagram post URL.');
-  const pk = shortcodeToPk(shortcode);
 
-  const data = await igApiFetch(`${API_BASE}/media/${pk}/info/`);
-  const item = (data.items as Array<Record<string, unknown>> | undefined)?.[0];
-  if (!item) throw new InstagramError('not_found', 'Instagram returned no media for this post.');
-
-  const entries = entriesFromProduct(item, shortcode);
-  if (entries.length === 0) {
-    throw new Error('No downloadable media found in this post.');
+  // Primary: the web app's own logged-in post query. Session-level
+  // refusals and a definitive "not visible to you" answer are final.
+  let graphqlError: unknown = null;
+  try {
+    return await probeInstagramPostGraphql(shortcode);
+  } catch (e) {
+    const kind = instagramErrorKind(e);
+    if (kind === 'expired' || kind === 'checkpoint' || kind === 'rate_limited' || kind === 'not_found') {
+      throw e;
+    }
+    graphqlError = e;
+    logError('probe', e, `instagram post graphql: ${url}`);
   }
-  return { site: 'Instagram', isPlaylist: entries.length > 1, entries };
+
+  // Legacy REST — soft-blocked for web sessions since Oct 2026, kept in
+  // case Instagram re-opens it.
+  try {
+    const pk = shortcodeToPk(shortcode);
+    const data = await igApiFetch(`${API_BASE}/media/${pk}/info/`);
+    const item = (data.items as Array<Record<string, unknown>> | undefined)?.[0];
+    if (!item) throw new InstagramError('not_found', 'Instagram returned no media for this post.');
+    const entries = entriesFromProduct(item, shortcode);
+    if (entries.length === 0) {
+      throw new Error('No downloadable media found in this post.');
+    }
+    return { site: 'Instagram', isPlaylist: entries.length > 1, entries };
+  } catch (e) {
+    if (instagramErrorKind(e) === 'checkpoint') throw e;
+    // The dead REST endpoint dresses its refusal up as "login expired";
+    // when GraphQL already ran, its error is the honest one.
+    throw graphqlError ?? e;
+  }
+}
+
+/**
+ * A post through the web app's logged-in GraphQL query (PolarisPostRoot-
+ * Query): every carousel child with photo + video CDN URLs, for public
+ * posts and for private posts the account is allowed to see.
+ */
+async function probeInstagramPostGraphql(shortcode: string): Promise<ProbeResult> {
+  const data = await igGraphqlSession(
+    POST_DOC_ID,
+    POST_QUERY,
+    {
+      shortcode,
+      __relay_internal__pv__PolarisShortDramaEnabledrelayprovider: false,
+      __relay_internal__pv__PolarisThreadsStyleCommentsEnabledrelayprovider: false,
+      __relay_internal__pv__PolarisMultiCaptionCarouselEnabledrelayprovider: false,
+    },
+    `${IG_ORIGIN}/p/${shortcode}/`
+  );
+  const payload = data.data as Record<string, unknown> | null | undefined;
+  const root = payload?.xdt_api__v1__media__shortcode__web_info as
+    | Record<string, unknown>
+    | null
+    | undefined;
+  const items = Array.isArray(root?.items) ? (root?.items as Array<Record<string, unknown>>) : [];
+  const item = items[0];
+  if (item) {
+    const entries = entriesFromProduct(item, shortcode);
+    if (entries.length === 0) throw new Error('No downloadable media found in this post.');
+    return { site: 'Instagram', isPlaylist: entries.length > 1, entries };
+  }
+  const err = firstGraphqlError(data);
+  if (payload && root !== undefined && !err) {
+    // A clean answer with no media: Instagram will not show this post to
+    // this account — a private account it doesn't follow, or removed.
+    throw new InstagramError(
+      'not_found',
+      "Instagram doesn't show this post to your account — it's from a private account you don't follow, or it was removed."
+    );
+  }
+  throw new InstagramError(
+    'other',
+    `Instagram did not return this post${err ? ` (GraphQL: ${err})` : ''} — it may be private or removed.`
+  );
 }
 
 /** LSD token + csrf from an anonymous page load, cached briefly — one
